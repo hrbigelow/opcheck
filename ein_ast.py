@@ -12,10 +12,10 @@ class IntNode(AST):
         super().__init__()
         self.val = int(val)
 
-    def value(self):
+    def to_slice(self):
         return (self.val,)
 
-    def indices(self):
+    def get_eintup_names(self):
         return set()
 
 class StarNode(AST):
@@ -27,10 +27,10 @@ class StarNode(AST):
     def set_name(self, name):
         self.name = name
 
-    def value(self):
+    def to_slice(self):
         return tuple((None,)) * len(self.tup.shape_map[self.name])
 
-    def indices(self):
+    def get_eintup_names(self):
         return set()
 
 class EinTup(AST):
@@ -43,10 +43,10 @@ class EinTup(AST):
     def length(self):
         return self.tup.length(self.name)
 
-    def value(self):
+    def to_slice(self):
         return self.tup.value(self.name)
 
-    def indices(self):
+    def get_eintup_names(self):
         return {self.name}
 
 class ArraySlice(AST):
@@ -68,14 +68,21 @@ class ArraySlice(AST):
     def maybe_convert(self, dtype):
         self.array.maybe_convert(dtype)
 
+    # returns a new ndarray
     def value(self):
         return self.array[self.ind_node.value()]
 
     def assign(self, rhs):
         self.array[self.ind_node.value()] = rhs
 
-    def indices(self):
-        return self.ind_node.indices()
+    def to_slice(self):
+        flat = self.value().squeeze()
+        if flat.ndim != 1:
+            raise RuntimeError('to_slice requires a flatten-able array')
+        return tuple(flat.tolist())
+
+    def get_eintup_names(self):
+        return self.ind_node.get_eintup_names()
 
 # This is a polymorphic list of EinTup, IntNode, and ArraySlice instances
 class IndexList(list, AST):
@@ -89,10 +96,10 @@ class IndexList(list, AST):
         return ''.join(e.name for e in self if isinstance(e, EinTup))
 
     def value(self):
-        return tuple(ind for e in self for ind in e.value())
+        return tuple(ind for e in self for ind in e.to_slice())
 
-    def indices(self):
-        return set(ind for e in self for ind in e.indices())
+    def get_eintup_names(self):
+        return set(ind for e in self for ind in e.get_eintup_names())
 
 class Assign(AST):
     def __init__(self, lhs, rhs):
@@ -104,10 +111,10 @@ class Assign(AST):
         self.lhs.assign(self.rhs.value())
 
     # collect the unique set of indices in this assignment statement
-    def indices(self):
+    def get_eintup_names(self):
         inds = set()
-        inds.update(self.lhs.indices())
-        inds.update(self.rhs.indices())
+        inds.update(self.lhs.get_eintup_names())
+        inds.update(self.rhs.get_eintup_names())
         return inds
     
 class Call(AST):
@@ -127,6 +134,6 @@ class Call(AST):
     def value(self):
         return self.func(*self.ind_node.value())
 
-    def indices(self):
-        return self.ind_node.indices()
+    def get_eintup_names(self):
+        return self.ind_node.get_eintup_names()
 

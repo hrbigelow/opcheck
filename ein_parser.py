@@ -1,16 +1,6 @@
 """
-BNF Grammar for tuple-einsum notation
-
-The parsing phase builds an AST.
-At the end, the parser returns this AST, but must also build
-a context object which contains the symbol table.
-
-The symbol table will contain the instantiated np.ndarray objects
-
-Each node of the AST is a derived class with an overloaded 'value()'
-function.  Together, the tree builds a 
-
-assignment : ndarray = expr
+assignment : ndarray = ndarray
+           | ndarray = call
 
 expr : call
      | ndarray
@@ -21,137 +11,115 @@ expr : call
 
 call : ID ( expr )
 
-ndarray : ID [ index_list ]
-
-index_list : index
-           | ndarray
-           | index_list , index
-           | index_list , ndarray
-
-index : ID
-
 """
 
 from ein_lexer import EinLexer
+from ein_array import *
+from ein_ast import *
 from sly import Parser
 import numpy as np
-
-# simple wrapper class
-class Tup(object):
-    # subranks is { b: 2, a: 3, ... }
-    # a dictionary of the ranks of each tuple-ein index
-    def __init__(self, subranks):
-        self.value = None
-        self.slices = {}
-        self.rank = 0
-
-        for index_name, subrank in subranks.values():
-            self.slices[index_name] = slice(self.rank, self.rank + subrank)
-            self.rank += subrank
-
-    def get_value(self, name):
-        return self.value[self.slices[name]]
-
-    
-class AST(object):
-    def __init__(self):
-        pass
-
-    def value(self):
-        pass
-
-class Index(AST):
-    # beg, end denote the position in the main tuple
-    def __init__(self, tup, name):
-        super().__init__()
-        self.tup = tup 
-        self.name = name
-
-    def value(self):
-        return self.tup.value[self.beg:self.end]
-
-class IndexList(AST):
-    def __init__(self):
-        super().__init__()
-        self.elements = []
-
-    def append(self, index_node):
-        self.elements.append(index_node)
-
-    def value(self):
-        return sum(self.elements, tuple())
-
-class ArraySlice(AST):
-    def __init__(self, array, index_list_node):
-        super().__init__()
-        self.array = array
-        self.indices = index_list_node
-
-    def value(self):
-        return self.array[self.indices.value()]
 
 
 class EinParser(Parser):
     tokens = EinLexer.tokens
-    symbol_table = {}
+    precedence = (
+       ('left', PLUS, MINUS),
+       ('left', TIMES, DIVIDE),
+    )
+
+    # map of EinArray objects
+    arrays = { }
+
+    # the main counter
+    slice_tuple = SliceTuple()
 
     def __new__(clsname):
         cls = super().__new__(clsname)
         return cls
 
+    @classmethod
+    def update_shapes(cls, shape_map):
+        cls.slice_tuple.reset(shape_map)
+        for ary in cls.arrays.values():
+            ary.update_shape(shape_map)
 
     @classmethod
-    def register(cls, name, obj):
-        cls.symbol_table[name] = obj
+    def maybe_add_array(cls, name, sig):
+        if name not in cls.arrays:
+            cls.arrays[name] = EinArray(sig)
+        return cls.arrays[name]
 
-    """
-    # Grammar rules and actions
-    @_('ID LPAREN expr RPAREN')
-    def call(self, p):
-        print(p)
-        pass
+    @classmethod
+    def init_program(cls, program):
+        inds = program.get_eintup_names()
+        cls.slice_tuple.set_indices(inds)
 
-    """
-    @_('ID LBRACKET index_list RBRACKET')
+    @_('ndarray ASSIGN ndarray')
+    def assignment(self, p):
+        return Assign(p.ndarray0, p.ndarray1)
+
+    @_('ndarray ASSIGN call')
+    def assignment(self, p):
+        p.ndarray.maybe_convert(p.call.dtype)
+        return Assign(p.ndarray, p.call) 
+
+    @_('ID LBRACK index_list RBRACK')
     def ndarray(self, p):
-        print('p.ID: ', p.ID)
-        print('p.index_list: ', p.index_list)
-        self.register(p.ID, np.ndarray((5,2)))
-        return 1
+        ary = EinParser.maybe_add_array(p.ID, p.index_list.sig())
+        array_slice = ArraySlice(p.ID, ary, p.index_list)
+        return array_slice
 
-    @_('ID')
+    @_('ID LPAREN index_list RPAREN',
+       'ID LPAREN RPAREN')
+    def call(self, p):
+        if hasattr(p, 'index_list'):
+            return Call(p.ID, p.index_list)
+        else:
+            return Call(p.ID, IndexList())
+
+    @_('index_expr')
     def index_list(self, p):
-        self.register(p.ID, 
-        print(p.index)
+        il = IndexList([p.index_expr])
+        return il
 
-    @_('ndarray')
+    @_('index_list COMMA index_expr')
     def index_list(self, p):
-        print(p.ndarray)
-        return 5
+        p.index_list.append(p.index_expr)
+        return p.index_list
 
-    @_('index_list COMMA ID')
-    def index_list(self, p):
-        print(p.index_list)
-        return 2
-
-    @_('index_list COMMA ndarray')
-    def index_list(self, p):
-        print(p.ndarray)
-        return 3
-
-
+    @_('ID', 'INT', 'ndarray', 'COLON')
+    def index_expr(self, p):
+        if hasattr(p, 'ID'):
+            return EinTup(EinParser.slice_tuple, p.ID)
+        elif hasattr(p, 'INT'):
+            return IntNode(p.INT)
+        elif hasattr(p, 'ndarray'):
+            return p.ndarray
+        elif hasattr(p, 'COLON'):
+            return StarNode(EinParser.slice_tuple) 
 
 
 if __name__ == '__main__':
     lexer = EinLexer()
     parser = EinParser()
 
-    while True:
-        try:
-            text = input('ein > ')
-            result = parser.parse(lexer.tokenize(text))
-            print(result)
-            print('symbols: ', parser.symbol_table)
-        except EOFError:
-            break
+    statements = [
+            'index[b,s,c] = randint(0, 3)',
+            # 'params[b,s] = index[b,s,1]',
+            'params[b,s] = random()',
+            'result[b,s] = params[b,index[b,s,:]]'
+            ]
+
+    programs = [ parser.parse(lexer.tokenize(st)) for st in statements ]
+
+    # global settings for shapes
+    shape_map = { 'b': [2,2,3], 's': [3,3,3,3], 'c': [4] }
+    parser.update_shapes(shape_map)
+
+    for program in programs:
+        parser.init_program(program)
+        while parser.slice_tuple.advance():
+            program.evaluate()
+
+    print(parser.arrays['result'].ary)
 

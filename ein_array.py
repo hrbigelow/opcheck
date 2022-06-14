@@ -45,7 +45,7 @@ class EinArray(object):
     # may be called before or after the array is initialized
     def update_shape(self, shape_map):
         shape = sum([shape_map[i] for i in self.sig], [])
-        self.ary.resize(shape)
+        self.ary.resize(shape, refcheck=False)
 
     def maybe_convert(self, dtype):
         if dtype != self.ary.dtype:
