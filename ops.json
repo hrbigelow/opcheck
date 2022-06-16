@@ -1,0 +1,33 @@
+{
+  "gatherNd": {
+    "program": [
+      "index[b,s,c] = randint(0, DIMS(e)[c])",
+      "params[b,e] = random()",
+      "result[b,s] = params[b,index[b,s,:]]"
+    ],
+    "tfcall": {
+      "func": "gather_nd",
+      "args": [
+        "params",
+        "index",
+        "RANK(b)"
+      ],
+      "return-value": "result"
+    },
+    "rank-constraints": [
+      "RANK(b) + RANK(s) <= 7",
+      "RANK(b) + RANK(e) <= 7",
+      "RANK(e) >= 1",
+      "RANK(c) = 1",
+      "DIMS(c)[0] = RANK(s)"
+    ]
+  },
+  "conv": {
+    "program": [
+    ],
+    "rank-constraints": [
+    ]
+  }
+
+}
+

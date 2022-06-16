@@ -1,12 +1,9 @@
 from sly import Lexer
-import sys
 
 class EinLexer(Lexer):
     # Set of token names.   This is always required
-    tokens = { ID, LPAREN, RPAREN, LBRACK, RBRACK,
-            PLUS, MINUS, TIMES, DIVIDE,
-            OP, INT, ASSIGN, COMMA, COLON
-            }
+    tokens = { ID, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES, DIVIDE,
+            OP, INT, ASSIGN, QUOTE, COMMA, COLON, DIMS, RANK }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -18,6 +15,7 @@ class EinLexer(Lexer):
     OP      = r'\+\-\*\/'
     INT     = r'[0-9]+'
     ASSIGN  = r'='
+    QUOTE   = r'\"'
     LPAREN  = r'\('
     RPAREN  = r'\)'
     LBRACK  = r'\['
@@ -26,6 +24,9 @@ class EinLexer(Lexer):
     MINUS   = r'\-'
     TIMES   = r'\*'
     DIVIDE  = r'\/'
+
+    ID['DIMS'] = DIMS
+    ID['RANK'] = RANK
 
 if __name__ == '__main__':
     lexer = EinLexer()
@@ -36,4 +37,3 @@ if __name__ == '__main__':
                 print('type=%r, value=%r' % (tok.type, tok.value))
         except EOFError:
             break
-

@@ -58,3 +58,4 @@ class EinArray(object):
         self.ary[key] = rhs
 
 
+

@@ -4,9 +4,6 @@ class AST(object):
     def __init__(self, *args):
         pass
 
-    def value(self):
-        pass
-
 class IntNode(AST):
     def __init__(self, val):
         super().__init__()
@@ -24,6 +21,7 @@ class StarNode(AST):
         self.tup = tup
         self.name = None
 
+    # call after 
     def set_name(self, name):
         self.name = name
 
@@ -73,7 +71,8 @@ class ArraySlice(AST):
         return self.array[self.ind_node.value()]
 
     def assign(self, rhs):
-        self.array[self.ind_node.value()] = rhs
+        ind = self.ind_node.value()
+        self.array[ind] = rhs
 
     def to_slice(self):
         flat = self.value().squeeze()
@@ -116,6 +115,28 @@ class Assign(AST):
         inds.update(self.lhs.get_eintup_names())
         inds.update(self.rhs.get_eintup_names())
         return inds
+
+class SizeExpr(AST):
+    # the AST for 'size("s", c)' with 's' the name of an ein-tuple,
+    # and c another ein-tuple which is evaluated in the expression
+    # c is expected to be a length 1 ein-tuple
+    def __init__(self, tup, dim_name, ein_tup1d):
+        self.tup = tup
+        self.dim_name = dim_name
+        self.index = ein_tup1d
+
+    def value(self):
+        if self.index.length() != 1:
+            raise RuntimeError('SizeExpr second arg must be length-1 EinTup')
+        ind = self.index.to_slice()[0]
+        return self.tup.shape_map[self.dim_name][ind]
+
+    def to_slice(self):
+        return (self.value(),)
+
+    def get_eintup_names(self):
+        return {self.index.name}
+
     
 class Call(AST):
     def __init__(self, func, index_list_node):

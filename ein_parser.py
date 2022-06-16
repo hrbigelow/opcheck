@@ -9,10 +9,14 @@ expr : call
      | expr / ndarray
      | expr * ndarray
 
-call : ID ( expr )
+arg : ID 
+    | DIMS LPAREN ID RPAREN 
+    | RANK LPAREN ID RPAREN
+
+
+
 
 """
-
 from ein_lexer import EinLexer
 from ein_array import *
 from ein_ast import *
@@ -77,6 +81,11 @@ class EinParser(Parser):
         else:
             return Call(p.ID, IndexList())
 
+    @_('DIMS LPAREN ID RPAREN LBRACK ID RBRACK')
+    def size_expr(self, p):
+        tup1d = EinTup(EinParser.slice_tuple, p.ID1)
+        return SizeExpr(EinParser.slice_tuple, p.ID0, tup1d)
+
     @_('index_expr')
     def index_list(self, p):
         il = IndexList([p.index_expr])
@@ -87,7 +96,7 @@ class EinParser(Parser):
         p.index_list.append(p.index_expr)
         return p.index_list
 
-    @_('ID', 'INT', 'ndarray', 'COLON')
+    @_('ID', 'INT', 'ndarray', 'COLON', 'size_expr')
     def index_expr(self, p):
         if hasattr(p, 'ID'):
             return EinTup(EinParser.slice_tuple, p.ID)
@@ -97,6 +106,9 @@ class EinParser(Parser):
             return p.ndarray
         elif hasattr(p, 'COLON'):
             return StarNode(EinParser.slice_tuple) 
+        elif hasattr(p, 'size_expr'):
+            return p.size_expr
+                       
 
 
 if __name__ == '__main__':
@@ -104,16 +116,18 @@ if __name__ == '__main__':
     parser = EinParser()
 
     statements = [
-            'index[b,s,c] = randint(0, 3)',
-            # 'params[b,s] = index[b,s,1]',
-            'params[b,s] = random()',
+            'index[b,s,c] = randint(0, size("e",c))',
+            'params[b,e] = random()',
             'result[b,s] = params[b,index[b,s,:]]'
             ]
 
+    print(statements)
     programs = [ parser.parse(lexer.tokenize(st)) for st in statements ]
 
     # global settings for shapes
-    shape_map = { 'b': [2,2,3], 's': [3,3,3,3], 'c': [4] }
+    size_map = { 'b': 3, 'e': 3, 's': 3, 'c': 1 }
+
+    shape_map = { 'b': [2,2,3], 'e': [8,4,3,2], 's': [2,2], 'c': [4] }
     parser.update_shapes(shape_map)
 
     for program in programs:
