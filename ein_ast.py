@@ -1,3 +1,4 @@
+import operator
 import numpy as np
     
 class AST(object):
@@ -21,7 +22,6 @@ class StarNode(AST):
         self.tup = tup
         self.name = None
 
-    # call after 
     def set_name(self, name):
         self.name = name
 
@@ -30,6 +30,22 @@ class StarNode(AST):
 
     def get_eintup_names(self):
         return set()
+
+class SliceBinOp(AST):
+    def __init__(self, slice1, slice2, op):
+        self.slice1 = slice1
+        self.slice2 = slice2
+        opfuncs = [ operator.add, operator.sub, operator.mul, operator.truediv ]
+        self.op = dict(zip('+-*/', opfuncs))[op]
+
+    def value(self):
+        return self.op(self.slice1.value(), self.slice2.value())
+
+    def get_eintup_names(self):
+        return set.union(
+                self.slice1.get_eintup_names(),
+                self.slice2.get_eintup_names())
+        
 
 class EinTup(AST):
     # beg, end denote the position in the main tuple
@@ -70,6 +86,13 @@ class ArraySlice(AST):
     def value(self):
         return self.array[self.ind_node.value()]
 
+    def fill_ndarray(self, val):
+        self.array.fill(val)
+
+    def add(self, rhs):
+        ind = self.ind_node.value()
+        self.array[ind] += rhs
+
     def assign(self, rhs):
         ind = self.ind_node.value()
         self.array[ind] = rhs
@@ -106,8 +129,11 @@ class Assign(AST):
         self.lhs = lhs
         self.rhs = rhs
 
+    def reset(self):
+        self.lhs.fill_ndarray(0)
+
     def evaluate(self):
-        self.lhs.assign(self.rhs.value())
+        self.lhs.add(self.rhs.value())
 
     # collect the unique set of indices in this assignment statement
     def get_eintup_names(self):
@@ -117,7 +143,7 @@ class Assign(AST):
         return inds
 
 class SizeExpr(AST):
-    # the AST for 'size("s", c)' with 's' the name of an ein-tuple,
+    # the AST for with 's' the name of an ein-tuple,
     # and c another ein-tuple which is evaluated in the expression
     # c is expected to be a length 1 ein-tuple
     def __init__(self, tup, dim_name, ein_tup1d):
@@ -141,14 +167,14 @@ class SizeExpr(AST):
 class Call(AST):
     def __init__(self, func, index_list_node):
         super().__init__()
-        if func == 'random':
+        if func == 'RANDOM':
             self.func = np.random.uniform
             self.dtype = np.float32
-        elif func == 'randint':
+        elif func == 'RANDINT':
             self.func = np.random.randint
             self.dtype = np.int32
         else:
-            raise RuntimeError
+            raise RuntimeError(f'unknown Call function {func}')
 
         self.ind_node = index_list_node
 

@@ -13,7 +13,7 @@ class SliceTuple(object):
     def reset(self, shape_map):
         self.shape_map = shape_map
 
-    # call for each statement
+    # call for each statement.  
     def set_indices(self, indices):
         shapes = []
         offset = 0
@@ -46,6 +46,9 @@ class EinArray(object):
     def update_shape(self, shape_map):
         shape = sum([shape_map[i] for i in self.sig], [])
         self.ary.resize(shape, refcheck=False)
+
+    def fill(self, val):
+        self.ary.fill(val)
 
     def maybe_convert(self, dtype):
         if dtype != self.ary.dtype:

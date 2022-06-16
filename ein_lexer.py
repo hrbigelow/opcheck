@@ -3,7 +3,7 @@ from sly import Lexer
 class EinLexer(Lexer):
     # Set of token names.   This is always required
     tokens = { ID, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES, DIVIDE,
-            OP, INT, ASSIGN, QUOTE, COMMA, COLON, DIMS, RANK }
+            OP, INT, ASSIGN, COMMA, COLON, DIMS, RANK }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -15,7 +15,6 @@ class EinLexer(Lexer):
     OP      = r'\+\-\*\/'
     INT     = r'[0-9]+'
     ASSIGN  = r'='
-    QUOTE   = r'\"'
     LPAREN  = r'\('
     RPAREN  = r'\)'
     LBRACK  = r'\['
