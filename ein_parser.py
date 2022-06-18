@@ -34,27 +34,12 @@ class EinParser(Parser):
        ('left', TIMES, DIVIDE),
     )
 
-    def __init__(self):
+    def __init__(self, cfg):
         self.lexer = EinLexer()
-        # map of EinArray objects
-        self.arrays = { }
-        # the main counter
-        self.slice_tuple = SliceTuple()
-
-    def update_shapes(self, shape_map):
-        self.slice_tuple.reset(shape_map)
-        for ary in self.arrays.values():
-            ary.update_shape(shape_map)
+        self.cfg = cfg 
 
     def maybe_add_array(self, name, sig):
-        if name not in self.arrays:
-            self.arrays[name] = EinArray(sig)
-        return self.arrays[name]
-
-    def init_statement(self, ast):
-        inds = ast.get_eintup_names()
-        self.slice_tuple.set_indices(inds)
-        ast.reset()
+        return self.cfg.maybe_add_array(name, sig)
 
     @_('slice ASSIGN slice')
     def assignment(self, p):
@@ -88,8 +73,7 @@ class EinParser(Parser):
 
     @_('DIMS LPAREN ID RPAREN LBRACK ID RBRACK')
     def size_expr(self, p):
-        tup1d = EinTup(self.slice_tuple, p.ID1)
-        return SizeExpr(self.slice_tuple, p.ID0, tup1d)
+        return SizeExpr(self.cfg, p.ID0, p.ID1)
 
     @_('index_expr')
     def index_list(self, p):
@@ -104,13 +88,13 @@ class EinParser(Parser):
     @_('ID', 'INT', 'slice', 'COLON', 'size_expr')
     def index_expr(self, p):
         if hasattr(p, 'ID'):
-            return EinTup(self.slice_tuple, p.ID)
+            return EinTup(self.cfg, p.ID)
         elif hasattr(p, 'INT'):
             return IntNode(p.INT)
         elif hasattr(p, 'slice'):
             return p.slice
         elif hasattr(p, 'COLON'):
-            return StarNode(self.slice_tuple) 
+            return StarNode(self.cfg) 
         elif hasattr(p, 'size_expr'):
             return p.size_expr
                        
@@ -133,8 +117,8 @@ if __name__ == '__main__':
     # global settings for shapes
     size_map = { 'b': 3, 'e': 3, 's': 3, 'c': 1 }
 
-    shape_map = { 'b': [2,2,3], 'e': [8,4,3,2], 's': [2,2], 'c': [4] }
-    parser.update_shapes(shape_map)
+    dims_map = { 'b': [2,2,3], 'e': [8,4,3,2], 's': [2,2], 'c': [4] }
+    parser.update_dims(dims_map)
 
     for stmt in statements:
         ast = parser.parse(stmt)
