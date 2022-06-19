@@ -3,49 +3,56 @@ import json
 import tensorflow as tf
 import numpy as np
 from ein_parser import EinParser
-from arg_parser import ArgParser 
+from arg_parser import ArgParser
+from constraint_parser import ConsParser
 from ein_array import ShapeConfig
 from numpy.random import randint
 
-def equal_tensors(a, b):
-    return a.shape == b.shape and tf.reduce_all(tf.math.equal(a, b))
+def equal_tensors(a, b, eps):
+    return (
+            a.shape == b.shape and
+            tf.reduce_all(tf.less_equal(tf.abs(a - b), eps))
+            )
 
 
 def validate(cfg, json_entry):
     dat = json_entry['tfcall']
     argparser = ArgParser(cfg)
-    kwargs = { k: argparser.parse(v) for k, v in dat['args'].items() }
+    kwargs = { k: argparser.parse(v).value() for k, v in dat['args'].items() }
+    eintup_result = argparser.parse(dat['return-value']).value()
     func = eval(dat['func'])
-    eintup_result = argparser.parse(dat['return-value'])
     tf_result = func(**kwargs)
-    equal = equal_tensors(tf_result, eintup_result)
+    equal = equal_tensors(tf_result, eintup_result, 1e-6)
     return equal
 
 
 def run_programs(cfg, json_entry):
     cons = json_entry['rank-constraints']
-    argparser = ArgParser(cfg)
-    einparser = EinParser(cfg)
-    constraints = [ argparser.parse(c) for c in cons ]
-    indices = set.union(*(a.get_indices() for a in constraints))
+    consparser = ConsParser(cfg)
+    constraints = [ consparser.parse(c) for c in cons ]
 
-    statements = [ einparser.parse(st) for st in program['program'] ]
+    program = json_entry['program']
+    einparser = EinParser(cfg)
+    statements = [ einparser.parse(st) for st in program ]
+
+    indices = set.union(*(a.get_indices() for a in constraints))
 
     for r in np.ndindex((10,) * len(indices)):
         rank_map = dict(zip(indices, r))
         cfg.set_ranks(rank_map)
         if not all(c.value() for c in constraints):
-            print(f'skipping {rank_map}')
+            # print(f'skipping {rank_map}')
             continue
 
-        print(f'processing {rank_map}')
+        # print(f'processing {rank_map}, dims: {cfg.tup.dims_map}')
         cfg.init_arrays()
 
         for ast in statements:
             cfg.prepare_for_statement(ast)
             while cfg.tup.advance():
                 ast.evaluate()
-        valid = validate(cfg, program)
+            # cfg.print_array('indices')
+        valid = validate(cfg, json_entry)
         print(f'{rank_map}: {valid}')
 
 

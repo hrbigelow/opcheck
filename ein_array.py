@@ -31,6 +31,9 @@ class ShapeConfig(object):
     def value(self, name):
         return self.tup.value(name)
 
+    def print_array(self, name):
+        print(self.arrays[name].ary)
+
 
 
 # simple wrapper class

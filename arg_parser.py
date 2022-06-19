@@ -1,23 +1,17 @@
-import tensorflow as tf
 from sly import Lexer, Parser
 from ein_ast import *
 
 class ArgLexer(Lexer):
-    tokens = { ID, DIMS, RANK, PLUS, MINUS, LPAREN, RPAREN, LBRACK, RBRACK,
-            INT, COMP }
+    tokens = { ID, DIMS, RANK, LPAREN, RPAREN, LBRACK, RBRACK, INT }
     ignore = ' \t'
     ID = r'[a-zA-Z_][a-zA-Z0-9_]*'
     ID['DIMS'] = DIMS
     ID['RANK'] = RANK
-    PLUS    = r'\+'
-    MINUS   = r'\-'
     LPAREN  = r'\('
     RPAREN  = r'\)'
     LBRACK  = r'\['
     RBRACK  = r'\]'
     INT     = r'[0-9]+'
-    COMP = r'(<|>|>=|==|<=)'
-
 
 class ArgParser(Parser):
     tokens = ArgLexer.tokens
@@ -26,29 +20,13 @@ class ArgParser(Parser):
         self.lexer = ArgLexer()
         self.cfg = cfg
 
-    @_('ID')
-    def tf_arg(self, p):
-        if p.ID in self.cfg.arrays:
-            return tf.convert_to_tensor(self.cfg.arrays[p.ID].ary)
-        else:
-            raise RuntimeError(f'argument must be array name, got {p[0]}')
-
-    @_('shape_access COMP shape_access')
-    def predicate(self, p):
-        return LogicalOp(p[0], p[2], p[1])
-
-    @_('shape_access PLUS shape_access',
-       'shape_access MINUS shape_access')
-    def shape_access(self, p):
-        return ShapeAccessBinOp(p.shape_access0, p.shape_access1, p[1])
-
-    @_('numeric', 'rank', 'dims_access')
-    def shape_access(self, p):
+    @_('tensor_arg', 'rank', 'dims_access')
+    def arg(self, p):
         return p[0]
 
-    @_('INT')
-    def numeric(self, p):
-        return IntNode(p.INT)
+    @_('ID')
+    def tensor_arg(self, p):
+        return TensorArg(self.cfg, p.ID)
 
     @_('RANK LPAREN ID RPAREN')
     def rank(self, p):

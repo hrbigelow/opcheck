@@ -1,5 +1,6 @@
-import operator
+import tensorflow as tf
 import numpy as np
+import operator
     
 class AST(object):
     def __init__(self, *args):
@@ -91,6 +92,7 @@ class ArraySlice(AST):
 
     def add(self, rhs):
         ind = self.ind_node.value()
+        # print(f'ArraySlice::add {self.name}[{ind}]')
         self.array[ind] += rhs
 
     def assign(self, rhs):
@@ -155,7 +157,10 @@ class Call(AST):
         self.ind_node = index_list_node
 
     def value(self):
-        return self.func(*self.ind_node.value())
+        args = self.ind_node.value()
+        v = self.func(*args)
+        # print(f'{self.func}({args}) -> {v}')
+        return v
 
     def get_indices(self):
         return self.ind_node.get_indices()
@@ -181,29 +186,33 @@ class DimsAccess(AST):
     def value(self):
         if self.cfg.rank(self.ind) != 1:
             raise RuntimeError('DimsAccess second arg must be length-1')
-        return self.cfg.shape(self.ind)[self.pos]
+        v = self.cfg.shape(self.ind)[self.pos]
+        # print(f'returning {v} from DimsAccess')
+        return v
 
     def get_indices(self):
         return {self.ind}
 
 class SizeExpr(AST):
-    # Represents DIMS(a)[b] for example
-    def __init__(self, cfg, ind1, ind2):
+    # Represents DIMS(a)[b] for example.  In this example, 'a' is not
+    # part of the indices for get_indices because it only identifies the
+    # dimensions, not the tuple setting
+    def __init__(self, cfg, dims_ind, live_ind):
         self.cfg = cfg
-        self.ind1 = ind1
-        self.ind2 = ind2
+        self.dims_ind = dims_ind
+        self.live_ind = live_ind
 
     def value(self):
-        if self.cfg.rank(self.ind2) != 1:
+        if self.cfg.rank(self.live_ind) != 1:
             raise RuntimeError('SizeExpr second arg must be rank-1 EinTup')
-        ind = self.cfg.value(self.ind2)[0] # should be a length-1 tuple
-        return self.cfg.shape(self.ind1)[ind]
+        ind = self.cfg.value(self.live_ind)[0] # should be a length-1 tuple
+        return self.cfg.shape(self.dims_ind)[ind]
 
     def to_slice(self):
         return (self.value(),)
 
     def get_indices(self):
-        return {self.ind1, self.ind2}
+        return {self.live_ind}
 
 class LogicalOp(AST):
     def __init__(self, lhs, rhs, op):
@@ -238,4 +247,15 @@ class ShapeAccessBinOp(AST):
                 self.arg1.get_indices(),
                 self.arg2.get_indices())
 
+# LEFT OFF HERE
+
+class TensorArg(AST):
+    def __init__(self, cfg, name):
+        if name not in cfg.arrays:
+            raise RuntimeError(f'argument must be array name, got {p[0]}')
+        self.cfg = cfg
+        self.name = name
+
+    def value(self):
+        return tf.convert_to_tensor(self.cfg.arrays[self.name].ary)
 
