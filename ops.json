@@ -2,29 +2,62 @@
   "gatherNd": {
     "program": [
       "params[b,e] = RANDOM()",
-      "index[b,s,c] = RANDINT(0, DIMS(e)[c])",
-      "result[b,s] = params[b,index[b,s,:]]"
+      "indices[b,s,c] = RANDINT(0, DIMS(e)[c])",
+      "result[b,s] = params[b,indices[b,s,:]]"
     ],
     "tfcall": {
-      "func": "gather_nd",
-      "args": [
-        "params",
-        "index",
-        "RANK(b)"
-      ],
+      "func": "tf.gather_nd",
+      "args": {
+        "params": "params",
+        "indices": "indices",
+        "batch_dims": "RANK(b)"
+      },
       "return-value": "result"
     },
     "rank-constraints": [
-      "RANK(b) + RANK(s) <= 7",
-      "RANK(b) + RANK(e) <= 7",
-      "RANK(e) >= 1",
+      "RANK(b) + RANK(s) < 8",
+      "RANK(b) + RANK(e) < 8",
+      "RANK(e) > 0",
       "RANK(c) == 1",
-      "DIMS(c)[0] == RANK(s)"
+      "DIMS(c)[0] == RANK(e)"
     ]
   },
+  "matmul": {
+    "program": [
+      "mat1[b,r,i] = RANDOM(0, 10)",
+      "mat2[b,i,c] = RANDOM(0, 10)",
+      "result[b,r,c] = mat1[b,r,i] * mat2[b,i,c]"
+    ],
+    "tfcall": {
+      "func": "tf.linalg.matmul",
+      "args": {
+        "a": "mat1",
+        "b": "mat2"
+      },
+      "return-value": "result"
+    },
+    "rank-constraints": [
+      "RANK(b) < 8",
+      "RANK(r) == 1",
+      "RANK(i) == 1",
+      "RANK(c) == 1"
+    ]
+  },
+
   "conv": {
     "program": [
+      "input[b,s,i] = RANDOM()",
+      "filters[f,i,o] = RANDOM()",
+      "output[b,s,o] = input[b,s+f,i] * filters[f,i,o]"
     ],
+    "tfcall": {
+      "func": "tf.nn.convolution",
+      "args": {
+        "input": "input",
+        "filters": "filters"
+      },
+      "return-value": "output"
+    },
     "rank-constraints": [
     ]
   }
