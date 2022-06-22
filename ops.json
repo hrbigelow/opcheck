@@ -14,7 +14,7 @@
       },
       "return-value": "result"
     },
-    "rank-constraints": [
+    "constraints": [
       "RANK(b) + RANK(s) < 8",
       "RANK(b) + RANK(e) < 8",
       "RANK(e) > 0",
@@ -36,7 +36,7 @@
       },
       "return-value": "result"
     },
-    "rank-constraints": [
+    "constraints": [
       "RANK(b) < 8",
       "RANK(r) == 1",
       "RANK(i) == 1",
@@ -48,18 +48,25 @@
     "program": [
       "input[b,s,i] = RANDOM()",
       "filters[f,i,o] = RANDOM()",
-      "output[b,s,o] = input[b,s+f,i] * filters[f,i,o]"
+      "output[b,s-f,o] = input[b,s,i] * filters[f,i,o]"
+    ],
+    "constraints": [
+      "RANK(s) == RANK(f)",
+      "RANK(s) > 0",
+      "RANK(i) > 0",
+      "RANK(o) > 0",
+      "MIN(s-f) := 0",
+      "MAX(s-f) := DIMS(s) - DIMS(f)"
     ],
     "tfcall": {
       "func": "tf.nn.convolution",
       "args": {
         "input": "input",
-        "filters": "filters"
+        "filters": "filters",
+        "pad": "VALID"
       },
       "return-value": "output"
-    },
-    "rank-constraints": [
-    ]
+    }
   }
 
 }

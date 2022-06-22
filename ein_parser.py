@@ -1,25 +1,3 @@
-"""
-assignment : slice = expr
-
-expr : call
-     | slice
-     | expr + slice
-     | expr - slice
-     | expr / slice
-     | expr * slice
-
-arg : ID 
-    | DIMS LPAREN ID RPAREN 
-    | RANK LPAREN ID RPAREN
-
-
-
-scalar : call
-       | slice
-
-
-
-"""
 from ein_lexer import EinLexer
 from ein_array import *
 from ein_ast import *
@@ -38,30 +16,30 @@ class EinParser(Parser):
         self.lexer = EinLexer()
         self.cfg = cfg 
 
-    def maybe_add_array(self, name, sig):
-        return self.cfg.maybe_add_array(name, sig)
+    def maybe_add_array(self, name, index_list):
+        return self.cfg.maybe_add_array(name, index_list)
 
     @_('slice ASSIGN slice')
     def assignment(self, p):
-        return Assign(p.slice0, p.slice1)
+        return Assign(self.cfg, p.slice0, p.slice1)
 
     @_('slice ASSIGN call')
     def assignment(self, p):
         p.slice.maybe_convert(p.call.dtype)
-        return Assign(p.slice, p.call) 
-
-    @_('ID LBRACK index_list RBRACK')
-    def slice(self, p):
-        ary = self.maybe_add_array(p.ID, p.index_list.sig())
-        array_slice = ArraySlice(p.ID, ary, p.index_list)
-        return array_slice
+        return Assign(self.cfg, p.slice, p.call) 
 
     @_('slice PLUS slice',
        'slice MINUS slice',
        'slice TIMES slice',
        'slice DIVIDE slice')
     def slice(self, p):
-        return SliceBinOp(p.slice0, p.slice1, p[1])
+        return ScalarBinOp(p.slice0, p.slice1, p[1])
+
+    @_('ID LBRACK index_list RBRACK')
+    def slice(self, p):
+        ary = self.maybe_add_array(p.ID, p.index_list)
+        array_slice = ArraySlice(ary, p.index_list)
+        return array_slice
 
     @_('ID LPAREN index_list RPAREN',
        'ID LPAREN RPAREN')
@@ -77,7 +55,7 @@ class EinParser(Parser):
 
     @_('index_expr')
     def index_list(self, p):
-        il = IndexList([p.index_expr])
+        il = IndexList(p.index_expr)
         return il
 
     @_('index_list COMMA index_expr')
@@ -85,18 +63,26 @@ class EinParser(Parser):
         p.index_list.append(p.index_expr)
         return p.index_list
 
-    @_('ID', 'INT', 'slice', 'COLON', 'size_expr')
+    @_('INT', 'slice', 'star_node', 'size_expr', 'eintup', 'eintup_binop')
     def index_expr(self, p):
-        if hasattr(p, 'ID'):
-            return EinTup(self.cfg, p.ID)
-        elif hasattr(p, 'INT'):
+        if hasattr(p, 'INT'):
             return IntNode(p.INT)
-        elif hasattr(p, 'slice'):
-            return p.slice
-        elif hasattr(p, 'COLON'):
-            return StarNode(self.cfg) 
-        elif hasattr(p, 'size_expr'):
-            return p.size_expr
+        else:
+            return p[0]
+
+    @_('eintup PLUS eintup',
+       'eintup MINUS eintup',
+       'eintup TIMES eintup')
+    def eintup_binop(self, p):
+        return EinTupBinOp(p.eintup0, p.eintup1, p[1])
+
+    @_('ID')
+    def eintup(self, p):
+        return EinTup(self.cfg, p.ID)
+
+    @_('COLON')
+    def star_node(self, p):
+        return StarNode(self.cfg)
                        
     def parse(self, arg_string):
         return super().parse(self.lexer.tokenize(arg_string))

@@ -5,24 +5,27 @@ class ShapeConfig(object):
         self.arrays = {}
         self.tup = SliceTuple()
 
+    # called at program start
     def set_ranks(self, rank_map):
         self.tup.reset(rank_map)
 
+    # called at program start
     def init_arrays(self):
         for ary in self.arrays.values():
-            ary.update_dims(self.tup.dims_map)
+            ary.update_dims()
             ary.fill(0)
 
+    # called at statement start
     def prepare_for_statement(self, ast):
         indices = ast.get_indices()
         self.tup.set_indices(indices)
 
-    def maybe_add_array(self, name, sig):
+    def maybe_add_array(self, name, index_list):
         if name not in self.arrays:
-            self.arrays[name] = EinArray(sig)
+            self.arrays[name] = EinArray(name, index_list)
         return self.arrays[name]
 
-    def shape(self, name):
+    def dims(self, name):
         return self.tup.dims_map[name]
 
     def rank(self, name):
@@ -68,23 +71,23 @@ class SliceTuple(object):
         self._value = next(self.index, None)
         return self._value is not None
 
-    def length(self, name):
-        sl = self.slices[name]
-        return sl.stop - sl.start
-
     def value(self, name):
         return self._value[self.slices[name]]
 
-# Wrapper for an ndarray whose dims is defined by
-# sig and dims_map
+# Wrapper for an ndarray whose dims is defined by the index_list
 class EinArray(object):
-    def __init__(self, sig):
-        self.sig = sig
-        self.ary = np.empty((0,), dtype=np.float32)
+    def __init__(self, name, index_list):
+        self.name = name
+        self.index_list = index_list
+        self.ary = np.empty((0,), dtype=np.float64)
+        self.start_offset = (0,) 
 
     # may be called before or after the array is initialized
-    def update_dims(self, dims_map):
-        dims = sum([dims_map[i] for i in self.sig], [])
+    def update_dims(self):
+        mins = self.index_list.min()
+        maxs = self.index_list.max()
+        dims = list(h - l + 1 for l, h in zip(mins, maxs))
+        self.start_offset = mins
         self.ary.resize(dims, refcheck=False)
 
     def fill(self, val):
@@ -94,11 +97,15 @@ class EinArray(object):
         if dtype != self.ary.dtype:
             self.ary = self.ary.astype(dtype)
 
-    def __getitem__(self, idx):
-        return self.ary[idx]
+    def _idxadj(self, idx):
+        return tuple(None if i is None else i - o 
+                for i, o in zip(idx, self.start_offset))
 
-    def __setitem__(self, key, rhs):
-        self.ary[key] = rhs
+    def __getitem__(self, idx):
+        return self.ary[self._idxadj(idx)]
+
+    def __setitem__(self, idx, rhs):
+        self.ary[self._idxadj(idx)] = rhs
 
 
 
