@@ -1,0 +1,30 @@
+{
+  "program": [
+    "input[b,s,i] = RANDOM()",
+    "filters[f,i,o] = RANDOM()",
+    "output[b,s-f,o] = input[b,s,i] * filters[f,i,o]"
+  ],
+  "constraints": [
+    "RANK(s) >= 1",
+    "RANK(s) <= 3",
+    "RANK(s) == RANK(f)",
+    "DIMS(f) <= DIMS(s)",
+    "RANK(b) == 1",
+    "RANK(i) == 1",
+    "RANK(o) == RANK(i)",
+    "MIN(s-f) := 0",
+    "MAX(s-f) := DIMS(s) - DIMS(f)"
+  ],
+  "tfcall": {
+    "func": "tf.nn.convolution",
+    "args": {
+      "input": "input",
+      "filters": "filters"
+    },
+    "const-args": {
+      "padding": "VALID"
+    },
+    "return-value": "output"
+  }
+}
+

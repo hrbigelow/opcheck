@@ -14,11 +14,13 @@ def equal_tensors(a, b, eps):
             tf.reduce_all(tf.less_equal(tf.abs(a - b), eps))
             )
 
-
 def validate(cfg, json_entry):
     dat = json_entry['tfcall']
     argparser = ArgParser(cfg)
     kwargs = { k: argparser.parse(v).value() for k, v in dat['args'].items() }
+    if 'const-args' in dat:
+        kwargs.update(dat['const-args'])
+
     eintup_result = argparser.parse(dat['return-value']).value()
     func = eval(dat['func'])
     tf_result = func(**kwargs)
@@ -41,34 +43,39 @@ def run_programs(cfg, json_entry):
     for st in statements:
         st.add_range_constraints(range_defs)
 
-    indices = {ind for s in statements for ind in s.get_indices()}
+    indices = {ind for s in statements for ind in s.live_indices()}
+    indices = list(sorted(indices))
+
+    eintup_names = ','.join(indices)
+    print(f'{eintup_names} ranks\tValid?')
 
     for r in np.ndindex((10,) * len(indices)):
         rank_map = dict(zip(indices, r))
         cfg.set_ranks(rank_map)
+        for rt in rank_tests:
+            rt.prepare()
         if not all(c.value() for c in rank_tests):
             # print(f'skipping {rank_map}')
             continue
 
-        print(f'processing {rank_map}, dims: {cfg.tup.dims_map}')
-        cfg.init_arrays()
+        # print(f'processing {rank_map}, dims: {cfg.tup.dims_map}')
 
         for ast in statements:
             ast.evaluate()
             # cfg.print_array('indices')
         valid = validate(cfg, json_entry)
-        print(f'{rank_map}: {valid}')
+        rank_string = ','.join(str(rank_map[k]) for k in indices)
+        print(f'{rank_string}\t{valid}')
+        # print(f'{rank_map}: {valid}')
 
 
 
 if __name__ == '__main__':
     program_file = sys.argv[1]
-    op = sys.argv[2]
 
     with open(program_file, 'r') as fp:
-        programs = json.load(fp)
+        program = json.load(fp)
 
-    program = programs[op]
     cfg = ShapeConfig()
     run_programs(cfg, program)
 

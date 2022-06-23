@@ -9,15 +9,9 @@ class ShapeConfig(object):
     def set_ranks(self, rank_map):
         self.tup.reset(rank_map)
 
-    # called at program start
-    def init_arrays(self):
-        for ary in self.arrays.values():
-            ary.update_dims()
-            ary.fill(0)
-
     # called at statement start
     def prepare_for_statement(self, ast):
-        indices = ast.get_indices()
+        indices = ast.live_indices()
         self.tup.set_indices(indices)
 
     def maybe_add_array(self, name, index_list):
@@ -43,16 +37,19 @@ class ShapeConfig(object):
 class SliceTuple(object):
     # subranks is { b: 2, a: 3, ... }
     # a dictionary of the ranks of each tuple-ein index
-    def __init__(self):
+    def __init__(self, min_dim=2, max_dim=5):
         self._value = None
         self.slices = {}
         self.index = None
+        self.min_dim = min_dim
+        self.max_dim = max_dim
 
     # call when the rank map updates 
     def reset(self, rank_map):
         self.rank_map = rank_map
         self.dims_map = {
-            ind: [np.random.randint(2, 5) for _ in range(sz)] for ind, sz in
+            ind: [np.random.randint(self.min_dim, self.max_dim) 
+                for _ in range(sz)] for ind, sz in
             rank_map.items()
             }
 
@@ -88,7 +85,7 @@ class EinArray(object):
         maxs = self.index_list.max()
         dims = list(h - l + 1 for l, h in zip(mins, maxs))
         self.start_offset = mins
-        self.ary.resize(dims, refcheck=False)
+        self.ary.resize(dims)
 
     def fill(self, val):
         self.ary.fill(val)

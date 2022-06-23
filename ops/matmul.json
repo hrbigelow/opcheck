@@ -1,0 +1,22 @@
+{
+  "program": [
+    "mat1[b,r,i] = RANDOM(0, 10)",
+    "mat2[b,i,c] = RANDOM(0, 10)",
+    "result[b,r,c] = mat1[b,r,i] * mat2[b,i,c]"
+  ],
+  "tfcall": {
+    "func": "tf.linalg.matmul",
+    "args": {
+      "a": "mat1",
+      "b": "mat2"
+    },
+    "return-value": "result"
+  },
+  "constraints": [
+    "RANK(b) < 10",
+    "RANK(r) == 1",
+    "RANK(i) == 1",
+    "RANK(c) == 1"
+  ]
+}
+

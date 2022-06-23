@@ -19,14 +19,18 @@ class EinParser(Parser):
     def maybe_add_array(self, name, index_list):
         return self.cfg.maybe_add_array(name, index_list)
 
-    @_('slice ASSIGN slice')
+    @_('slice ASSIGN slice',
+       'slice ACCUM slice')
     def assignment(self, p):
-        return Assign(self.cfg, p.slice0, p.slice1)
+        fill_zero = hasattr(p, 'ASSIGN')
+        return Assign(self.cfg, p.slice0, p.slice1, fill_zero)
 
-    @_('slice ASSIGN call')
+    @_('slice ASSIGN call',
+       'slice ACCUM call')
     def assignment(self, p):
+        fill_zero = hasattr(p, 'ASSIGN')
         p.slice.maybe_convert(p.call.dtype)
-        return Assign(self.cfg, p.slice, p.call) 
+        return Assign(self.cfg, p.slice, p.call, fill_zero) 
 
     @_('slice PLUS slice',
        'slice MINUS slice',
@@ -66,7 +70,7 @@ class EinParser(Parser):
     @_('INT', 'slice', 'star_node', 'size_expr', 'eintup', 'eintup_binop')
     def index_expr(self, p):
         if hasattr(p, 'INT'):
-            return IntNode(p.INT)
+            return IntNode(self.cfg, p.INT)
         else:
             return p[0]
 

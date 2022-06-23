@@ -18,7 +18,7 @@ class ConsLexer(Lexer):
     LBRACK  = r'\['
     RBRACK  = r'\]'
     INT     = r'[0-9]+'
-    COMP = r'(<|>|>=|==|<=)'
+    COMP = r'(>=|>|<=|<|==)'
     ASSIGN = r':='
 
 class ConsParser(Parser):
@@ -41,14 +41,12 @@ class ConsParser(Parser):
     @_('MIN LPAREN eintup_binop RPAREN ASSIGN shape_access',
        'MAX LPAREN eintup_binop RPAREN ASSIGN shape_access')
     def range_constraint(self, p):
-        sig_string = p.eintup_binop.signature()
-        kind = p[0]
-        return RangeConstraint(sig_string, kind, p.shape_access)
+        return RangeConstraint(p.eintup_binop, p[0], p.shape_access)
 
     @_('shape_access PLUS shape_access',
        'shape_access MINUS shape_access')
     def shape_access(self, p):
-        return StaticBinOp(p.shape_access0, p.shape_access1, p[1])
+        return ArithmeticBinOp(p.shape_access0, p.shape_access1, p[1])
 
     @_('numeric', 'rank', 'dims', 'dims_access')
     def shape_access(self, p):
@@ -65,7 +63,7 @@ class ConsParser(Parser):
 
     @_('INT')
     def numeric(self, p):
-        return IntNode(p.INT)
+        return IntNode(self.cfg, p.INT)
 
     @_('RANK LPAREN ID RPAREN')
     def rank(self, p):

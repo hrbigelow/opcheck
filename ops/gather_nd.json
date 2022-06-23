@@ -1,0 +1,24 @@
+{
+  "program": [
+    "params[batch,elem] = RANDOM()",
+    "indices[batch,slice,coord] = RANDINT(0, DIMS(elem)[coord])",
+    "result[batch,slice] = params[batch,indices[batch,slice,:]]"
+  ],
+  "constraints": [
+    "RANK(batch) + RANK(slice) < 8",
+    "RANK(batch) + RANK(elem) < 8",
+    "RANK(elem) > 0",
+    "RANK(coord) == 1",
+    "DIMS(coord)[0] == RANK(elem)"
+  ],
+  "tfcall": {
+    "func": "tf.gather_nd",
+    "args": {
+      "params": "params",
+      "indices": "indices",
+      "batch_dims": "RANK(batch)"
+    },
+    "return-value": "result"
+  }
+}
+
