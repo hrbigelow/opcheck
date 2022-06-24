@@ -1,19 +1,19 @@
 {
   "program": [
-    "input[b,s,i] = RANDOM()",
-    "filters[f,i,o] = RANDOM()",
-    "output[b,s-f,o] = input[b,s,i] * filters[f,i,o]"
+    "input[batch,ipos,ichan] = RANDOM()",
+    "filters[fpos,ichan,ochan] = RANDOM()",
+    "output[batch,ipos-fpos,ochan] = input[batch,ipos,ichan] * filters[fpos,ichan,ochan]"
   ],
   "constraints": [
-    "RANK(s) >= 1",
-    "RANK(s) <= 3",
-    "RANK(s) == RANK(f)",
-    "DIMS(f) <= DIMS(s)",
-    "RANK(b) == 1",
-    "RANK(i) == 1",
-    "RANK(o) == RANK(i)",
-    "MIN(s-f) := 0",
-    "MAX(s-f) := DIMS(s) - DIMS(f)"
+    "RANK(ipos) >= 1",
+    "RANK(ipos) <= 3",
+    "RANK(ipos) == RANK(fpos)",
+    "DIMS(fpos) <= DIMS(ipos)",
+    "RANK(batch) == 1",
+    "RANK(ichan) == 1",
+    "RANK(ochan) == RANK(ichan)",
+    "MIN(ipos-fpos) := 0",
+    "MAX(ipos-fpos) := DIMS(ipos) - DIMS(fpos)"
   ],
   "tfcall": {
     "func": "tf.nn.convolution",

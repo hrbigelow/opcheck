@@ -1,8 +1,14 @@
 {
   "program": [
-    "mat1[b,r,i] = RANDOM(0, 10)",
-    "mat2[b,i,c] = RANDOM(0, 10)",
-    "result[b,r,c] = mat1[b,r,i] * mat2[b,i,c]"
+    "mat1[batch,row,inner] = RANDOM(0, 10)",
+    "mat2[batch,inner,col] = RANDOM(0, 10)",
+    "result[batch,row,col] = mat1[batch,row,inner] * mat2[batch,inner,col]"
+  ],
+  "constraints": [
+    "RANK(batch) < 10",
+    "RANK(row) == 1",
+    "RANK(inner) == 1",
+    "RANK(col) == 1"
   ],
   "tfcall": {
     "func": "tf.linalg.matmul",
@@ -11,12 +17,6 @@
       "b": "mat2"
     },
     "return-value": "result"
-  },
-  "constraints": [
-    "RANK(b) < 10",
-    "RANK(r) == 1",
-    "RANK(i) == 1",
-    "RANK(c) == 1"
-  ]
+  }
 }
 

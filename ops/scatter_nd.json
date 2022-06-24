@@ -1,20 +1,20 @@
 {
   "program": [
-    "indices[s,c] = RANDINT(0, DIMS(e)[c])",
-    "updates[s,f] = RANDOM()",
-    "tensor[e,f] = RANDOM()",
-    "intensor[e,f] = tensor[e,f]",
-    "tensor[indices[s,:],f] += updates[s,f]"
+    "indices[slice,coord] = RANDINT(0, DIMS(elem)[coord])",
+    "updates[slice,f] = RANDOM()",
+    "tensor[elem,f] = RANDOM()",
+    "intensor[elem,f] = tensor[elem,f]",
+    "tensor[indices[slice,:],f] += updates[slice,f]"
   ],
   "constraints": [
-    "RANK(c) == 1",
-    "RANK(s) < 8",
-    "RANK(s) > 0",
+    "RANK(coord) == 1",
+    "RANK(slice) < 8",
+    "RANK(slice) > 0",
     "RANK(f) > 0",
     "RANK(f) < 8",
-    "RANK(e) > 0",
-    "RANK(e) < 8",
-    "DIMS(c)[0] == RANK(e)"
+    "RANK(elem) > 0",
+    "RANK(elem) < 8",
+    "DIMS(coord)[0] == RANK(elem)"
   ],
   "tfcall": {
     "func": "tf.tensor_scatter_nd_add",
