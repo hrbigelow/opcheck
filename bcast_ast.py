@@ -2,28 +2,50 @@ import tensorflow as tf
 import enum
 
 class AST(object):
-    def __init__(self):
-        pass
+    def __init__(self, *children):
+        self.children = list(children)
 
     def get_inds(self):
-        return set()
+        return {ind for c in self.children for ind in c.get_inds()}
+
+    def split_perm(self, trg_inds, core_inds_unordered):
+        core_inds = [ ind for ind in trg_inds if ind in core_inds_unordered ]
+        bcast_inds = [ ind for ind in trg_inds if ind not in core_inds ]
+        n_core = len(core_inds)
+        if n_core != len(core_inds_unordered):
+            raise RuntimeError(
+                    f'split_perm: trg_inds ({trg_inds}) did not '
+                    f'contain all core indices ({core_inds})')
+
+        src_inds = core_inds + bcast_inds
+
+        # src_inds[perm[i]] = trg_inds[i]
+        perm = [ src_inds.index(ind) for ind in trg_inds ]
+        # perm = [ trg_inds.index(ind) for ind in src_inds ] 
+        return perm, n_core 
+
+    def flat_dims(self, inds):
+        return [ dim for ind in inds for dim in self.cfg.dims(ind) ]
+
+    def get_cardinality(self, *inds):
+        return [ self.cfg.nelem(ind) for ind in inds ]
 
     # core logic for broadcasting
-    def broadcast_shape(self, full_inds):
-        core_inds = list(filter(lambda e: e in self.get_inds(), full_inds))
-        def get_dim(ind):
+    def broadcast_shape(self, full_inds, core_inds):
+        dims = []
+        for ind in full_inds:
             if ind in core_inds:
-                return self.cfg.dims(ind) 
+                dims.extend(self.cfg.dims(ind))
             else:
-                return [1] * self.cfg.rank(ind)
-        bcast_dims = [ dim for ind in full_inds for dim in get_dim(ind) ]
-        return core_inds, bcast_dims
+                dims.extend([1] * self.cfg.rank(ind))
+        return dims
 
 
-class RandomCall(object):
+class RandomCall(AST):
     # apply a function pointwise to the materialized arguments
     # args can be: constant or array-like
     def __init__(self, cfg, min_expr, max_expr, dtype_string):
+        super().__init__(min_expr, max_expr)
         self.cfg = cfg
         if dtype_string == 'INT':
             self.dtype = tf.int32
@@ -34,28 +56,31 @@ class RandomCall(object):
         self.min_expr = min_expr
         self.max_expr = max_expr
 
-    def evaluate(self, ind_list):
-        slice_inds = self.min_expr.get_inds().union(self.max_expr.get_inds())
-        lead_shape = [ dim for ind in slice_inds for dim in self.cfg.dims(ind) ]
+    def evaluate(self, full_inds):
+        core_inds = self.get_inds()
+        perm, n_core = self.split_perm(full_inds, core_inds)
+        card = self.get_cardinality(*(full_inds[p] for p in perm))
+        full_dims = self.flat_dims(full_inds) 
 
-        # trailing shape
-        bcast_inds = set(ind_list).difference(slice_inds)
-        bcast_shape = [ dim for ind in bcast_inds for dim in self.cfg.dims(ind) ]
         results = []
-        print(f'slice_inds: {slice_inds}, bcast_inds: {bcast_inds}')
-        ordered_inds = sorted(slice_inds)
-        for _ in self.cfg.cycle(*ordered_inds):
+        # print(f'core_inds: {core_inds}, bcast_inds: {bcast_inds}')
+        for _ in self.cfg.cycle(*core_inds):
             slc = tf.random.uniform(
-                    shape=bcast_shape,
+                    shape=card[n_core:], # materialized broadcast
                     minval=self.min_expr.value(),
                     maxval=self.max_expr.value(),
                     dtype=self.dtype)
             results.append(slc)
+
         ten = tf.stack(results)
-        ten = tf.reshape(ten, lead_shape + bcast_shape)
+        ten = tf.reshape(ten, card)
+        ten = tf.transpose(ten, perm)
+        ten = tf.reshape(ten, full_dims) 
         return ten
 
 class RangeExpr(AST):
+    # Problem: no good way to instantiate 'children' here since
+    # the eintup's are just strings
     # RANGE[s, c], with s the key_eintup, and c the 1-D last_eintup
     def __init__(self, cfg, key_eintup, last_eintup):
         super().__init__()
@@ -69,18 +94,35 @@ class RangeExpr(AST):
                     f' must have rank 1.  Got {self.cfg.rank(self.last_ind)}')
         if self.cfg.dims(self.last_ind)[0] != self.cfg.rank(self.key_ind):
             raise RuntimeError(f'RangeExpr: last EinTup \'{self.last_ind}\''
-                    f' must have dimension equal to rank of key EinTup.')
-
-    def evaluate(self, full_inds):
-        core_inds, bcast_shape = self.broadcast_shape(full_inds)
-        ranges = tf.meshgrid(
-                *[tf.range(e) for e in self.cfg.dims(self.key_ind)]
-                )
-        ndrange = tf.stack(ranges, axis=self.cfg.rank(self.key_ind))
-        return tf.reshape(ndrange, bcast_shape)
+                    f' must have dimension equal to rank of key EinTup '
+                    f'\'{self.key_ind}\'')
 
     def get_inds(self):
         return {self.key_ind, self.last_ind}
+
+    def evaluate(self, trg_inds):
+        core_inds_unordered = self.get_inds()
+        perm, n_core = self.split_perm(trg_inds, core_inds_unordered)
+        n_inds = len(trg_inds)
+        n_bcast = n_inds - n_core
+        src_inds = [None] * n_inds 
+        for i in range(n_inds):
+            src_inds[perm[i]] = trg_inds[i]
+
+        core_inds = src_inds[:n_core]
+        card = self.get_cardinality(*core_inds)
+        ranges = [tf.range(e) for e in self.cfg.dims(self.key_ind)]
+        ranges = tf.meshgrid(*ranges, indexing='ij')
+
+        trg_dims = self.broadcast_shape(trg_inds, core_inds)
+
+        # ndrange.shape = DIMS(self.key_ind) + DIMS(self.last_ind)
+        # these two should also be consecutive in trg_inds
+        ndrange = tf.stack(ranges, axis=self.cfg.rank(self.key_ind))
+        ndrange = tf.reshape(ndrange, card + [1] * n_bcast)
+        ndrange = tf.transpose(ndrange, perm)
+        ndrange = tf.reshape(ndrange, trg_dims)
+        return ndrange
 
 
 class IntExpr(AST):
@@ -179,7 +221,16 @@ if __name__ == '__main__':
     dims = Dims(cfg, 'slice', 'coord')
     dims.prepare()
     rc = RandomCall(cfg, IntExpr(0), dims, 'INT')
-    ten = rc.evaluate(['slice'])
+    ten = rc.evaluate(['slice', 'coord'])
+    # print(ten)
+    # print(ten.shape)
+    # print(cfg.tups)
+
+    cfg.set_ranks({'batch': 3, 'slice': 3, 'coord': 1})
+    cfg.tups['coord'].dims[0] = 3  
+    rng = RangeExpr(cfg, 'batch', 'coord')
+    rng.prepare()
+    ten = rng.evaluate(['slice', 'batch', 'coord'])
     print(ten)
     print(ten.shape)
     print(cfg.tups)
