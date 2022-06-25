@@ -5,8 +5,8 @@ from bcast_ast import *
 class BCLexer(Lexer):
     # Set of token names.   This is always required
     tokens = { ID, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES, DIVIDE,
-            INT, ASSIGN, ACCUM, COMMA, COLON, DIMS, RANGE, RANK, RANDOM, MIN,
-            MAX, DTYPE }
+            INT, COMP, ASSIGN, ACCUM, COMMA, COLON, DIMS, RANGE, RANK, RANDOM,
+            MIN, MAX, DTYPE }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -16,6 +16,7 @@ class BCLexer(Lexer):
     COMMA   = r','
     COLON   = r':'
     INT     = r'[0-9]+'
+    COMP = r'(>=|>|<=|<|==)'
     ASSIGN  = r'='
     ACCUM   = r'\+='
     LPAREN  = r'\('
@@ -59,14 +60,14 @@ class BCParser(Parser):
     def set_argument_mode(self):
         self.mode = ParserMode.Argument
 
-    @_('constraint', 'statement', 'argument')
+    @_('argument', 'constraint', 'statement')
     def toplevel(self, p):
+        elif self.mode == ParserMode.Argument and hasattr(p, 'argument'):
+            return p.argument
         if self.mode == ParserMode.Constraint and hasattr(p, 'constraint'):
             return p.constraint
         elif self.mode == ParserMode.Statement and hasattr(p, 'statement'):
             return p.statement
-        elif self.mode == ParserMode.Argument and hasattr(p, 'argument'):
-            return p.argument
         else:
             raise RuntimeError('Parse Error at top level')
 
@@ -74,26 +75,39 @@ class BCParser(Parser):
     def argument(self, p):
         return TensorArg(self.cfg, p.ID)
     
-    @_('shape_test',
-       'tup_limit')
+    @_('shape_test', 'tup_limit')
     def constraint(self, p):
-        pass
+        return p[0]
+
+    @_('lval_array ASSIGN rval_expr',
+       'lval_array ACCUM rval_expr')
+    def statement(self, p):
+        do_accum = hasattr(p, 'ACCUM')
+        return Assign(p.lval_array, p.rval_expr, do_accum)
 
     @_('shape_expr COMP shape_expr')
     def shape_test(self, p):
         return LogicalOp(p.shape_expr0, p.shape_expr1, p.COMP)
 
-    @_('limit_expr ASSIGN shape')
+    @_('limit_type LPAREN tup_expr RPAREN ASSIGN shape_expr')
     def tup_limit(self, p):
-        pass
+        return RangeConstraint(p.tup_expr, p.limit_type, p.shape_expr)
+
+    @_('MIN', 'MAX')
+    def limit_type(self, p):
+        return p[0]
 
     @_('shape',
-       'shape OP shape')
+       'shape_expr arith_five_op shape')
     def shape_expr(self, p):
-        if hasattr(p, 'OP'):
-            return ArithmeticBinOp(p.shape0, p.shape1, p[1])
+        if hasattr(p, 'arith_five_op'):
+            return ArithmeticBinOp(p.shape_expr, p.shape, p.arith_five_op)
         else:
             return p.shape
+
+    @_('PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'TRUEDIV')
+    def arith_five_op(self, p):
+        return p[0]
 
     @_('integer', 'rank', 'dims_colon', 'dims_int')
     def shape(self, p):
@@ -103,37 +117,29 @@ class BCParser(Parser):
     def integer(self, p):
         return IntExpr(p.INT)
 
-    @_('RANK LPAREN ID RPAREN')
+    @_('RANK LPAREN tup_name RPAREN')
     def rank(self, p):
-        return Rank(self.cfg, p.ID)
+        return Rank(self.cfg, p.tup_name)
 
-    @_('DIMS LPAREN ID RPAREN LBRACK COLON RBRACK')
+    @_('DIMS LPAREN tup_name RPAREN LBRACK COLON RBRACK')
     def dims_colon(self, p):
-        return Dims(self.cfg, p.ID, p.COLON) 
+        return Dims(self.cfg, p.tup_name, p.COLON) 
 
-    @_('DIMS LPAREN ID RPAREN LBRACK INT RBRACK')
+    @_('DIMS LPAREN tup_name RPAREN LBRACK INT RBRACK')
     def dims_int(self, p):
-        return Dims(self.cfg, p.ID, p.INT)
+        return Dims(self.cfg, p.tup_name, p.INT)
 
-    @_('limit_type LPAREN simple_index_expr RPAREN ASSIGN shape_expr')
-    def range_constraint(self, p):
-        return RangeConstraint(p.simple_index_expr, p.limit_type, p.shape_expr)
+    @_('DIMS LPAREN tup_name RPAREN LBRACK tup_name RBRACK')
+    def dims_index(self, p):
+        return Dims(self.cfg, p.tup_name0, p.tup_name1)
 
-    @_('MIN', 'MAX')
-    def limit_type(self, p):
-        return p[0]
-
-    @_('ID',
-       'simple_index_expr OP ID')
-    def simple_index_expr(self, p):
-        pass
-
-# ----------------------------------
-    @_('lval_array ASSIGN rval_expr',
-       'lval_array ACCUM rval_expr')
-    def statement(self, p):
-        do_accum = hasattr(p, 'ACCUM')
-        return Assign(p.lval_array, p.rval_expr, do_accum)
+    @_('tup_name',
+       'tup_expr arith_five_op tup_name')
+    def tup_expr(self, p):
+        if hasattr(p, 'arith_five_op'):
+            return ArithmeticBinOp(p.tup_expr, p.tup_name, p.arith_five_op)
+        else:
+            return p.tup_name
 
     @_('ID LBRACK index_list RBRACK')
     def lval_array(self, p):
@@ -146,28 +152,28 @@ class BCParser(Parser):
         return p[0]
 
     @_('rval_unit',
-       'rval_unit oper rval_unit')
+       'rval_unit arith_four_op rval_unit')
     def rval_expr(self, p):
-        if hasattr(p, 'oper'):
-            return ArrayBinOp(p.rval_unit0, p.rval_unit1, p.oper)
+        if hasattr(p, 'arith_four_op'):
+            return ArrayBinOp(p.rval_unit0, p.rval_unit1, p.arith_four_op)
         else:
             return p.rval_unit
 
     @_('PLUS', 'MINUS', 'TIMES', 'DIVIDE')
-    def oper(self, p):
+    def arith_four_op(self, p):
         return p[0]
 
-    @_('ID LBRACK star_index_list RBRACK')
+    @_('array_name LBRACK star_index_list RBRACK')
     def rval_array(self, p):
-        return RValueArray(self.cfg, p.ID, p.star_index_list)
+        return RValueArray(self.cfg, p.array_name, p.star_index_list)
 
     @_('RANDOM LPAREN array_slice COMMA array_slice COMMA DTYPE RPAREN')
     def rand_call(self, p):
         return RandomCall(self.cfg, p.array_slice0, p.array_slice1, p.DTYPE)
 
-    @_('RANGE LBRACK ID COMMA ID RBRACK')
+    @_('RANGE LBRACK tup_name COMMA tup_name RBRACK')
     def range_array(self, p):
-        return RangeExpr(self.cfg, p.ID0, p.ID1)
+        return RangeExpr(self.cfg, p.tup_name0, p.tup_name1)
 
     @_('index_expr', 
        'index_list COMMA index_expr')
@@ -177,24 +183,13 @@ class BCParser(Parser):
         else:
             return [p.index_expr]
 
-    @_('ID',
-       'array_slice')
+    @_('ID', 'array_slice')
     def index_expr(self, p):
         return p[0]
 
-    @_('DIMS LPAREN ID RPAREN LBRACK star_or_index RBRACK',
-       'RANK LPAREN ID RPAREN',
-       'INT',
-       'ID LBRACK star_index_list RBRACK')
+    @_('integer', 'rank', 'dims_index', 'dims_colon', 'rval_array')
     def array_slice(self, p):
-        if hasattr(p, 'DIMS'):
-            return Dims(self.cfg, p.ID, p.star_or_index) 
-        elif hasattr(p, 'RANK'):
-            return Rank(self.cfg, p.ID)
-        elif hasattr(p, 'INT'):
-            return IntExpr(p.INT)
-        else:
-            return RValueArray(self.cfg, p.ID, p.star_index_list)
+        return p[0]
 
     @_('star_index_expr',
        'star_index_list COMMA star_index_expr')
@@ -204,15 +199,21 @@ class BCParser(Parser):
         else:
             return [p.star_index_expr]
 
-    @_('ID',
-       'COLON')
+    @_('star_or_index', 'array_slice')
+    def star_index_expr(self, p):
+        return p[0]
+
+    @_('ID', 'COLON')
     def star_or_index(self, p):
         return p[0]
 
-    @_('star_or_index',
-       'array_slice')
-    def star_index_expr(self, p):
-        return p[0]
+    @_('ID')
+    def array_name(self, p):
+        return p.ID
+
+    @_('ID')
+    def tup_name(self, p):
+        return p.ID
 
     def parse(self, arg_string):
         return super().parse(self.lexer.tokenize(arg_string))

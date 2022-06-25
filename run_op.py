@@ -2,7 +2,7 @@ import sys
 import json
 import tensorflow as tf
 import numpy as np
-from bcast_parser import BCParser
+from bcast_parse import BCParser
 from config import Config
 from bcast_ast import RangeConstraint, LogicalOp
 
