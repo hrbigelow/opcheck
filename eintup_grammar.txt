@@ -1,0 +1,38 @@
+assignment := lval_array = rval_expr
+
+lval_array := ID [ index_list ]
+
+
+rval_expr  := rval_unit
+           |  rval_unit OP rval_unit
+
+rval_unit  := rval_array
+           |  rand_call
+           |  range_array
+
+rval_array := ID [ index_list ]
+
+rand_call  := RANDOM ( array_slice, array_slice, DTYPE ) 
+
+range_array := RANGE [ ID, ID ]
+
+index_list := index_expr
+           |  index_list , index_expr
+
+index_expr := ID
+           |  array_slice
+
+array_slice := ID [ star_index_list ]
+            |  DIMS ( ID ) [ ID ]
+            |  RANK ( ID ) 
+            |  INT
+
+star_index_list := star_index_expr
+                |  star_index_list , star_index_expr
+
+star_index_expr := ID
+                | COLON
+                | array_slice
+
+
+

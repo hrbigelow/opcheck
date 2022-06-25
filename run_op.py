@@ -2,10 +2,10 @@ import sys
 import json
 import tensorflow as tf
 import numpy as np
-from ein_parser import EinParser
+from bcast_parser import BCParser
+from config import Config
 from arg_parser import ArgParser
 from constraint_parser import ConsParser
-from ein_array import ShapeConfig
 from ein_ast import RangeConstraint, LogicalOp
 
 def equal_tensors(a, b, eps):
@@ -37,8 +37,8 @@ def run_programs(cfg, json_entry):
         LogicalOp) ]
 
     program = json_entry['program']
-    einparser = EinParser(cfg)
-    statements = [ einparser.parse(st) for st in program ]
+    bcparser = BCParser(cfg)
+    statements = [ bcparser.parse(st) for st in program ]
 
     for st in statements:
         st.add_range_constraints(range_defs)
@@ -76,7 +76,7 @@ if __name__ == '__main__':
     with open(program_file, 'r') as fp:
         program = json.load(fp)
 
-    cfg = ShapeConfig()
+    cfg = Config()
     run_programs(cfg, program)
 
 

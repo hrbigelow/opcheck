@@ -1,9 +1,25 @@
 import tensorflow as tf
 import enum
+import re
+
+def valid_eintup_name(name):
+    return re.fullmatch('[a-z]+', name)
 
 class AST(object):
     def __init__(self, *children):
         self.children = list(children)
+
+    def __repr__(self):
+        indent_str = '  '
+        child_reprs = [repr(c) for c in self.children]
+        def indent(mls):
+            return '\n'.join(indent_str + l for l in mls.split('\n'))
+        this = self.__class__.__name__
+        if hasattr(self, 'name'):
+            this += f'({self.name})'
+
+        child_repr = '\n'.join(indent(cr) for cr in child_reprs)
+        return this + '\n' + child_repr
 
     def get_inds(self):
         return {ind for c in self.children for ind in c.get_inds()}
@@ -83,7 +99,7 @@ class RangeExpr(AST):
     # the eintup's are just strings
     # RANGE[s, c], with s the key_eintup, and c the 1-D last_eintup
     def __init__(self, cfg, key_eintup, last_eintup):
-        super().__init__()
+        super().__init__(key_eintup, last_eintup)
         self.cfg = cfg
         self.key_ind = key_eintup
         self.last_ind = last_eintup
@@ -124,11 +140,132 @@ class RangeExpr(AST):
         ndrange = tf.reshape(ndrange, trg_dims)
         return ndrange
 
+class ArrayBinOp(AST):
+    def __init__(self, lhs, rhs, op_string):
+        super().__init__(lhs, rhs)
+        # TODO: expand to include Dims, Rank, IntExpr, and add evaluate()
+        # methods to those classes
+        assert(isinstance(lhs, (RangeExpr, RandomCall, RightArray)))
+        assert(isinstance(rhs, (RangeExpr, RandomCall, RightArray)))
+        self.lhs = lhs
+        self.rhs = rhs
+        ops = [ tf.add, tf.subtract, tf.multiply, tf.divide ]
+        self.op = dict(zip('+-*/', ops))[op_string]
+
+    def evaluate(self):
+        # TODO: optimize index ordering
+        trg_inds = self.get_inds()
+        lval = self.lhs.evaluate(trg_inds)
+        rval = self.rhs.evaluate(trg_inds)
+        return self.op(lval, rval)
+
+class RValueArray(AST):
+    # Represents a mention of a persistent array on the right-hand-side
+    def __init__(self, cfg, name, index_list):
+        super().__init__(*index_list)
+        self.cfg = cfg
+        self.name = name
+        self.index_list = index_list
+
+    def evaluate(self, trg_inds):
+        pass
+
+class LValueArray(AST):
+    # represents an array expression being assigned to
+    def __init__(self, cfg, array_name, index_list):
+        super().__init__(*index_list)
+        self.name = array_name
+        self.cfg = cfg
+        self.has_slice_index = False
+        is_first_init = (array_name not in self.cfg.array_sig)
+
+        # check validity of all names in the index_list
+        seen = set()
+        for et in index_list:
+            if not isinstance(et, str):
+                if is_first_init:
+                    raise RuntimeError(
+                        f'first initialization of \'{array_name}\' must have '
+                        f'an index list of only EinTup names.  Got \'{et}\'')
+                continue
+            if not valid_eintup_name(et):
+                raise RuntimeError(
+                    f'first mention of array \'{array_name}\' has invalid eintup '
+                    f'name \'{et}\'')
+            if et in seen:
+                raise RuntimeError(
+                    f'Eintup name \'{et}\' appears twice in index list')
+            seen.add(et)
+
+        if is_first_init:
+            self.cfg.array_sig = index_list
+            for et in index_list:
+                self.cfg.maybe_add_tup(et)
+
+        else:
+            # check for consistent shapes.  only an eintup or an RValueArray
+            # slice is allowed
+            for sig, call in zip(self.cfg.array_sig[name], index_list):
+                if isinstance(call, RValueArray):
+                    self.has_slice_index = True
+                    # check consistent shape.  how to check for out-of-bounds?
+                    pass
+                else:
+                    if call not in self.cfg.tups:
+                        raise RuntimeError(
+                            f'LValueArray index expression \'{call}\' not '
+                            f'an existing EinTup name, but this is not '
+                            'the first array call')
+                    if not self.cfg.tup(call).same_shape_as(self.cfg.tup(sig)):
+                        raise RuntimeError(
+                            f'Signature of array \'{self.name}\' is \'{sig}\''
+                            f' but attempting to use \'{call}\' in place of it'
+                            f' which does not have the same shape')
+
+        self.index_list = index_list
+
+    def assign(self, rhs):
+        if self.has_slice_index:
+            raise NotImplementedError
+            # need to use tf.scatter
+        else:
+            trg_inds = self.index_list
+            val = rhs.evaluate(trg_inds)
+            self.cfg.arrays[self.array_name] = val
+
+    def add(self, rhs):
+        if self.array_name not in self.cfg.arrays:
+            raise RuntimeError(
+                f'Cannot do += on first mention of array \'{self.array_name}\''
+                )
+
+        if self.has_slice_index:
+            raise NotImplementedError
+            # use tf.scatter
+        else:
+            trg_inds = self.index_list
+            val = rhs.evaluate(trg_inds)
+            prev = self.cfg.arrays[self.array_name]
+            self.cfg.arrays[self.array_name] = tf.add(prev, val)
+
+class Assign(AST):
+    def __init__(self, lhs, rhs, do_accum=False):
+        super().__init__(lhs, rhs)
+        self.lhs = lhs
+        self.rhs = rhs
+        self.do_accum = do_accum
+
+    def evaluate(self):
+        if self.do_accum:
+            self.lhs.add(self.rhs)
+        else:
+            self.lhs.assign(self.rhs)
+
 
 class IntExpr(AST):
     def __init__(self, val):
         super().__init__()
-        self.val = val
+        self.val = int(val)
 
     def value(self):
         return self.val
@@ -136,7 +273,7 @@ class IntExpr(AST):
 
 class Rank(AST):
     def __init__(self, cfg, arg):
-        super().__init__()
+        super().__init__(arg)
         self.cfg = cfg
         self.ein_arg = arg
 
@@ -216,6 +353,7 @@ class Dims(AST):
 if __name__ == '__main__':
     import config
     cfg = config.Config(5, 10)
+    """
     cfg.set_ranks({'batch': 2, 'slice': 3, 'coord': 1})
     cfg.tups['coord'].dims[0] = 3  
     dims = Dims(cfg, 'slice', 'coord')
@@ -225,6 +363,7 @@ if __name__ == '__main__':
     # print(ten)
     # print(ten.shape)
     # print(cfg.tups)
+    """
 
     cfg.set_ranks({'batch': 3, 'slice': 3, 'coord': 1})
     cfg.tups['coord'].dims[0] = 3  
