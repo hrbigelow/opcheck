@@ -53,8 +53,8 @@ class AST(object):
         n_core = len(core_inds)
         if n_core != len(core_inds_unordered):
             raise RuntimeError(
-                    f'split_perm: trg_inds ({trg_inds}) did not '
-                    f'contain all core indices ({core_inds})')
+                f'split_perm: trg_inds ({trg_inds}) did not '
+                f'contain all core indices ({core_inds})')
 
         src_inds = core_inds + bcast_inds
 
@@ -79,6 +79,35 @@ class AST(object):
                 dims.extend([1] * self.cfg.rank(ind))
         return dims
 
+    # reshape / transpose ten, with starting shape src_sig,
+    # to be broadcastable to trg_sig 
+    def layout_to_sig(ten, src_sig, trg_sig):
+        if not set(src_sig).issubset(trg_sig):
+            raise RuntimeError(
+                f'Source signature must be a subset of target signature.'
+                f'Got src_sig {src_sig} and trg_sig {trg_sig}')
+
+        perm, n_core = self.split_perm(trg_sig, src_sig)
+        card = self.get_cardinality(*(trg_sig[p] for p in perm))
+        trg_dims = self.broadcast_shape(trg_sig, src_sig) 
+
+        if ten.shape != self.flat_dims(src_sig):
+            raise RuntimeError(
+                f'Tensor shape {ten.shape} not consistent with '
+                f'signature shape {self.flat_dims(src_sig)}')
+
+        # condense tensor dim groups to src_sig cardinality 
+        ten = tf.reshape(ten, card[:n_core])
+
+        # permute to desired target signature
+        ten = tf.transpose(ten, perm)
+
+        # expand cardinalities to individual dims
+        ten = tf.reshape(ten, trg_dims) 
+
+        return ten
+
+
 
 class RandomCall(AST):
     # apply a function pointwise to the materialized arguments
@@ -100,15 +129,15 @@ class RandomCall(AST):
         return (f'RandomCall({repr(self.min_expr)}, ' +
                 f'{repr(self.max_expr)}, {self.dtype_string})')
 
-    def evaluate(self, full_inds):
-        core_inds = self.get_inds()
-        perm, n_core = self.split_perm(full_inds, core_inds)
-        card = self.get_cardinality(*(full_inds[p] for p in perm))
-        full_dims = self.flat_dims(full_inds) 
+    def evaluate(self, trg_sig):
+        src_sig = self.get_inds()
+        perm, n_core = self.split_perm(trg_sig, src_sig)
+        card = self.get_cardinality(*(trg_sig[p] for p in perm))
+        trg_dims = self.flat_dims(trg_sig) 
 
         results = []
-        # print(f'core_inds: {core_inds}, bcast_inds: {bcast_inds}')
-        for _ in self.cfg.cycle(*core_inds):
+        # print(f'src_sig: {src_sig}, bcast_sig: {bcast_sig}')
+        for _ in self.cfg.cycle(*src_sig):
             slc = tf.random.uniform(
                     shape=card[n_core:], # materialized broadcast
                     minval=self.min_expr.value(),
@@ -119,7 +148,7 @@ class RandomCall(AST):
         ten = tf.stack(results)
         ten = tf.reshape(ten, card)
         ten = tf.transpose(ten, perm)
-        ten = tf.reshape(ten, full_dims) 
+        ten = tf.reshape(ten, trg_dims) 
         return ten
 
 class RangeExpr(AST):
@@ -147,29 +176,35 @@ class RangeExpr(AST):
     def get_inds(self):
         return {self.key_ind, self.last_ind}
 
-    def evaluate(self, trg_inds):
-        core_inds_unordered = self.get_inds()
-        perm, n_core = self.split_perm(trg_inds, core_inds_unordered)
-        n_inds = len(trg_inds)
+    def evaluate(self, trg_sig):
+        src_sig = [self.key_ind, self.last_ind]
+        ten = [tf.range(e) for e in self.cfg.dims(self.key_ind)]
+        ten = tf.meshgrid(*ranges, indexing='ij')
+        ten = tf.stack(ranges, axis=self.cfg.rank(self.key_ind))
+
+        return self.layout_to_sig(ten, src_sig, trg_sig)
+
+        """
+        core_sig_unordered = self.get_inds()
+        perm, n_core = self.split_perm(trg_sig, core_sig_unordered)
+        n_inds = len(trg_sig)
         n_bcast = n_inds - n_core
-        src_inds = [None] * n_inds 
+        src_sig = [None] * n_inds 
         for i in range(n_inds):
-            src_inds[perm[i]] = trg_inds[i]
+            src_sig[perm[i]] = trg_sig[i]
 
         core_inds = src_inds[:n_core]
         card = self.get_cardinality(*core_inds)
-        ranges = [tf.range(e) for e in self.cfg.dims(self.key_ind)]
-        ranges = tf.meshgrid(*ranges, indexing='ij')
 
         trg_dims = self.broadcast_shape(trg_inds, core_inds)
 
         # ndrange.shape = DIMS(self.key_ind) + DIMS(self.last_ind)
         # these two should also be consecutive in trg_inds
-        ndrange = tf.stack(ranges, axis=self.cfg.rank(self.key_ind))
         ndrange = tf.reshape(ndrange, card + [1] * n_bcast)
         ndrange = tf.transpose(ndrange, perm)
         ndrange = tf.reshape(ndrange, trg_dims)
         return ndrange
+        """
 
 class ArrayBinOp(AST):
     def __init__(self, lhs, rhs, op_string):
@@ -219,8 +254,15 @@ class RValueArray(AST):
         z = zip(self.cfg.array_sig[self.name], self.index_list) 
         return [ tup for tup, call in z if call == STAR ]
 
-    def evaluate(self, trg_inds):
-        raise NotImplementedError
+    def evaluate(self, trg_sig):
+        if self.name not in self.cfg.arrays:
+            raise RuntimeError(
+                f'RValueArray {self.name} called evaluate() but '
+                f'array is not materialized')
+        src_sig = self.cfg.array_sig[self.name]
+        ten = self.cfg.arrays[self.name]
+        ten = self.layout_to_sig(ten, src_sig, trg_sig)
+        return ten
 
 class LValueArray(AST):
     # represents an array expression being assigned to
@@ -300,27 +342,32 @@ class Assign(AST):
         else:
             self.lhs.assign(self.rhs)
 
+class ScalarExpr(AST):
+    def __init__(self):
+        super().__init__()
 
-class IntExpr(AST):
+    def __repr__(self):
+        return f'{self.__class__.__name__}({self.value()})'
+
+    def evaluate(self, trg_sig):
+        src_sig = []
+        ten = tf.constant(self.value())
+        return self.layout_to_sig(ten, src_sig, trg_sig)
+
+class IntExpr(ScalarExpr):
     def __init__(self, val):
         super().__init__()
         self.val = int(val)
-
-    def __repr__(self):
-        return f'IntExpr({self.val})'
 
     def value(self):
         return self.val
 
 
-class Rank(AST):
+class Rank(ScalarExpr):
     def __init__(self, cfg, arg):
         super().__init__(arg)
         self.cfg = cfg
         self.ein_arg = arg
-
-    def __repr__(self):
-        return f'Rank({self.ein_arg})'
 
     def prepare(self):
         if self.ein_arg not in self.cfg.tups:
@@ -368,15 +415,25 @@ class Dims(AST):
                 f' {self.cfg.dims(self.ein_ind)[0]} exceeds '
                 f'{len(self.cfg.dims(self.ein_arg))}')
 
+    def evaluate(self, trg_sig):
+        if self.kind != DimKind.Index:
+            raise RuntimeError(
+                f'Only {DimKind.Index.value} Dims can call evaluate()')
+        src_sig = self.get_inds()
+        ten = tf.constant(self.value())
+        ten = self.layout_to_sig(ten, src_sig, trg_sig)
+        return ten
+
     def value(self):
+        if self.kind == DimKind.Index:
+            raise RuntimeError(
+                f'Cannot call value() on a {DimKind.Index.value} Dims')
+
         d = self.cfg.dims(self.ein_arg)
         if self.kind == DimKind.Star:
             return d
         elif self.kind == DimKind.Int:
             return d[self.index]
-        else:
-            ein_val = self.cfg.tups[self.ein_ind].value()
-            return d[ein_val[0]]
     
     def get_inds(self):
         if self.kind == DimKind.Index:

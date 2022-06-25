@@ -191,7 +191,7 @@ class BCParser(Parser):
     def index_expr(self, p):
         return p[0]
 
-    @_('integer', 'rank', 'dims_index', 'dims_star', 'rval_array')
+    @_('integer', 'rank', 'dims_index', 'rval_array')
     def array_slice(self, p):
         return p[0]
 
