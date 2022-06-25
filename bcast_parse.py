@@ -5,8 +5,8 @@ from bcast_ast import *
 class BCLexer(Lexer):
     # Set of token names.   This is always required
     tokens = { ID, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES, DIVIDE,
-            INT, COMP, ASSIGN, ACCUM, COMMA, COLON, DIMS, RANGE, RANK, RANDOM,
-            MIN, MAX, DTYPE }
+            TRUEDIV, INT, COMP, ASSIGN, ACCUM, COMMA, COLON, DIMS, RANGE, RANK,
+            RANDOM, MIN, MAX, DTYPE }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -26,6 +26,7 @@ class BCLexer(Lexer):
     PLUS    = r'\+'
     MINUS   = r'\-'
     TIMES   = r'\*'
+    TRUEDIV = r'\/\/'
     DIVIDE  = r'\/'
     DIMS    = 'DIMS'
     RANGE   = 'RANGE'
@@ -62,9 +63,9 @@ class BCParser(Parser):
 
     @_('argument', 'constraint', 'statement')
     def toplevel(self, p):
-        elif self.mode == ParserMode.Argument and hasattr(p, 'argument'):
+        if self.mode == ParserMode.Argument and hasattr(p, 'argument'):
             return p.argument
-        if self.mode == ParserMode.Constraint and hasattr(p, 'constraint'):
+        elif self.mode == ParserMode.Constraint and hasattr(p, 'constraint'):
             return p.constraint
         elif self.mode == ParserMode.Statement and hasattr(p, 'statement'):
             return p.statement
@@ -109,7 +110,7 @@ class BCParser(Parser):
     def arith_five_op(self, p):
         return p[0]
 
-    @_('integer', 'rank', 'dims_colon', 'dims_int')
+    @_('integer', 'rank', 'dims_star', 'dims_int')
     def shape(self, p):
         return p[0]
 
@@ -122,16 +123,16 @@ class BCParser(Parser):
         return Rank(self.cfg, p.tup_name)
 
     @_('DIMS LPAREN tup_name RPAREN LBRACK COLON RBRACK')
-    def dims_colon(self, p):
-        return Dims(self.cfg, p.tup_name, p.COLON) 
+    def dims_star(self, p):
+        return Dims(self.cfg, p.tup_name, DimKind.Star) 
 
     @_('DIMS LPAREN tup_name RPAREN LBRACK INT RBRACK')
     def dims_int(self, p):
-        return Dims(self.cfg, p.tup_name, p.INT)
+        return Dims(self.cfg, p.tup_name, DimKind.Int, p.INT)
 
     @_('DIMS LPAREN tup_name RPAREN LBRACK tup_name RBRACK')
     def dims_index(self, p):
-        return Dims(self.cfg, p.tup_name0, p.tup_name1)
+        return Dims(self.cfg, p.tup_name0, DimKind.Index, p.tup_name1)
 
     @_('tup_name',
        'tup_expr arith_five_op tup_name')
@@ -146,16 +147,19 @@ class BCParser(Parser):
         return LValueArray(self.cfg, p.ID, p.index_list)
 
     @_('rval_array', 
-       'rand_call', 
-       'range_array')
+       'rand_call',
+       'range_array',
+       'dims_int',
+       'dims_index',
+       'integer')
     def rval_unit(self, p):
         return p[0]
 
     @_('rval_unit',
-       'rval_unit arith_four_op rval_unit')
+       'rval_expr arith_five_op rval_unit')
     def rval_expr(self, p):
-        if hasattr(p, 'arith_four_op'):
-            return ArrayBinOp(p.rval_unit0, p.rval_unit1, p.arith_four_op)
+        if hasattr(p, 'arith_five_op'):
+            return ArrayBinOp(p.rval_expr, p.rval_unit, p.arith_five_op)
         else:
             return p.rval_unit
 
@@ -183,11 +187,11 @@ class BCParser(Parser):
         else:
             return [p.index_expr]
 
-    @_('ID', 'array_slice')
+    @_('tup_name', 'array_slice')
     def index_expr(self, p):
         return p[0]
 
-    @_('integer', 'rank', 'dims_index', 'dims_colon', 'rval_array')
+    @_('integer', 'rank', 'dims_index', 'dims_star', 'rval_array')
     def array_slice(self, p):
         return p[0]
 
@@ -199,12 +203,8 @@ class BCParser(Parser):
         else:
             return [p.star_index_expr]
 
-    @_('star_or_index', 'array_slice')
+    @_('COLON', 'tup_name', 'array_slice')
     def star_index_expr(self, p):
-        return p[0]
-
-    @_('ID', 'COLON')
-    def star_or_index(self, p):
         return p[0]
 
     @_('ID')
@@ -221,9 +221,24 @@ class BCParser(Parser):
 if __name__ == '__main__':
     import config
     import sys
+    import json
+
     cfg = config.Config()
     parser = BCParser(cfg)
-    statement = sys.argv[1]
-    ast = parser.parse(statement)
-    print(ast)
+    with open('parse_tests.json', 'r') as fp:
+        tests = json.load(fp)
+
+    print('Parsing statements')
+    parser.set_statement_mode()
+    for st in tests['statements']:
+        ast = parser.parse(st)
+        print(f'Statement: {st}\nParsed as: {ast}\n')
+
+    print(cfg.array_sig)
+
+    print('Parsing constraints')
+    parser.set_constraint_mode()
+    for con in tests['constraints']:
+        ast = parser.parse(con)
+        print(f'Constraint: {con}\nParsed as:  {ast}\n')
 

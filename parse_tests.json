@@ -1,0 +1,19 @@
+{
+  "constraints": [
+    "RANK(coord) < 5",
+    "RANK(coord) <= 5",
+    "RANK(batch) == 5",
+    "RANK(slice) > 0",
+    "RANK(slice) >= 0",
+    "DIMS(coord)[0] == RANK(elem)",
+    "DIMS(slice)[:] < DIMS(fslice)[:]"
+  ],
+  "statements": [
+    "input[b,s,i] = RANDOM(0, 10, FLOAT)",
+    "filter[f,i,o] = RANDOM(0, 10, FLOAT)",
+    "ind[s,f,c] = RANGE[s,c] - RANGE[f,c] + DIMS(f)[c] // 2",
+    "tmp[b,s,f,o] = input[b,s,i] * filter[f,i,o]",
+    "result[b,s,ind[s,f,:],o] = tmp[b,s,f,o]"
+  ]
+}
+

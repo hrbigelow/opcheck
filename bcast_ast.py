@@ -1,9 +1,32 @@
 import tensorflow as tf
 import enum
+import operator
 import re
 
-def valid_eintup_name(name):
-    return re.fullmatch('[a-z]+', name)
+# check validity of all names in the index_list
+def get_signature(tup_or_rval):
+    if isinstance(tup_or_rval, str):
+        tup = tup_or_rval
+        if not re.fullmatch('[a-z]+', tup):
+            raise RuntimeError(f'Got invalid index name {tup}')
+        return [tup]
+    elif isinstance(tup_or_rval, RValueArray):
+        rval = tup_or_rval
+        sig = rval.signature()
+        if len(sig) == 0:
+            raise RuntimeError(
+                f'Cannot use a non-slice RValueArray as an index')
+        return sig
+
+def check_duplicate_use(sig_list):
+    seen = set()
+    for tup in sig_list:
+        if tup in seen:
+            raise RuntimeError(
+                f'Eintup name \'{tup}\' appears twice in index list')
+        seen.add(tup)
+
+STAR = ':'
 
 class AST(object):
     def __init__(self, *children):
@@ -63,6 +86,7 @@ class RandomCall(AST):
     def __init__(self, cfg, min_expr, max_expr, dtype_string):
         super().__init__(min_expr, max_expr)
         self.cfg = cfg
+        self.dtype_string = dtype_string
         if dtype_string == 'INT':
             self.dtype = tf.int32
         elif dtype_string == 'FLOAT':
@@ -71,6 +95,10 @@ class RandomCall(AST):
             raise RuntimeError(f'dtype must be INT or FLOAT, got {dtype_string}')
         self.min_expr = min_expr
         self.max_expr = max_expr
+
+    def __repr__(self):
+        return (f'RandomCall({repr(self.min_expr)}, ' +
+                f'{repr(self.max_expr)}, {self.dtype_string})')
 
     def evaluate(self, full_inds):
         core_inds = self.get_inds()
@@ -103,6 +131,9 @@ class RangeExpr(AST):
         self.cfg = cfg
         self.key_ind = key_eintup
         self.last_ind = last_eintup
+
+    def __repr__(self):
+        return f'RangeExpr({self.key_ind}, {self.last_ind})'
 
     def prepare(self):
         if self.cfg.rank(self.last_ind) != 1:
@@ -143,14 +174,26 @@ class RangeExpr(AST):
 class ArrayBinOp(AST):
     def __init__(self, lhs, rhs, op_string):
         super().__init__(lhs, rhs)
-        # TODO: expand to include Dims, Rank, IntExpr, and add evaluate()
+        # TODO: expand to include Rank, IntExpr, and add evaluate()
         # methods to those classes
-        assert(isinstance(lhs, (RangeExpr, RandomCall, RightArray)))
-        assert(isinstance(rhs, (RangeExpr, RandomCall, RightArray)))
+        allowed_types = (RangeExpr, RandomCall, RValueArray, Dims, IntExpr,
+                ArrayBinOp)
+        if not isinstance(lhs, allowed_types):
+            raise RuntimeError(
+                f'left-hand-side argument is type {type(lhs)}, not allowed')
+        if not isinstance(rhs, allowed_types):
+            raise RuntimeError(
+                f'right-hand-side argument is type {type(rhs)}, not allowed')
+
         self.lhs = lhs
         self.rhs = rhs
-        ops = [ tf.add, tf.subtract, tf.multiply, tf.divide ]
-        self.op = dict(zip('+-*/', ops))[op_string]
+        # TODO: fix problem with tf.int32 vs tf.float64 tensors
+        ops = [ tf.add, tf.subtract, tf.multiply, tf.divide, tf.math.floordiv ]
+        self.op = dict(zip(['+', '-', '*', '/', '//'], ops))[op_string]
+        self.op_string = op_string
+
+    def __repr__(self):
+        return f'ArrayBinOp({repr(self.lhs)} {self.op_string} {repr(self.rhs)})'
 
     def evaluate(self):
         # TODO: optimize index ordering
@@ -167,8 +210,17 @@ class RValueArray(AST):
         self.name = name
         self.index_list = index_list
 
+    def __repr__(self):
+        ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
+                for ind in self.index_list)
+        return f'RValueArray({self.name})[{ind_list}]'
+
+    def signature(self):
+        z = zip(self.cfg.array_sig[self.name], self.index_list) 
+        return [ tup for tup, call in z if call == STAR ]
+
     def evaluate(self, trg_inds):
-        pass
+        raise NotImplementedError
 
 class LValueArray(AST):
     # represents an array expression being assigned to
@@ -177,52 +229,35 @@ class LValueArray(AST):
         self.name = array_name
         self.cfg = cfg
         self.has_slice_index = False
-        is_first_init = (array_name not in self.cfg.array_sig)
 
-        # check validity of all names in the index_list
-        seen = set()
-        for et in index_list:
-            if not isinstance(et, str):
-                if is_first_init:
-                    raise RuntimeError(
-                        f'first initialization of \'{array_name}\' must have '
-                        f'an index list of only EinTup names.  Got \'{et}\'')
-                continue
-            if not valid_eintup_name(et):
-                raise RuntimeError(
-                    f'first mention of array \'{array_name}\' has invalid eintup '
-                    f'name \'{et}\'')
-            if et in seen:
-                raise RuntimeError(
-                    f'Eintup name \'{et}\' appears twice in index list')
-            seen.add(et)
+        # in the first appearance of this array in the list of statements, the
+        # array signature is defined from its index_list 
+        is_first_use = (array_name not in self.cfg.array_sig)
+        sig_list = [ tup for call in index_list for tup in get_signature(call) ]
 
-        if is_first_init:
-            self.cfg.array_sig = index_list
-            for et in index_list:
+        check_duplicate_use(sig_list)
+
+        def same_shape(tup1, tup2):
+            return self.cfg.tup(tup1).same_shape_as(self.cfg.tup(tup2))
+
+        if is_first_use:
+            self.cfg.array_sig[self.name] = sig_list
+            for et in sig_list:
                 self.cfg.maybe_add_tup(et)
-
         else:
-            # check for consistent shapes.  only an eintup or an RValueArray
-            # slice is allowed
-            for sig, call in zip(self.cfg.array_sig[name], index_list):
-                if isinstance(call, RValueArray):
-                    self.has_slice_index = True
-                    # check consistent shape.  how to check for out-of-bounds?
-                    pass
-                else:
-                    if call not in self.cfg.tups:
-                        raise RuntimeError(
-                            f'LValueArray index expression \'{call}\' not '
-                            f'an existing EinTup name, but this is not '
-                            'the first array call')
-                    if not self.cfg.tup(call).same_shape_as(self.cfg.tup(sig)):
-                        raise RuntimeError(
-                            f'Signature of array \'{self.name}\' is \'{sig}\''
-                            f' but attempting to use \'{call}\' in place of it'
-                            f' which does not have the same shape')
+            z = zip(self.cfg.array_sig[self.name], sig_list)
+            bad_pair = next((pair for pair in z if not same_shape(*pair)), None)
+            if bad_pair is not None:
+                raise RuntimeError(
+                    f'Usage of {bad_pair[1]} not the same shape as signature '
+                    f'{bad_pair[0]}')
 
         self.index_list = index_list
+
+    def __repr__(self):
+        ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
+                for ind in self.index_list)
+        return f'LValueArray({self.name})[{ind_list}]'
 
     def assign(self, rhs):
         if self.has_slice_index:
@@ -255,6 +290,10 @@ class Assign(AST):
         self.rhs = rhs
         self.do_accum = do_accum
 
+    def __repr__(self):
+        op_str = '+=' if self.do_accum else '='
+        return f'Assign: {repr(self.lhs)} {op_str} {repr(self.rhs)}'
+
     def evaluate(self):
         if self.do_accum:
             self.lhs.add(self.rhs)
@@ -267,6 +306,9 @@ class IntExpr(AST):
         super().__init__()
         self.val = int(val)
 
+    def __repr__(self):
+        return f'IntExpr({self.val})'
+
     def value(self):
         return self.val
 
@@ -277,6 +319,9 @@ class Rank(AST):
         self.cfg = cfg
         self.ein_arg = arg
 
+    def __repr__(self):
+        return f'Rank({self.ein_arg})'
+
     def prepare(self):
         if self.ein_arg not in self.cfg.tups:
             raise RuntimeError(f'Rank arg {self.ein_arg} not a known EinTup')
@@ -285,51 +330,41 @@ class Rank(AST):
         return len(self.cfg.tups[self.ein_arg])
 
 class DimKind(enum.Enum):
-    Star = 0
-    Int = 1
-    EinTup = 2
+    Star = 'Star'
+    Int = 'Int' 
+    Index = 'Index'
 
 class Dims(AST):
-    def __init__(self, cfg, arg, ind_expr):
+    def __init__(self, cfg, arg, kind, index_expr=None):
         super().__init__()
         self.cfg = cfg
         self.ein_arg = arg
-        if ind_expr == ':':
-            self.kind = DimKind.Star
-        elif isinstance(ind_expr, int):
-            self.kind = DimKind.Int
-            self.index = ind_expr
-        elif isinstance(ind_expr, str):
-            self.kind = DimKind.EinTup
-            self.ein_ind = ind_expr
-        else:
-            raise RuntimeError(f'index expression must be int, \:\, or EinTup')
+        self.kind = kind
+
+        if self.kind == DimKind.Int:
+            self.index = int(index_expr) 
+        elif self.kind == DimKind.Index:
+            self.index = index_expr
 
     def __repr__(self):
-        if self.kind == DimKind.Star:
-            ind_str = ':'
-        elif self.kind == DimKind.Int:
-            ind_str = str(self.index)
-        else:
-            ind_str = self.ein_ind
-        return f'{self.kind} Dims({self.ein_arg})[{ind_str}]'
+        return f'Dims({self.ein_arg})[{self.index or ":"}]'
 
     def prepare(self):
         if self.ein_arg not in self.cfg.tups:
-            raise RuntimeError(f'Dims argument \'{self.ein_arg}\' not a known EinTup')
+            raise RuntimeError(f'Dims argument \'{self.ein_arg}\' not a known Index')
         if (self.kind == DimKind.Int and 
                 self.index >= len(self.cfg.tups[self.ein_arg])):
             raise RuntimeError(f'Dims index \'{self.ind}\' out of bounds')
-        if self.kind == DimKind.EinTup:
+        if self.kind == DimKind.Index:
             if self.ein_ind not in self.cfg.tups:
-                raise RuntimeError(f'Dims EinTup name \'{self.ind}\' not known EinTup')
+                raise RuntimeError(f'Dims Index name \'{self.ind}\' not known Index')
             if len(self.cfg.tups[self.ein_ind]) != 1:
-                raise RuntimeError(f'Dims EinTup index \'{self.ein_ind}\' must be '
+                raise RuntimeError(f'Dims Index index \'{self.ein_ind}\' must be '
                         f'rank 1, got \'{len(self.cfg.tups[self.ein_ind])}\'')
             if (self.cfg.dims(self.ein_ind)[0] >
                     len(self.cfg.dims(self.ein_arg))):
-                raise RuntimeError(f'Dims EinTup index \'{self.ein_ind}\' must'
-                f' have values in range of EinTup argument \'{self.ein_arg}\'.'
+                raise RuntimeError(f'Dims Index index \'{self.ein_ind}\' must'
+                f' have values in range of Index argument \'{self.ein_arg}\'.'
                 f' {self.cfg.dims(self.ein_ind)[0]} exceeds '
                 f'{len(self.cfg.dims(self.ein_arg))}')
 
@@ -344,7 +379,7 @@ class Dims(AST):
             return d[ein_val[0]]
     
     def get_inds(self):
-        if self.kind == DimKind.EinTup:
+        if self.kind == DimKind.Index:
             return {self.ein_ind}
         else:
             return set()
@@ -404,7 +439,12 @@ class LogicalOp(StaticBinOpBase):
         ops = [ operator.lt, operator.le, operator.eq, operator.ge, operator.gt
                 ]
         ops_strs = [ '<', '<=', '==', '>=', '>' ]
+        self.op_string = op
         self.op = dict(zip(ops_strs, ops))[op]
+
+    def __repr__(self):
+        return (f'LogicalOp({repr(self.arg1)} {self.op_string} ' +
+                f'{repr(self.arg2)})')
 
     def value(self):
         vals1 = self.arg1.value()

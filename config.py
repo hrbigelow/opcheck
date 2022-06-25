@@ -4,12 +4,14 @@ import itertools
 class Shape(object):
     # simple data class
     def __init__(self):
-        pass
+        self.dims = None
 
     def set(self, dims):
         self.dims = dims
 
     def get(self):
+        if self.dims is None:
+            raise RuntimeError('Cannot call get() on uninitialized Shape')
         return self.dims
 
 
@@ -21,7 +23,11 @@ class EinTup(object):
         self._value = None
 
     def __repr__(self):
-        return f'EinTup \'{self.name}\': {self.dims()}'
+        try:
+            dimstring = ','.join(self.dims())
+        except RuntimeError:
+            dimstring = '?'
+        return f'EinTup \'{self.name}\': {[dimstring]}'
 
     def __len__(self):
         return len(self.dims())
