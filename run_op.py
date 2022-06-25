@@ -4,9 +4,7 @@ import tensorflow as tf
 import numpy as np
 from bcast_parser import BCParser
 from config import Config
-from arg_parser import ArgParser
-from constraint_parser import ConsParser
-from ein_ast import RangeConstraint, LogicalOp
+from bcast_ast import RangeConstraint, LogicalOp
 
 def equal_tensors(a, b, eps):
     return (
@@ -16,12 +14,13 @@ def equal_tensors(a, b, eps):
 
 def validate(cfg, json_entry):
     dat = json_entry['tfcall']
-    argparser = ArgParser(cfg)
-    kwargs = { k: argparser.parse(v).value() for k, v in dat['args'].items() }
+    parser = BCParser(arg)
+    parser.set_argument_mode()
+    kwargs = { k: parser.parse(v).value() for k, v in dat['args'].items() }
     if 'const-args' in dat:
         kwargs.update(dat['const-args'])
 
-    eintup_result = argparser.parse(dat['return-value']).value()
+    eintup_result = parser.parse(dat['return-value']).value()
     func = eval(dat['func'])
     tf_result = func(**kwargs)
     equal = equal_tensors(tf_result, eintup_result, 1e-6)
@@ -30,15 +29,16 @@ def validate(cfg, json_entry):
 
 def run_programs(cfg, json_entry):
     constraints = json_entry['constraints']
-    consparser = ConsParser(cfg)
-    tests = [ consparser.parse(c) for c in constraints ]
+    parser = BCParser(cfg)
+    parser.set_constraint_mode()
+    tests = [ parser.parse(c) for c in constraints ]
     range_defs = [ t for t in tests if isinstance(t, RangeConstraint) ]
     rank_tests = [ t for t in tests if t.is_static() and isinstance(t,
         LogicalOp) ]
 
     program = json_entry['program']
-    bcparser = BCParser(cfg)
-    statements = [ bcparser.parse(st) for st in program ]
+    parser.set_statement_mode()
+    statements = [ parser.parse(st) for st in program ]
 
     for st in statements:
         st.add_range_constraints(range_defs)
@@ -78,9 +78,4 @@ if __name__ == '__main__':
 
     cfg = Config()
     run_programs(cfg, program)
-
-
-
-
-
 

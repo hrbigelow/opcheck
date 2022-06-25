@@ -1,4 +1,35 @@
-assignment := lval_array = rval_expr
+
+constraint := shape_test
+           |  tup_limit 
+
+shape_test  := shape COMP shape_expr
+
+tup_limit := limit_expr ASSIGN shape_expr
+
+shape_expr := shape
+           |  shape OP shape
+
+
+shape := integer
+      |  rank
+      |  dims_colon
+      |  dims_int
+
+rank := RANK ( ID )
+dims_colon := DIMS ( ID ) [ COLON ]
+dims_int := DIMS ( ID ) [ INT ]
+
+limit_expr := min_expr
+           |  max_expr
+
+min_expr := MIN ( simple_index_expr )
+max_expr := MAX ( simple_index_expr )
+
+simple_index_expr := ID
+                  |  simple_index_expr OP ID
+
+statement := lval_array ASSIGN rval_expr
+          |  lval_array ACCUM rval_expr
 
 lval_array := ID [ index_list ]
 
@@ -23,7 +54,7 @@ index_expr := ID
            |  array_slice
 
 array_slice := ID [ star_index_list ]
-            |  DIMS ( ID ) [ ID ]
+            |  DIMS ( ID ) [ star_or_index ]
             |  RANK ( ID ) 
             |  INT
 

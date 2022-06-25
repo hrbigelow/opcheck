@@ -349,6 +349,96 @@ class Dims(AST):
         else:
             return set()
 
+class StaticBinOpBase(AST):
+    # Accepts Rank, Dims, DimsAccess expressions.  
+    def __init__(self, arg1, arg2):
+        super().__init__(arg1, arg2)
+        self.arg1 = arg1
+        self.arg2 = arg2
+        if isinstance(self.arg1, Dims):
+            self.set_name(self.arg1.get_name())
+        if isinstance(self.arg2, Dims):
+            self.set_name(self.arg2.get_name())
+
+    def set_name(self, name):
+        if not isinstance(self.arg1, Dims):
+            self.arg1.set_name(name)
+        if not isinstance(self.arg2, Dims):
+            self.arg2.set_name(name)
+
+    def _same_kind(self, vals1, vals2):
+        return isinstance(vals1, (tuple, list)) == isinstance(vals2, (tuple, list))
+
+    def value(self):
+        raise NotImplementedError
+
+class ArithmeticBinOp(StaticBinOpBase):
+    def __init__(self, arg1, arg2, op):
+        super().__init__(arg1, arg2)
+        opfuncs = [ operator.add, operator.sub, operator.mul, operator.truediv,
+                operator.floordiv ]
+        self.op = dict(zip(['+', '-', '*', '/', '//'], opfuncs))[op]
+
+    def prepare(self):
+        super().prepare()
+        if self.arg1.rank() != self.arg2.rank():
+            raise RuntimeError(f'Dims sizes must match for ArithmeticBinOp.'
+                    f'Got {self.arg1.value()} and {self.arg2.value()}')
+    def rank(self):
+        # arg1 and arg2 must have same rank
+        return self.arg1.rank()
+
+    def value(self):
+        vals1 = self.arg1.value()
+        vals2 = self.arg2.value()
+        if not self._same_kind(vals1, vals2):
+            raise RuntimeError('ArithmeticBinOp got list and scalar')
+        if isinstance(vals1, (tuple, list)):
+            return tuple(map(self.op, vals1, vals2))
+        else:
+            return self.op(vals1, vals2)
+
+class LogicalOp(StaticBinOpBase):
+    def __init__(self, arg1, arg2, op):
+        super().__init__(arg1, arg2)
+        ops = [ operator.lt, operator.le, operator.eq, operator.ge, operator.gt
+                ]
+        ops_strs = [ '<', '<=', '==', '>=', '>' ]
+        self.op = dict(zip(ops_strs, ops))[op]
+
+    def value(self):
+        vals1 = self.arg1.value()
+        vals2 = self.arg2.value()
+        if self.arg1.rank() != self.arg2.rank():
+            return False
+        if not self._same_kind(vals1, vals2):
+            return False
+        if isinstance(vals1, (tuple, list)):
+            return all(self.op(v1, v2) for v1, v2 in zip(vals1, vals2))
+        else:
+            return self.op(vals1, vals2)
+
+class RangeConstraint(AST):
+    def __init__(self, eintup_binop, kind, value_expr):
+        super().__init__(value_expr)
+        self.signature_string = eintup_binop.signature()
+        self.kind = kind
+        self.value_expr = value_expr
+        self.value_expr.set_name(eintup_binop.lhs.signature())
+
+    def value(self):
+        return self.value_expr.value()
+
+class TensorArg(AST):
+    def __init__(self, cfg, name):
+        if name not in cfg.arrays:
+            raise RuntimeError(f'argument must be array name, got {name}')
+        self.cfg = cfg
+        self.name = name
+
+    def value(self):
+        return self.cfg.arrays[self.name]
+
 
 if __name__ == '__main__':
     import config

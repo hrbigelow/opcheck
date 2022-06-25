@@ -57,6 +57,7 @@ class Config(object):
         # map of eintup names to EinTup instances
         self.tups = {}
         self.array_sig = {}
+        self.arrays = {}
         self.min_dim = min_dim
         self.max_dim = max_dim
 

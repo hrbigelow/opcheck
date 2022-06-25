@@ -1,10 +1,12 @@
+from enum import Enum
 from sly import Lexer, Parser
 from bcast_ast import *
 
 class BCLexer(Lexer):
     # Set of token names.   This is always required
     tokens = { ID, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES, DIVIDE,
-            INT, ASSIGN, ACCUM, COMMA, COLON, DIMS, RANGE, RANK, RANDOM, DTYPE }
+            INT, ASSIGN, ACCUM, COMMA, COLON, DIMS, RANGE, RANK, RANDOM, MIN,
+            MAX, DTYPE }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -28,7 +30,14 @@ class BCLexer(Lexer):
     RANGE   = 'RANGE'
     RANK    = 'RANK'
     RANDOM  = 'RANDOM'
+    MIN     = 'MIN'
+    MAX     = 'MAX'
     DTYPE   = r'(FLOAT|INT)'
+
+class ParserMode(Enum):
+    Constraint = 0
+    Statement = 1
+    Argument = 2
 
 class BCParser(Parser):
     tokens = BCLexer.tokens
@@ -41,9 +50,88 @@ class BCParser(Parser):
         self.lexer = BCLexer()
         self.cfg = cfg 
 
+    def set_constraint_mode(self):
+        self.mode = ParserMode.Constraint
+
+    def set_statement_mode(self):
+        self.mode = ParserMode.Statement
+
+    def set_argument_mode(self):
+        self.mode = ParserMode.Argument
+
+    @_('constraint', 'statement', 'argument')
+    def toplevel(self, p):
+        if self.mode == ParserMode.Constraint and hasattr(p, 'constraint'):
+            return p.constraint
+        elif self.mode == ParserMode.Statement and hasattr(p, 'statement'):
+            return p.statement
+        elif self.mode == ParserMode.Argument and hasattr(p, 'argument'):
+            return p.argument
+        else:
+            raise RuntimeError('Parse Error at top level')
+
+    @_('ID')
+    def argument(self, p):
+        return TensorArg(self.cfg, p.ID)
+    
+    @_('shape_test',
+       'tup_limit')
+    def constraint(self, p):
+        pass
+
+    @_('shape_expr COMP shape_expr')
+    def shape_test(self, p):
+        return LogicalOp(p.shape_expr0, p.shape_expr1, p.COMP)
+
+    @_('limit_expr ASSIGN shape')
+    def tup_limit(self, p):
+        pass
+
+    @_('shape',
+       'shape OP shape')
+    def shape_expr(self, p):
+        if hasattr(p, 'OP'):
+            return ArithmeticBinOp(p.shape0, p.shape1, p[1])
+        else:
+            return p.shape
+
+    @_('integer', 'rank', 'dims_colon', 'dims_int')
+    def shape(self, p):
+        return p[0]
+
+    @_('INT')
+    def integer(self, p):
+        return IntExpr(p.INT)
+
+    @_('RANK LPAREN ID RPAREN')
+    def rank(self, p):
+        return Rank(self.cfg, p.ID)
+
+    @_('DIMS LPAREN ID RPAREN LBRACK COLON RBRACK')
+    def dims_colon(self, p):
+        return Dims(self.cfg, p.ID, p.COLON) 
+
+    @_('DIMS LPAREN ID RPAREN LBRACK INT RBRACK')
+    def dims_int(self, p):
+        return Dims(self.cfg, p.ID, p.INT)
+
+    @_('limit_type LPAREN simple_index_expr RPAREN ASSIGN shape_expr')
+    def range_constraint(self, p):
+        return RangeConstraint(p.simple_index_expr, p.limit_type, p.shape_expr)
+
+    @_('MIN', 'MAX')
+    def limit_type(self, p):
+        return p[0]
+
+    @_('ID',
+       'simple_index_expr OP ID')
+    def simple_index_expr(self, p):
+        pass
+
+# ----------------------------------
     @_('lval_array ASSIGN rval_expr',
        'lval_array ACCUM rval_expr')
-    def assignment(self, p):
+    def statement(self, p):
         do_accum = hasattr(p, 'ACCUM')
         return Assign(p.lval_array, p.rval_expr, do_accum)
 
