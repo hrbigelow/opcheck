@@ -56,6 +56,9 @@ class EinTup(object):
     def dims(self):
         return self.shape.get()
 
+    def rank(self):
+        return len(self.shape.get())
+
     def set_dims(self, dims):
         if not self.primary:
             raise RuntimeError(f'cannot call set_dims on non-primary EinTup')
@@ -92,21 +95,22 @@ class Config(object):
         self.tup(tup).set_dim(ind, val)
 
     def maybe_add_tup(self, name, shadow_of=None):
-        if name not in self.tups:
-            shape_of = None
-            if shadow_of is not None:
-                if shadow_of not in self.tups:
-                    raise RuntimeError(
-                        f'Config::maybe_add_tup - shadow_of \'{shadow_of}\''
-                        f'provided but does not exist'
-                        )
-                shape_of = self.tups[shadow_of].shape 
-            self.tups[name] = EinTup(name, shape_of)
+        if name in self.tups:
+            pass
+        elif shadow_of is None:
+            self.tups[name] = EinTup(name, None)
+        elif shadow_of in self.tups:
+            self.tups[name] = EinTup(name, shadow_of.shape)
+        else:
+            raise RuntimeError(
+                f'Config::maybe_add_tup - shadow_of \'{shadow_of}\''
+                f'provided but does not exist')
+        return self.tups[name]
 
     def tup(self, eintup):
         if eintup not in self.tups:
             raise RuntimeError(
-                    f'Config::{func} got unknown eintup name {eintup}')
+                    f'Config::tup() got unknown eintup name {eintup}')
         return self.tups[eintup]
 
     def dims(self, eintup):

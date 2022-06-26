@@ -3,20 +3,46 @@ import enum
 import operator
 import re
 
-# check validity of all names in the index_list
-def get_signature(tup_or_rval):
-    if isinstance(tup_or_rval, str):
-        tup = tup_or_rval
-        if not re.fullmatch('[a-z]+', tup):
-            raise RuntimeError(f'Got invalid index name {tup}')
-        return [tup]
-    elif isinstance(tup_or_rval, RValueArray):
-        rval = tup_or_rval
-        sig = rval.signature()
-        if len(sig) == 0:
+def define_sig(cfg, use_list):
+    not_str = next((use for use in use_list if not isinstance(use, str)), None)
+    if not_str is not None:
+        raise RuntimeError(
+            f'define_sig can take only string indices (EinTup names) '
+            f'found {not_str}')
+    from collections import Counter
+    dup = next((use for use, ct in Counter(use_list).items() if ct > 1), None)
+    if dup is not None:
+        raise RuntimeError(
+            f'define_sig must have all distinct indices.  Found duplicate '
+            f'\'{dup}\'')
+
+    return [ cfg.maybe_add_tup(use) for use in use_list ]
+
+# Call at instantiation of an Array with established sig
+def check_sig(cfg, sig_list, use_list):
+    if len(sig_list) != len(use_list):
+        raise RuntimeError(
+            f'check_sig expected {len(sig_list)} indices but found '
+            f'{len(use_list)}')
+
+    nslices = len([use for use in use_list if isinstance(use, Slice)])
+    if nslices > 1:
+        raise RuntimeError(
+            f'check_sig expected 0 or 1 Slice arguments.  Found {nslices}')
+
+    for sig_tup, use in zip(sig_list, use_list):
+        if isinstance(use, str):
+            use_tup = cfg.maybe_add_tup(use, sig_tup)
+            if not sig_tup.same_shape_as(use_tup):
+                raise RuntimeError(
+                    f'check_sig found incompatible shapes.  Expecting '
+                    f'{sig_tup} but found {use_tup}')
+        elif isinstance(use, Slice):
+            pass # nothing to check during instantiation
+        else:
             raise RuntimeError(
-                f'Cannot use a non-slice RValueArray as an index')
-        return sig
+                f'check_sig expected string or Slice argument.  Found '
+                f'{type(use)}')
 
 def check_duplicate_use(sig_list):
     seen = set()
@@ -89,12 +115,17 @@ class AST(object):
     # reshape / transpose ten, with starting shape src_sig,
     # to be broadcastable to trg_sig 
     def layout_to_sig(self, ten, src_sig, trg_sig):
-        # TODO: This shouldn't be an error - if src_sig has extra, they
-        # just need to be marginalized out
-        if not set(src_sig).issubset(trg_sig):
+        if ten.shape != self.flat_dims(src_sig):
             raise RuntimeError(
-                f'Source signature must be a subset of target signature.'
-                f'Got src_sig {src_sig} and trg_sig {trg_sig}')
+                f'Tensor shape {ten.shape} not consistent with '
+                f'signature shape {self.flat_dims(src_sig)}')
+
+        marg_ex = set(src_sig).difference(trg_sig)
+        if len(marg_ex) != 0:
+            marg_pos = [ i for i, ind in enumerate(src_sig) if ind in marg_ex ]
+            ten = tf.reduce_sum(ten, marg_pos)
+
+        trg_sig = [ ind for ind in trg_sig if ind not in marg_ex ]
 
         perm, perm_rev, n_core = self.split_perm(trg_sig, src_sig)
         n_bcast = len(trg_sig) - n_core
@@ -102,11 +133,6 @@ class AST(object):
         # get cardinality of reordered src_sig
         card = self.get_cardinality(*[trg_sig[p] for p in perm_rev])
         trg_dims = self.broadcast_shape(trg_sig, src_sig) 
-
-        if ten.shape != self.flat_dims(src_sig):
-            raise RuntimeError(
-                f'Tensor shape {ten.shape} not consistent with '
-                f'signature shape {self.flat_dims(src_sig)}')
 
         # condense tensor dim groups to src_sig cardinality 
         ten = tf.reshape(ten, card[:n_core] + [1] * n_bcast)
@@ -119,7 +145,137 @@ class AST(object):
 
         return ten
 
+class Slice(AST):
+    # Represents an expression ary[a,b,c,:,e,...] with exactly one ':' and
+    # the rest of the indices simple eintup names.  During the prepare() call,
+    # the ':' index must resolve to a RANK 1 index with DIMS equal to the RANK
+    # of the place where it is used.  
+    def __init__(self, cfg, array_name, index_list):
+        super().__init__()
+        if array_name not in cfg.array_sig:
+            raise RuntimeError(
+                f'Cannot instantiate Slice as first appearance of array name '
+                f'\'{array_name}\'')
+        sig = cfg.array_sig[array_name]
+        if len(sig) != len(index_list):
+            raise RuntimeError(
+                f'Slice instantiated with incorrect number of indices. '
+                f'Expecting {len(sig)} but got {len(index_list)}')
 
+        found_star = False
+        for sig_tup, call in zip(sig, index_list):
+            if call == STAR: 
+                if found_star:
+                    raise RuntimeError(
+                        f'Found a second \':\' index.  Only one wildcard is '
+                        f'allowed in a Slice instance')
+                found_star = True
+                self.star_tup = sig_tup
+                continue
+            elif not isinstance(call, str):
+                raise RuntimeError(
+                    f'Slice object only accepts simple tup names or \':\' as '
+                    f'indices.  Got \'{call}\'')
+            call_tup = cfg.maybe_add_tup(call, shadow_of=sig_tup)
+            if not sig_tup.same_shape_as(call_tup):
+                raise RuntimeError(
+                    f'Slice called with incompatible shape. '
+                    f'{call_tup} called in slot of {sig_tup}')
+
+        if not found_star:
+            raise RuntimeError(
+                f'Slice must contain at least one \':\' in index_list. '
+                f'Got \'{index_list}\'') 
+
+        # passed all checks
+        self.cfg = cfg
+        self.name = array_name
+        self.index_list = index_list
+
+    def __repr__(self):
+        ind_list = ','.join(self.index_list)
+        return f'Slice({self.name})[{ind_list}]'
+
+    def slice_dim(self):
+        return self.star_tup.dims()[0]
+
+    def prepare(self):
+        rank = self.star_tup.rank() 
+        if rank != 1:
+            raise RuntimeError(
+                f'Slice wildcard index must be rank 1.  Got {rank}')
+
+class Array(AST):
+    def __init__(self, cfg, array_name, index_list):
+        super().__init__()
+        array_exists = (array_name in cfg.array_sig)
+        if array_exists:
+            sig_list = cfg.array_sig[array_name]
+            check_sig(cfg, sig_list, index_list)
+        else:
+            sig = define_sig(cfg, index_list)
+            cfg.array_sig[array_name] = sig
+
+        self.cfg = cfg
+        self.name = array_name
+        self.index_list = index_list
+
+class LValueArray(Array):
+    def __init__(self, cfg, array_name, index_list):
+        super().__init__(cfg, array_name, index_list)
+
+    def __repr__(self):
+        ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
+                for ind in self.index_list)
+        return f'LValueArray({self.name})[{ind_list}]'
+
+    def assign(self, rhs):
+        if self.has_slice_index:
+            raise NotImplementedError
+            # need to use tf.scatter
+        else:
+            trg_inds = self.index_list
+            val = rhs.evaluate(trg_inds)
+            self.cfg.arrays[self.name] = val
+
+    def add(self, rhs):
+        if self.name not in self.cfg.arrays:
+            raise RuntimeError(
+                f'Cannot do += on first mention of array \'{self.name}\''
+                )
+
+        if self.has_slice_index:
+            raise NotImplementedError
+            # use tf.scatter
+        else:
+            trg_inds = self.index_list
+            val = rhs.evaluate(trg_inds)
+            prev = self.cfg.arrays[self.name]
+            self.cfg.arrays[self.name] = tf.add(prev, val)
+    
+class RValueArray(Array):
+    def __init__(self, cfg, array_name, index_list):
+        super().__init__(cfg, array_name, index_list)
+
+    def __repr__(self):
+        ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
+                for ind in self.index_list)
+        return f'RValueArray({self.name})[{ind_list}]'
+
+    def get_inds(self):
+        # TODO: what to do if this is nested?
+        inds = { tup for tup in self.index_list if isinstance(tup, str) }
+        return inds
+
+    def evaluate(self, trg_sig):
+        if self.name not in self.cfg.arrays:
+            raise RuntimeError(
+                f'RValueArray {self.name} called evaluate() but '
+                f'array is not materialized')
+        src_sig = self.cfg.array_sig[self.name]
+        ten = self.cfg.arrays[self.name]
+        ten = self.layout_to_sig(ten, src_sig, trg_sig)
+        return ten
 
 class RandomCall(AST):
     # apply a function pointwise to the materialized arguments
@@ -218,101 +374,6 @@ class ArrayBinOp(AST):
         ten = self.op(lval, rval)
         ten = self.layout_to_sig(ten, sub_sig, trg_sig)
         return ten
-
-class RValueArray(AST):
-    # Represents a mention of a persistent array on the right-hand-side
-    def __init__(self, cfg, name, index_list):
-        super().__init__()
-        self.cfg = cfg
-        self.name = name
-        self.index_list = index_list
-
-    def __repr__(self):
-        ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
-                for ind in self.index_list)
-        return f'RValueArray({self.name})[{ind_list}]'
-
-    def get_inds(self):
-        # TODO: what to do if this is nested?
-        inds = { tup for tup in self.index_list if isinstance(tup, str) }
-        return inds
-
-
-    def signature(self):
-        z = zip(self.cfg.array_sig[self.name], self.index_list) 
-        return [ tup for tup, call in z if call == STAR ]
-
-    # TODO: marginalize extra indices in src_sig 
-    def evaluate(self, trg_sig):
-        if self.name not in self.cfg.arrays:
-            raise RuntimeError(
-                f'RValueArray {self.name} called evaluate() but '
-                f'array is not materialized')
-        src_sig = self.cfg.array_sig[self.name]
-        ten = self.cfg.arrays[self.name]
-        ten = self.layout_to_sig(ten, src_sig, trg_sig)
-        return ten
-
-class LValueArray(AST):
-    # represents an array expression being assigned to
-    def __init__(self, cfg, array_name, index_list):
-        super().__init__()
-        self.name = array_name
-        self.cfg = cfg
-        self.has_slice_index = False
-
-        # in the first appearance of this array in the list of statements, the
-        # array signature is defined from its index_list 
-        is_first_use = (array_name not in self.cfg.array_sig)
-        sig_list = [ tup for call in index_list for tup in get_signature(call) ]
-
-        check_duplicate_use(sig_list)
-
-        def same_shape(tup1, tup2):
-            return self.cfg.tup(tup1).same_shape_as(self.cfg.tup(tup2))
-
-        if is_first_use:
-            self.cfg.array_sig[self.name] = sig_list
-            for et in sig_list:
-                self.cfg.maybe_add_tup(et)
-        else:
-            z = zip(self.cfg.array_sig[self.name], sig_list)
-            bad_pair = next((pair for pair in z if not same_shape(*pair)), None)
-            if bad_pair is not None:
-                raise RuntimeError(
-                    f'Usage of {bad_pair[1]} not the same shape as signature '
-                    f'{bad_pair[0]}')
-
-        self.index_list = index_list
-
-    def __repr__(self):
-        ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
-                for ind in self.index_list)
-        return f'LValueArray({self.name})[{ind_list}]'
-
-    def assign(self, rhs):
-        if self.has_slice_index:
-            raise NotImplementedError
-            # need to use tf.scatter
-        else:
-            trg_inds = self.index_list
-            val = rhs.evaluate(trg_inds)
-            self.cfg.arrays[self.name] = val
-
-    def add(self, rhs):
-        if self.array_name not in self.cfg.arrays:
-            raise RuntimeError(
-                f'Cannot do += on first mention of array \'{self.array_name}\''
-                )
-
-        if self.has_slice_index:
-            raise NotImplementedError
-            # use tf.scatter
-        else:
-            trg_inds = self.index_list
-            val = rhs.evaluate(trg_inds)
-            prev = self.cfg.arrays[self.array_name]
-            self.cfg.arrays[self.array_name] = tf.add(prev, val)
 
 class Assign(AST):
     def __init__(self, lhs, rhs, do_accum=False):
