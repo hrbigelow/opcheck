@@ -7,7 +7,16 @@ class Shape(object):
         self.dims = None
 
     def set(self, dims):
-        self.dims = dims
+        self.dims = [ int(d) for d in dims ]
+
+    def set_elem(self, ind, dim):
+        if self.dims is None:
+            raise RuntimeError('Cannot call set_elem() on uninitialized Shape')
+        if ind >= len(self.dims):
+            raise RuntimeError(
+                f'set_elem() index {ind} out of bounds for length '
+                f'{len(self.dims)} dims')
+        self.dims[ind] = dim
 
     def get(self):
         if self.dims is None:
@@ -19,15 +28,15 @@ class EinTup(object):
     def __init__(self, name, shape_of=None):
         self.name = name
         self.primary = (shape_of is None)
-        self.shape = shape_of or Shape() 
+        self.shape = Shape() if self.primary else shape_of 
         self._value = None
 
     def __repr__(self):
         try:
-            dimstring = ','.join(self.dims())
+            dimstring = ','.join([str(d) for d in self.dims()])
         except RuntimeError:
             dimstring = '?'
-        return f'EinTup \'{self.name}\': {[dimstring]}'
+        return f'EinTup \'{self.name}\': [{dimstring}]'
 
     def __len__(self):
         return len(self.dims())
@@ -52,6 +61,9 @@ class EinTup(object):
             raise RuntimeError(f'cannot call set_dims on non-primary EinTup')
         self.shape.set(dims)
 
+    def set_dim(self, ind, val):
+        self.shape.set_elem(ind, val)
+
     def value(self):
         if self._value is None:
             raise RuntimeError(f'{self} called value() before iteration')
@@ -68,12 +80,16 @@ class Config(object):
         self.max_dim = max_dim
 
     # TODO: make compatible with non-primary EinTups
-    def set_ranks(self, rank_map):
-        def make_tup(name, rank):
-            return EinTup(name, np.random.randint(self.min_dim, self.max_dim,
-                rank))
-        self.tups = { name: make_tup(name, rank) for name, rank in
-                rank_map.items() }
+    def set_dims(self, rank_map):
+        for tup, rank in rank_map.items():
+            if tup not in self.tups:
+                raise RuntimeError(
+                    f'Cannot set dims for unknown EinTup {tup}')
+            dims = np.random.randint(self.min_dim, self.max_dim, rank)
+            self.tups[tup].set_dims(dims)
+
+    def set_one_dim(self, tup, ind, val):
+        self.tup(tup).set_dim(ind, val)
 
     def maybe_add_tup(self, name, shadow_of=None):
         if name not in self.tups:
@@ -94,7 +110,7 @@ class Config(object):
         return self.tups[eintup]
 
     def dims(self, eintup):
-        return self.tup(eintup).dims
+        return self.tup(eintup).dims()
 
     def rank(self, eintup):
         return len(self.dims(eintup))
@@ -103,9 +119,8 @@ class Config(object):
         return np.prod(self.dims(eintup))
 
     def cycle(self, *eintups):
-        for e in eintups:
-            self._check_eintup('cycle', e)
-        return itertools.product(*(self.tups[e] for e in eintups))
+        tups = [self.tup(e) for e in eintups]
+        return itertools.product(*tups)
 
 if __name__ == '__main__':
     cfg = Config()

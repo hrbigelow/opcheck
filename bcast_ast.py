@@ -44,24 +44,31 @@ class AST(object):
         child_repr = '\n'.join(indent(cr) for cr in child_reprs)
         return this + '\n' + child_repr
 
+    # call just before evaluation on new rank_map
+    def prepare(self):
+        for ch in self.children:
+            ch.prepare()
+
+
     def get_inds(self):
         return {ind for c in self.children for ind in c.get_inds()}
 
-    def split_perm(self, trg_inds, core_inds_unordered):
-        core_inds = [ ind for ind in trg_inds if ind in core_inds_unordered ]
-        bcast_inds = [ ind for ind in trg_inds if ind not in core_inds ]
-        n_core = len(core_inds)
-        if n_core != len(core_inds_unordered):
+    def split_perm(self, trg_sig, core_sig_unordered):
+        core_sig = [ ind for ind in trg_sig if ind in core_sig_unordered ]
+        bcast_sig = [ ind for ind in trg_sig if ind not in core_sig ]
+        n_core = len(core_sig)
+        if n_core != len(core_sig_unordered):
             raise RuntimeError(
-                f'split_perm: trg_inds ({trg_inds}) did not '
-                f'contain all core indices ({core_inds})')
+                f'split_perm: trg_sig ({trg_sig}) did not '
+                f'contain all core indices ({core_sig})')
 
-        src_inds = core_inds + bcast_inds
+        src_sig = core_sig + bcast_sig
 
-        # src_inds[perm[i]] = trg_inds[i]
-        perm = [ src_inds.index(ind) for ind in trg_inds ]
-        # perm = [ trg_inds.index(ind) for ind in src_inds ] 
-        return perm, n_core 
+        # trg_sig[i] = src_sig[perm[i]], maps src to trg 
+        perm = [ src_sig.index(ind) for ind in trg_sig ]
+        # src_sig[i] = trg_sig[perm[i]], reverse mapping 
+        perm_rev = [ trg_sig.index(ind) for ind in src_sig ] 
+        return perm, perm_rev, n_core 
 
     def flat_dims(self, inds):
         return [ dim for ind in inds for dim in self.cfg.dims(ind) ]
@@ -81,14 +88,19 @@ class AST(object):
 
     # reshape / transpose ten, with starting shape src_sig,
     # to be broadcastable to trg_sig 
-    def layout_to_sig(ten, src_sig, trg_sig):
+    def layout_to_sig(self, ten, src_sig, trg_sig):
+        # TODO: This shouldn't be an error - if src_sig has extra, they
+        # just need to be marginalized out
         if not set(src_sig).issubset(trg_sig):
             raise RuntimeError(
                 f'Source signature must be a subset of target signature.'
                 f'Got src_sig {src_sig} and trg_sig {trg_sig}')
 
-        perm, n_core = self.split_perm(trg_sig, src_sig)
-        card = self.get_cardinality(*(trg_sig[p] for p in perm))
+        perm, perm_rev, n_core = self.split_perm(trg_sig, src_sig)
+        n_bcast = len(trg_sig) - n_core
+
+        # get cardinality of reordered src_sig
+        card = self.get_cardinality(*[trg_sig[p] for p in perm_rev])
         trg_dims = self.broadcast_shape(trg_sig, src_sig) 
 
         if ten.shape != self.flat_dims(src_sig):
@@ -97,7 +109,7 @@ class AST(object):
                 f'signature shape {self.flat_dims(src_sig)}')
 
         # condense tensor dim groups to src_sig cardinality 
-        ten = tf.reshape(ten, card[:n_core])
+        ten = tf.reshape(ten, card[:n_core] + [1] * n_bcast)
 
         # permute to desired target signature
         ten = tf.transpose(ten, perm)
@@ -130,25 +142,13 @@ class RandomCall(AST):
                 f'{repr(self.max_expr)}, {self.dtype_string})')
 
     def evaluate(self, trg_sig):
-        src_sig = self.get_inds()
-        perm, n_core = self.split_perm(trg_sig, src_sig)
-        card = self.get_cardinality(*(trg_sig[p] for p in perm))
+        mins = self.min_expr.evaluate(trg_sig)
+        mins = tf.cast(mins, self.dtype)
+        maxs = self.max_expr.evaluate(trg_sig)
+        maxs = tf.cast(maxs, self.dtype)
         trg_dims = self.flat_dims(trg_sig) 
-
-        results = []
-        # print(f'src_sig: {src_sig}, bcast_sig: {bcast_sig}')
-        for _ in self.cfg.cycle(*src_sig):
-            slc = tf.random.uniform(
-                    shape=card[n_core:], # materialized broadcast
-                    minval=self.min_expr.value(),
-                    maxval=self.max_expr.value(),
-                    dtype=self.dtype)
-            results.append(slc)
-
-        ten = tf.stack(results)
-        ten = tf.reshape(ten, card)
-        ten = tf.transpose(ten, perm)
-        ten = tf.reshape(ten, trg_dims) 
+        rnd = tf.random.uniform(trg_dims, 0, 2**31-1, dtype=self.dtype)
+        ten = rnd % (maxs - mins) + mins
         return ten
 
 class RangeExpr(AST):
@@ -156,7 +156,7 @@ class RangeExpr(AST):
     # the eintup's are just strings
     # RANGE[s, c], with s the key_eintup, and c the 1-D last_eintup
     def __init__(self, cfg, key_eintup, last_eintup):
-        super().__init__(key_eintup, last_eintup)
+        super().__init__()
         self.cfg = cfg
         self.key_ind = key_eintup
         self.last_ind = last_eintup
@@ -179,35 +179,13 @@ class RangeExpr(AST):
     def evaluate(self, trg_sig):
         src_sig = [self.key_ind, self.last_ind]
         ten = [tf.range(e) for e in self.cfg.dims(self.key_ind)]
-        ten = tf.meshgrid(*ranges, indexing='ij')
-        ten = tf.stack(ranges, axis=self.cfg.rank(self.key_ind))
-
-        return self.layout_to_sig(ten, src_sig, trg_sig)
-
-        """
-        core_sig_unordered = self.get_inds()
-        perm, n_core = self.split_perm(trg_sig, core_sig_unordered)
-        n_inds = len(trg_sig)
-        n_bcast = n_inds - n_core
-        src_sig = [None] * n_inds 
-        for i in range(n_inds):
-            src_sig[perm[i]] = trg_sig[i]
-
-        core_inds = src_inds[:n_core]
-        card = self.get_cardinality(*core_inds)
-
-        trg_dims = self.broadcast_shape(trg_inds, core_inds)
-
-        # ndrange.shape = DIMS(self.key_ind) + DIMS(self.last_ind)
-        # these two should also be consecutive in trg_inds
-        ndrange = tf.reshape(ndrange, card + [1] * n_bcast)
-        ndrange = tf.transpose(ndrange, perm)
-        ndrange = tf.reshape(ndrange, trg_dims)
-        return ndrange
-        """
+        ten = tf.meshgrid(*ten, indexing='ij')
+        ten = tf.stack(ten, axis=self.cfg.rank(self.key_ind))
+        ten = self.layout_to_sig(ten, src_sig, trg_sig)
+        return ten
 
 class ArrayBinOp(AST):
-    def __init__(self, lhs, rhs, op_string):
+    def __init__(self, cfg, lhs, rhs, op_string):
         super().__init__(lhs, rhs)
         # TODO: expand to include Rank, IntExpr, and add evaluate()
         # methods to those classes
@@ -220,6 +198,7 @@ class ArrayBinOp(AST):
             raise RuntimeError(
                 f'right-hand-side argument is type {type(rhs)}, not allowed')
 
+        self.cfg = cfg
         self.lhs = lhs
         self.rhs = rhs
         # TODO: fix problem with tf.int32 vs tf.float64 tensors
@@ -230,17 +209,20 @@ class ArrayBinOp(AST):
     def __repr__(self):
         return f'ArrayBinOp({repr(self.lhs)} {self.op_string} {repr(self.rhs)})'
 
-    def evaluate(self):
+    def evaluate(self, trg_sig):
         # TODO: optimize index ordering
-        trg_inds = self.get_inds()
-        lval = self.lhs.evaluate(trg_inds)
-        rval = self.rhs.evaluate(trg_inds)
-        return self.op(lval, rval)
+        sub_sig = self.get_inds()
+        sub_sig = list(sub_sig)
+        lval = self.lhs.evaluate(sub_sig)
+        rval = self.rhs.evaluate(sub_sig)
+        ten = self.op(lval, rval)
+        ten = self.layout_to_sig(ten, sub_sig, trg_sig)
+        return ten
 
 class RValueArray(AST):
     # Represents a mention of a persistent array on the right-hand-side
     def __init__(self, cfg, name, index_list):
-        super().__init__(*index_list)
+        super().__init__()
         self.cfg = cfg
         self.name = name
         self.index_list = index_list
@@ -250,10 +232,17 @@ class RValueArray(AST):
                 for ind in self.index_list)
         return f'RValueArray({self.name})[{ind_list}]'
 
+    def get_inds(self):
+        # TODO: what to do if this is nested?
+        inds = { tup for tup in self.index_list if isinstance(tup, str) }
+        return inds
+
+
     def signature(self):
         z = zip(self.cfg.array_sig[self.name], self.index_list) 
         return [ tup for tup, call in z if call == STAR ]
 
+    # TODO: marginalize extra indices in src_sig 
     def evaluate(self, trg_sig):
         if self.name not in self.cfg.arrays:
             raise RuntimeError(
@@ -267,7 +256,7 @@ class RValueArray(AST):
 class LValueArray(AST):
     # represents an array expression being assigned to
     def __init__(self, cfg, array_name, index_list):
-        super().__init__(*index_list)
+        super().__init__()
         self.name = array_name
         self.cfg = cfg
         self.has_slice_index = False
@@ -308,7 +297,7 @@ class LValueArray(AST):
         else:
             trg_inds = self.index_list
             val = rhs.evaluate(trg_inds)
-            self.cfg.arrays[self.array_name] = val
+            self.cfg.arrays[self.name] = val
 
     def add(self, rhs):
         if self.array_name not in self.cfg.arrays:
@@ -343,8 +332,8 @@ class Assign(AST):
             self.lhs.assign(self.rhs)
 
 class ScalarExpr(AST):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *children):
+        super().__init__(*children)
 
     def __repr__(self):
         return f'{self.__class__.__name__}({self.value()})'
@@ -355,17 +344,17 @@ class ScalarExpr(AST):
         return self.layout_to_sig(ten, src_sig, trg_sig)
 
 class IntExpr(ScalarExpr):
-    def __init__(self, val):
+    def __init__(self, cfg, val):
         super().__init__()
+        self.cfg = cfg
         self.val = int(val)
 
     def value(self):
         return self.val
 
-
 class Rank(ScalarExpr):
     def __init__(self, cfg, arg):
-        super().__init__(arg)
+        super().__init__()
         self.cfg = cfg
         self.ein_arg = arg
 
@@ -403,24 +392,27 @@ class Dims(AST):
                 self.index >= len(self.cfg.tups[self.ein_arg])):
             raise RuntimeError(f'Dims index \'{self.ind}\' out of bounds')
         if self.kind == DimKind.Index:
-            if self.ein_ind not in self.cfg.tups:
-                raise RuntimeError(f'Dims Index name \'{self.ind}\' not known Index')
-            if len(self.cfg.tups[self.ein_ind]) != 1:
-                raise RuntimeError(f'Dims Index index \'{self.ein_ind}\' must be '
-                        f'rank 1, got \'{len(self.cfg.tups[self.ein_ind])}\'')
-            if (self.cfg.dims(self.ein_ind)[0] >
+            if self.index not in self.cfg.tups:
+                raise RuntimeError(
+                    f'Dims Index name \'{self.index}\' not known Index')
+            if len(self.cfg.tups[self.index]) != 1:
+                raise RuntimeError(
+                    f'Dims Index index \'{self.index}\' must be '
+                    f'rank 1, got \'{len(self.cfg.tups[self.index])}\'')
+            if (self.cfg.dims(self.index)[0] >
                     len(self.cfg.dims(self.ein_arg))):
-                raise RuntimeError(f'Dims Index index \'{self.ein_ind}\' must'
-                f' have values in range of Index argument \'{self.ein_arg}\'.'
-                f' {self.cfg.dims(self.ein_ind)[0]} exceeds '
-                f'{len(self.cfg.dims(self.ein_arg))}')
+                raise RuntimeError(
+                    f'Dims Index index \'{self.index}\' must'
+                    f' have values in range of Index argument \'{self.ein_arg}\'.'
+                    f' {self.cfg.dims(self.index)[0]} exceeds '
+                    f'{len(self.cfg.dims(self.ein_arg))}')
 
     def evaluate(self, trg_sig):
         if self.kind != DimKind.Index:
             raise RuntimeError(
                 f'Only {DimKind.Index.value} Dims can call evaluate()')
         src_sig = self.get_inds()
-        ten = tf.constant(self.value())
+        ten = tf.constant(self.cfg.dims(self.ein_arg))
         ten = self.layout_to_sig(ten, src_sig, trg_sig)
         return ten
 
@@ -437,7 +429,7 @@ class Dims(AST):
     
     def get_inds(self):
         if self.kind == DimKind.Index:
-            return {self.ein_ind}
+            return {self.index}
         else:
             return set()
 
@@ -540,23 +532,23 @@ class TensorArg(AST):
 if __name__ == '__main__':
     import config
     cfg = config.Config(5, 10)
-    """
-    cfg.set_ranks({'batch': 2, 'slice': 3, 'coord': 1})
-    cfg.tups['coord'].dims[0] = 3  
-    dims = Dims(cfg, 'slice', 'coord')
-    dims.prepare()
-    rc = RandomCall(cfg, IntExpr(0), dims, 'INT')
-    ten = rc.evaluate(['slice', 'coord'])
-    # print(ten)
-    # print(ten.shape)
-    # print(cfg.tups)
-    """
 
-    cfg.set_ranks({'batch': 3, 'slice': 3, 'coord': 1})
-    cfg.tups['coord'].dims[0] = 3  
-    rng = RangeExpr(cfg, 'batch', 'coord')
-    rng.prepare()
-    ten = rng.evaluate(['slice', 'batch', 'coord'])
+    cfg.maybe_add_tup('batch')
+    cfg.maybe_add_tup('slice')
+    cfg.maybe_add_tup('coord')
+    cfg.set_dims({'batch': 3, 'slice': 3, 'coord': 1})
+    cfg.tups['coord'].set_dim(0, 3)
+    # rng = RangeExpr(cfg, 'batch', 'coord')
+    # rng.prepare()
+    # ten = rng.evaluate(['slice', 'batch', 'coord'])
+    
+    # d1 = Dims(cfg, 'batch', DimKind.Index, 'coord')
+    # d2 = Dims(cfg, 'slice', DimKind.Index, 'coord')
+    # rk = Rank(cfg, 'batch')
+    # rnd = RandomCall(cfg, IntExpr(cfg, 0), rk, 'INT')
+    # rnd.prepare()
+    # ten = rnd.evaluate(['slice', 'batch', 'coord'])
+
     print(ten)
     print(ten.shape)
     print(cfg.tups)

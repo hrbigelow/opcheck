@@ -14,6 +14,14 @@
     "ind[s,f,c] = RANGE[s,c] - RANGE[f,c] + DIMS(f)[c] // 2",
     "tmp[b,s,f,o] = input[b,s,i] * filter[f,i,o]",
     "result[b,s,ind[s,f,:],o] = tmp[b,s,f,o]"
-  ]
+  ],
+  "rank": {
+    "b": 3,
+    "s": 2,
+    "f": 2,
+    "i": 1,
+    "o": 1,
+    "c": 1
+  }
 }
 

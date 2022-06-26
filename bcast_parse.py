@@ -116,7 +116,7 @@ class BCParser(Parser):
 
     @_('INT')
     def integer(self, p):
-        return IntExpr(p.INT)
+        return IntExpr(self.cfg, p.INT)
 
     @_('RANK LPAREN tup_name RPAREN')
     def rank(self, p):
@@ -159,7 +159,8 @@ class BCParser(Parser):
        'rval_expr arith_five_op rval_unit')
     def rval_expr(self, p):
         if hasattr(p, 'arith_five_op'):
-            return ArrayBinOp(p.rval_expr, p.rval_unit, p.arith_five_op)
+            return ArrayBinOp(self.cfg, p.rval_expr, p.rval_unit,
+                    p.arith_five_op)
         else:
             return p.rval_unit
 
@@ -223,22 +224,33 @@ if __name__ == '__main__':
     import sys
     import json
 
-    cfg = config.Config()
+    cfg = config.Config(5, 10)
     parser = BCParser(cfg)
     with open('parse_tests.json', 'r') as fp:
         tests = json.load(fp)
 
     print('Parsing statements')
+    asts = []
     parser.set_statement_mode()
     for st in tests['statements']:
         ast = parser.parse(st)
         print(f'Statement: {st}\nParsed as: {ast}\n')
+        asts.append(ast)
+
+    cfg.set_dims(tests['rank'])
+    cfg.set_one_dim('c', 0, cfg.rank('s'))
+    for ast in asts:
+        print(f'Evaluating {ast}')
+        ast.prepare()
+        ast.evaluate()
 
     print(cfg.array_sig)
 
+    """
     print('Parsing constraints')
     parser.set_constraint_mode()
     for con in tests['constraints']:
         ast = parser.parse(con)
         print(f'Constraint: {con}\nParsed as:  {ast}\n')
+    """
 
