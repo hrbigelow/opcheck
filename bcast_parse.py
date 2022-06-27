@@ -220,7 +220,7 @@ if __name__ == '__main__':
     import sys
     import json
 
-    cfg = config.Config(5, 10)
+    cfg = config.Config(5, 20)
     parser = BCParser(cfg)
     with open('parse_tests.json', 'r') as fp:
         all_tests = json.load(fp)
@@ -243,7 +243,7 @@ if __name__ == '__main__':
         ast.prepare()
         ast.evaluate()
 
-    print(cfg.array_sig)
+    print(cfg)
 
     """
     print('Parsing constraints')

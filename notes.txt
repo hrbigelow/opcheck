@@ -32,4 +32,8 @@ layout_to_sig all take / return lists of EinTups.
 
 
 
+Overview
 
+The system parses the 'program' first.  The program is a list of statements.
+This creates AST nodes and also registers EinTups at the moment new names are
+parsed.

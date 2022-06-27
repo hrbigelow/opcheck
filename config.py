@@ -25,10 +25,10 @@ class Shape(object):
 
 
 class EinTup(object):
-    def __init__(self, name, shape_of=None):
+    def __init__(self, name, shadow_of=None):
         self.name = name
-        self.primary = (shape_of is None)
-        self.shape = Shape() if self.primary else shape_of 
+        self.shadow_of = shadow_of
+        self.shape = Shape() if shadow_of is None else shadow_of.shape
         self._value = None
 
     def __repr__(self):
@@ -36,6 +36,9 @@ class EinTup(object):
             dimstring = ','.join([str(d) for d in self.dims()])
         except RuntimeError:
             dimstring = '?'
+        shadow = ''
+        if not self.primary():
+            shadow = f'(shadowing {self.shadow_of.name})'
         return f'EinTup \'{self.name}\': [{dimstring}]'
 
     def __len__(self):
@@ -49,6 +52,9 @@ class EinTup(object):
         # intentionally silent.  simply used to advance the position
         self._value = next(self.index)
         return self.value()
+    
+    def primary(self):
+        return self.shadow_of is None
 
     def same_shape_as(self, other):
         return self.shape is other.shape 
@@ -60,11 +66,11 @@ class EinTup(object):
         return len(self.shape.get())
 
     def nelem(self):
-        return np.prod(self.dims())
+        return np.prod(self.dims(), dtype=np.int32)
 
     def set_dims(self, dims):
-        if not self.primary:
-            raise RuntimeError(f'cannot call set_dims on non-primary EinTup')
+        if self.shadow_of is not None:
+            raise RuntimeError(f'cannot call set_dims on shadowing EinTup')
         self.shape.set(dims)
 
     def set_dim(self, ind, val):
@@ -85,7 +91,17 @@ class Config(object):
         self.min_dim = min_dim
         self.max_dim = max_dim
 
-    # TODO: make compatible with non-primary EinTups
+    def __repr__(self):
+        tups = 'Tups: \n' + '\n'.join(repr(tup) for tup in self.tups.values())
+        sigs = 'Array Signatures: \n' 
+        sigs += '\n'.join(name + ': ' + repr(sig) for name, sig in
+                self.array_sig.items())
+        shapes = 'Array Shapes: \n'
+        shapes += '\n'.join(name + ': ' + repr(ary.shape) 
+                for name, ary in self.arrays.items())
+        return f'{tups}\n\n{sigs}\n\n{shapes}\n'
+
+    # TODO: make compatible with shadowing EinTups
     def set_dims(self, rank_map):
         for tup, rank in rank_map.items():
             if tup not in self.tups:
@@ -103,12 +119,15 @@ class Config(object):
         elif shadow_of is None:
             self.tups[name] = EinTup(name, None)
         elif shadow_of in self.tups:
-            self.tups[name] = EinTup(name, shadow_of.shape)
+            self.tups[name] = EinTup(name, shadow_of)
         else:
             raise RuntimeError(
                 f'Config::maybe_add_tup - shadow_of \'{shadow_of}\''
                 f'provided but does not exist')
         return self.tups[name]
+
+    def get_primary_tups(self):
+        return [ tup for tup in self.tups.values() if tup.primary() ]
 
     def tup(self, eintup):
         if eintup not in self.tups:
