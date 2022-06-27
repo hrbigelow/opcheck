@@ -1,0 +1,35 @@
+Concepts
+
+A 'Signature' of a Tensor is an enriched version of the notion of shape.
+Whereas a shape is an ordered list of tensor dimension sizes, such as
+[2,4,100,50,3], a 'signature' is a named contiguous grouping of such
+dimensions, like:  { 'batch': [2,4], 'slice': [100, 50], 'coord': [3] }.
+The object which stores the name and sub-shape is called the EinTup (Einstein
+Tuple), and its Shape object is a container for a shape (both dimension sizes
+and its rank) managed globally through the Config object.
+
+Config::array_sig has entries representing each array.  The key is the array
+name, and the value is a list of EinTups representing the signature.  During
+evaluation, these EinTups are passed around through several functions to
+support transpose, broadcasting, reshaping up to the signature level (one
+dimension per named EinTup) or down to the individual dimension level (one
+dimension per element in a EinTup shape)
+
+It is possible for multiple EinTups to hold the same Shape instance.  This is
+because, if a particular EinTup identifier is used in the context where another
+one was previously defined, such as in the expression:
+
+mat[a] = RANDOM(0, 10, FLOAT)
+res[a,b] = mat[a] * mat[b]
+
+The identifier 'b' is now used as the first index argument of array 'mat', and
+so will automatically share the same shape as EinTup 'a'.  However, it will
+define a separate set of dimensions for 'res' (although the dimensions are the
+same shape), enabling easily generating cartesian products.
+
+The functions AST::evaluate, flat_dims, get_inds, get_cardinality,
+layout_to_sig all take / return lists of EinTups.
+
+
+
+

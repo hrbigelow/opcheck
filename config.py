@@ -59,6 +59,9 @@ class EinTup(object):
     def rank(self):
         return len(self.shape.get())
 
+    def nelem(self):
+        return np.prod(self.dims())
+
     def set_dims(self, dims):
         if not self.primary:
             raise RuntimeError(f'cannot call set_dims on non-primary EinTup')
@@ -120,7 +123,7 @@ class Config(object):
         return len(self.dims(eintup))
 
     def nelem(self, eintup):
-        return np.prod(self.dims(eintup))
+        return self.tup(eintup).nelem()
 
     def cycle(self, *eintups):
         tups = [self.tup(e) for e in eintups]

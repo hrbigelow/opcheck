@@ -164,10 +164,6 @@ class BCParser(Parser):
         else:
             return p.rval_unit
 
-    @_('PLUS', 'MINUS', 'TIMES', 'DIVIDE')
-    def arith_four_op(self, p):
-        return p[0]
-
     @_('array_name LBRACK star_index_list RBRACK')
     def rval_array(self, p):
         return RValueArray(self.cfg, p.array_name, p.star_index_list)
@@ -227,7 +223,10 @@ if __name__ == '__main__':
     cfg = config.Config(5, 10)
     parser = BCParser(cfg)
     with open('parse_tests.json', 'r') as fp:
-        tests = json.load(fp)
+        all_tests = json.load(fp)
+
+    test_string = sys.argv[1]
+    tests = all_tests[test_string]
 
     print('Parsing statements')
     asts = []
@@ -238,7 +237,7 @@ if __name__ == '__main__':
         asts.append(ast)
 
     cfg.set_dims(tests['rank'])
-    cfg.set_one_dim('c', 0, cfg.rank('s'))
+    # cfg.set_one_dim('', 0, cfg.rank('s'))
     for ast in asts:
         print(f'Evaluating {ast}')
         ast.prepare()
