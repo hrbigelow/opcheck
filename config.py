@@ -1,5 +1,6 @@
 import numpy as np
 import itertools
+from parse import BCParser
 
 class Shape(object):
     # simple data class
@@ -84,6 +85,7 @@ class EinTup(object):
 
 class Config(object):
     def __init__(self, min_dim=5, max_dim=100):
+        self.parser = BCParser() 
         # map of eintup names to EinTup instances
         self.tups = {}
 
@@ -93,8 +95,16 @@ class Config(object):
         # stores current values of the arrays.  the shape
         # either matches or is broadcastable to the signature
         self.arrays = {}
+
+        # The program statement top-level AST nodes
+        self.statements = None 
+
+        # Ast nodes representing rank and dim comstraints
+        self.constraints = None
+
         self.min_dim = min_dim
         self.max_dim = max_dim
+        self.parser.set_config(self)
 
     def __repr__(self):
         tups = 'Tups: \n' + '\n'.join(repr(tup) for tup in self.tups.values())
@@ -106,14 +116,45 @@ class Config(object):
                 for name, ary in self.arrays.items())
         return f'{tups}\n\n{sigs}\n\n{shapes}\n'
 
-    # TODO: make compatible with shadowing EinTups
-    def set_dims(self, rank_map):
+    def compile(self, program_text, constraint_text, output_list=None):
+        statements = program_text.strip().split('\n')
+        constraints = constraint_text.strip().split('\n')
+        self.parser.set_statement_mode()
+        self.statements = [ self.parser.parse(st) for st in statements ]
+        self.parser.set_constraint_mode()
+        self.constraints = [ self.parser.parse(con) for con in constraints ]
+        for node in self.statements + self.constraints:
+            node.post_parse_init()
+        self.parser.argument_mode()
+        if output_list is None:
+            output_list = self.arrays.keys() 
+        self.outputs = [ self.parser.parse(arg) for arg in output_list ]
+
+    # run the full program and produce the set of output tensors in the
+    # preconfigured order
+    def run(self):
+        if not all(con.value() for con in self.constraints):
+            return None
+        for st in self.statements:
+            st.evaluate()
+        outs = { arg.name, arg.value() for arg in self.outputs }
+        return outs
+
+    def set_ranks(self, rank_map):
         for tup, rank in rank_map.items():
             if tup not in self.tups:
                 raise RuntimeError(
                     f'Cannot set dims for unknown EinTup {tup}')
+            if not self.tup(tup).primary():
+                raise RuntimeError(
+                    f'Cannot set dims for non-primary EinTup {tup}')
             dims = np.random.randint(self.min_dim, self.max_dim, rank)
-            self.tups[tup].set_dims(dims)
+            self.tup(tup).set_dims(dims)
+
+    def set_dims(self, dims_map):
+        for name, dims in dims_map.items():
+            self.tups[name].set_dims(dims)
+
 
     def set_one_dim(self, tup, ind, val):
         self.tup(tup).set_dim(ind, val)

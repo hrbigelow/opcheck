@@ -48,9 +48,11 @@ class BCParser(Parser):
        ('left', TIMES, DIVIDE),
     )
 
-    def __init__(self, cfg):
+    def __init__(self):
         self.lexer = BCLexer()
-        self.cfg = cfg 
+
+    def set_config(self, cfg):
+        self.cfg = cfg
 
     def set_constraint_mode(self):
         self.mode = ParserMode.Constraint
@@ -240,7 +242,7 @@ if __name__ == '__main__':
     import sys
     import json
 
-    cfg = config.Config(5, 10)
+    cfg = config.Config()
     parser = BCParser(cfg)
     with open('ops/tests.json', 'r') as fp:
         all_tests = json.load(fp)
@@ -256,7 +258,11 @@ if __name__ == '__main__':
         print(f'Statement: {st}\nParsed as: {ast}\n')
         asts.append(ast)
 
-    cfg.set_dims(tests['rank'])
+    if 'rank' in tests:
+        cfg.set_ranks(tests['rank'])
+
+    if 'dims' in tests:
+        cfg.set_dims(tests['dims'])
 
     # specific requirement for the gather test
     # cfg.set_one_dim('coord', 0, cfg.tup('elem').rank())

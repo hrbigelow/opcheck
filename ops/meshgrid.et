@@ -1,0 +1,18 @@
+in1[a] = RANDOM(0, 10, INT)
+in2[b] = RANDOM(0, 10, INT)
+in3[c] = RANDOM(0, 10, INT)
+in4[d] = RANDOM(0, 20, INT)
+out1[a,b,c,d] = in1[a]
+out2[a,b,c,d] = in2[b]
+out3[a,b,c,d] = in3[c]
+out4[a,b,c,d] = in4[d]
+
+tf.meshgrid(in1, in2, in3, in4, indexing=L('ij'))
+
+out1, out2, out3, out4
+
+RANK(a) == 1
+RANK(b) == 1
+RANK(c) == 1
+RANK(d) == 1
+

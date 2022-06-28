@@ -1,0 +1,13 @@
+mat1[batch,row,inner] = RANDOM(0, 10, FLOAT)
+mat2[batch,inner,col] = RANDOM(0, 10, FLOAT)
+result[batch,row,col] = mat1[batch,row,inner] * mat2[batch,inner,col]
+
+tf.linalg.matmul(mat1, mat2)
+
+result
+
+RANK(batch) < 4
+RANK(row) == 1
+RANK(inner) == 1
+RANK(col) == 1
+
