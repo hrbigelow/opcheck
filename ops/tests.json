@@ -37,6 +37,20 @@
       "col": 1,
       "inner": 1
     }
+  },
+  "gather": {
+    "statements": [
+      "params[batch,elem,other] = RANDOM(0, 10, FLOAT)",
+      "indices[batch,slice,coord] = RANDOM(0, 100, INT)",
+      "result[batch,slice,other] = params[batch,indices[batch,slice,:],other]"
+    ],
+    "rank": {
+      "batch": 1,
+      "elem": 2,
+      "other": 1,
+      "slice": 1,
+      "coord": 1
+    }
   }
 }
 

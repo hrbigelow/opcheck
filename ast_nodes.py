@@ -49,27 +49,32 @@ def flat_dims(tups):
     # tup.dims() may be empty, but this still works correctly
     return [ dim for tup in tups for dim in tup.dims()]
 
-def get_cardinality(tups):
+def packed_dims(tups):
     # tup.nelem() returns 1 for a zero-rank tup.  this
     # seems to work correctly.
     return [ tup.nelem() for tup in tups ]
 
 # reshape / transpose ten, with starting shape src_sig,
-# to be broadcastable to trg_sig 
-def layout_to_sig(ten, src_sig, trg_sig):
-    if ten.shape != flat_dims(src_sig):
+# to be broadcastable to trg_sig.  if is_packed, consume
+# and produce the packed form of the signature
+def to_sig(ten, src_sig, trg_sig, is_packed=False):
+    expect_dims = packed_dims(src_sig) if is_packed else flat_dims(src_sig)
+    if ten.shape != expect_dims:
+        desc = 'packed' if is_packed else 'flat'
         raise RuntimeError(
             f'Tensor shape {ten.shape} not consistent with '
-            f'signature shape {flat_dims(src_sig)}')
-    src_card = get_cardinality(src_sig)
-    ten = tf.reshape(ten, src_card)
+            f'signature {desc} shape {expect_dims}')
+    if not is_packed:
+        src_dims = packed_dims(src_sig)
+        ten = tf.reshape(ten, src_dims)
+
     marg_ex = set(src_sig).difference(trg_sig)
     if len(marg_ex) != 0:
         marg_pos = [ i for i, tup in enumerate(src_sig) if tup in marg_ex ]
         ten = tf.reduce_sum(ten, marg_pos)
 
     src_sig = [ tup for tup in src_sig if tup not in marg_ex ]
-    card = [ s.nelem() for s in src_sig ]
+    card = packed_dims(src_sig)
     augmented = list(src_sig)
     trg_dims = []
 
@@ -88,7 +93,9 @@ def layout_to_sig(ten, src_sig, trg_sig):
 
     ten = tf.reshape(ten, card)
     ten = tf.transpose(ten, perm)
-    ten = tf.reshape(ten, trg_dims)
+
+    if not is_packed:
+        ten = tf.reshape(ten, trg_dims)
 
     return ten
 
@@ -110,6 +117,11 @@ class AST(object):
         child_repr = '\n'.join(indent(cr) for cr in child_reprs)
         return this + '\n' + child_repr
 
+    # Call after all parsing is finished
+    def post_parse_init(self):
+        for ch in self.children:
+            ch.post_parse_init()
+
     def get_tups(self):
         return {tup for c in self.children for tup in c.get_tups()}
 
@@ -129,7 +141,8 @@ class Slice(AST):
                 f'Expecting {len(sig)} but got {len(index_list)}')
 
         found_star = False
-        for sig_tup, call in zip(sig, index_list):
+        z = zip(range(len(sig)), sig, index_list)
+        for pos, sig_tup, call in z:
             if call == STAR: 
                 if found_star:
                     raise RuntimeError(
@@ -137,6 +150,7 @@ class Slice(AST):
                         f'allowed in a Slice instance')
                 found_star = True
                 self.star_tup = sig_tup
+                self.star_pos = pos
                 continue
             elif not isinstance(call, str):
                 raise RuntimeError(
@@ -156,10 +170,12 @@ class Slice(AST):
         # passed all checks
         self.cfg = cfg
         self.name = array_name
-        self.index_list = index_list
+        self.index_list = [ self.cfg.tup(name) if name != STAR else name 
+                for name in index_list ]
 
     def __repr__(self):
-        ind_list = ','.join(self.index_list)
+        ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
+                for ind in self.index_list)
         return f'Slice({self.name})[{ind_list}]'
 
     def slice_dim(self):
@@ -173,7 +189,9 @@ class Slice(AST):
         if self.name not in self.cfg.arrays:
             raise RuntimeError(
                 f'Slice is not materialized yet.  Cannot call evaluate()')
-            return (self.cfg.arrays[self.name], self.index_list)
+        z = zip(self.cfg.array_sig[self.name], self.index_list)
+        use_sig = [ sig if use == STAR else use for sig, use in z]
+        return (self.cfg.arrays[self.name], use_sig)
 
 class Array(AST):
     def __init__(self, cfg, array_name, index_list):
@@ -198,10 +216,16 @@ class Array(AST):
             slc = self.index_list[self.slice_pos]
             self.children.append(slc)
 
+    def __repr__(self):
+        cls_name = self.__class__.__name__
+        ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
+                for ind in self.index_list)
+        return f'{cls_name}({self.name})[{ind_list}]'
+
     def has_slice(self):
         return self.slice_pos is not None
     
-    def maybe_get_slice_index(self):
+    def maybe_get_slice_node(self):
         if self.has_slice():
             return self.index_list[self.slice_pos]
         return None
@@ -210,7 +234,10 @@ class Array(AST):
         if self.name not in self.cfg.arrays:
             raise RuntimeError(
                 f'Array {self.name} called evaluate() but not materialized')
-        return (self.cfg.arrays[self.name], self.index_list)
+        # replace the Slice with the tup if it exists
+        z = zip(self.cfg.array_sig[self.name], self.index_list)
+        use_sig = [ sig if isinstance(use, Slice) else use for sig, use in z]
+        return (self.cfg.arrays[self.name], use_sig)
 
     def get_array(self):
         if self.has_slice():
@@ -221,11 +248,11 @@ class Array(AST):
     def _shape_check(self):
         # check that 
         sig = self.cfg.array_sig[self.name]
-        slice_ind = self.maybe_get_slice_index()
+        slice_node = self.maybe_get_slice_node()
         target_sig_tup = sig[self.slice_pos]
-        if target_sig_tup.rank() != slice_ind.slice_dim():
+        if target_sig_tup.rank() != slice_node.slice_dim():
             raise RuntimeError(
-                f'Array contains Slice of size {slice_ind.slice_dim()} '
+                f'Array contains Slice of size {slice_node.slice_dim()} '
                 f'for target {target_sig_tup} of rank {target_sig_tup.rank()}.'
                 f' Size and rank must match')
 
@@ -235,8 +262,8 @@ class Array(AST):
                 f'Cannot call Array:get_array_and_slice() on non-slice array')
         self._shape_check()
         array = self._get_array()
-        slice_ind = self.maybe_get_slice_index()
-        slice_array = slice_ind.get_array()
+        slice_node = self.maybe_get_slice_node()
+        slice_array = slice_node.get_array()
         return (array, slice_array) 
 
 class LValueArray(Array):
@@ -285,44 +312,48 @@ class RValueArray(Array):
         return tups
 
     def _evaluate_sliced(self, trg_sig):
+        # see 'gather' test in ops/tests.json
+        """
+        Overall approach:
+        1.  pack all tuple dims in the top level and sub level tensors
+        2.  calculate the 3-way intersection/difference sigs
+        3.   
+        """
         array, slice_array = self.get_array_and_slice()
         top_ten, top_sig = array
         sub_ten, sub_sig = slice_array
 
-        # group tuple dimensions together
-        top_card = get_cardinality(top_sig)
-        sub_card = get_cardinality(sub_sig)
+        top_ten = tf.reshape(top_ten, packed_dims(top_sig))
+        sub_ten = tf.reshape(sub_ten, packed_dims(sub_sig))
 
-        top_ten = tf.reshape(top_ten, top_card)
-        sub_ten = tf.reshape(sub_ten, sub_card)
+        slice_node = self.maybe_get_slice_node()
+        top_sig_orig = list(top_sig)
+        sub_sig_orig = list(sub_sig)
 
-        sub_sig = [ i.name for i in sub_sig ] 
-        top_sig = [ p.name for p in top_sig ]
+        slice_tup = top_sig.pop(self.slice_pos)
+        star_tup = sub_sig.pop(slice_node.star_pos)
 
-        slice_sig = top_sig.pop(self.slice_pos)
-        star_sig = sub_sig.pop(array_slice.star_tup.name)
-
-        batch_sig = set(sub_sig).intersection(top_sig)
-        fetch_sig = set(sub_sig).difference(top_sig)
-        other_sig = set(top_sig).difference(sub_sig)
+        fetch_sig, batch_sig, other_sig = util.order_union_ixn(sub_sig, top_sig)
 
         # target shapes
-        target_sub = batch_sig + fetch_sig + [star_sig]
-        target_top = batch_sig + slice_sig + other_sig
+        target_sub = batch_sig + fetch_sig + [star_tup]
+        target_top = batch_sig + [slice_tup] + other_sig
         target_res = batch_sig + fetch_sig + other_sig
 
-        top_ten = layout_to_sig(top_ten, top_sig, target_top)
-        sub_ten = layout_to_sig(sub_ten, sub_sig, target_sub)
+        top_ten = to_sig(top_ten, top_sig_orig, target_top, is_packed=True)
+        sub_ten = to_sig(sub_ten, sub_sig_orig, target_sub, is_packed=True)
 
-        star_dims = self.cfg.dims(star_sig)
+        in_bounds = util.range_check(sub_ten, slice_tup.dims())
+        sub_ten = util.flatten(sub_ten, slice_tup.dims())
+        sub_ten = tf.where(in_bounds, sub_ten, -1)
 
-        out_of_bounds = util.range_check(sub_ten, star_dims)
-        sub_ten = util.flatten(sub_ten, star_dims)
-        result = tf.gather_nd(top_ten, sub_ten, batch_dims=1)
+        num_batch_dims = len(batch_sig)
+        result = tf.gather_nd(top_ten, sub_ten, batch_dims=num_batch_dims)
+        # even though gather returns zero for out-of-bounds indices,
+        # the packed sub_ten may not be out-of-bounds while the flat one is.
 
-        # TODO: filter out_of_bounds elements
         target_res_dims = flat_dims(target_res)
-        result = layout_to_sig(result, target_res_dims)
+        result = tf.reshape(result, target_res_dims)
         return result
 
     def evaluate(self, trg_sig):
@@ -330,7 +361,7 @@ class RValueArray(Array):
             return self._evaluate_sliced(trg_sig)
         else:
             ten, src_sig = self.get_array()
-            ten = layout_to_sig(ten, src_sig, trg_sig)
+            ten = to_sig(ten, src_sig, trg_sig)
             return ten
 
 class RandomCall(AST):
@@ -394,7 +425,7 @@ class RangeExpr(AST):
         ten = [tf.range(e) for e in self.key_tup.dims()]
         ten = tf.meshgrid(*ten, indexing='ij')
         ten = tf.stack(ten, axis=self.key_tup.rank())
-        ten = layout_to_sig(ten, src_sig, trg_sig)
+        ten = to_sig(ten, src_sig, trg_sig)
         return ten
 
 class ArrayBinOp(AST):
@@ -429,7 +460,7 @@ class ArrayBinOp(AST):
         lval = self.lhs.evaluate(sub_sig)
         rval = self.rhs.evaluate(sub_sig)
         ten = self.op(lval, rval)
-        ten = layout_to_sig(ten, sub_sig, trg_sig)
+        ten = to_sig(ten, sub_sig, trg_sig)
         return ten
 
 class Assign(AST):
@@ -459,7 +490,7 @@ class ScalarExpr(AST):
     def evaluate(self, trg_sig):
         src_sig = []
         ten = tf.constant(self.value())
-        return layout_to_sig(ten, src_sig, trg_sig)
+        return to_sig(ten, src_sig, trg_sig)
 
 class IntExpr(ScalarExpr):
     def __init__(self, cfg, val):
@@ -515,15 +546,11 @@ class Dims(AST):
     def __repr__(self):
         return f'Dims({self.base_tup.name})[{self.index or ":"}]'
 
-    def prepare(self):
+    def post_parse_init(self):
         if self.ein_arg not in self.cfg.tups:
             raise RuntimeError(f'Dims argument \'{self.ein_arg}\' not a known Index')
         else:
             self.base_tup = self.cfg.tup(self.ein_arg)
-
-        if (self.kind == DimKind.Int and 
-                self.index >= len(self.cfg.tups[self.ein_arg])):
-            raise RuntimeError(f'Dims index \'{self.ind}\' out of bounds')
 
         if self.kind == DimKind.Index:
             if self.index not in self.cfg.tups:
@@ -532,6 +559,18 @@ class Dims(AST):
             else:
                 self.ind_tup = self.cfg.tup(self.index)
 
+
+    def evaluate(self, trg_sig):
+        if self.kind != DimKind.Index:
+            raise RuntimeError(
+                f'Only {DimKind.Index.value} Dims can call evaluate()')
+
+        if self.kind == DimKind.Int and self.index >= self.base_tup.rank():
+            raise RuntimeError(
+                f'Dims index \'{self.index}\' must be less than '
+                f'base_tup rank {self.base_tup.rank()}')
+
+        if self.kind == DimKind.Index:
             if self.ind_tup.rank() != 1:
                 raise RuntimeError(
                     f'Dims Index index \'{self.ind_tup}\' must be '
@@ -542,13 +581,9 @@ class Dims(AST):
                     f' have values in range of Index argument \'{self.base_tup}\'.'
                     f' {self.ind_tup.dims()[0]} exceeds {self.base_tup.rank()}')
 
-    def evaluate(self, trg_sig):
-        if self.kind != DimKind.Index:
-            raise RuntimeError(
-                f'Only {DimKind.Index.value} Dims can call evaluate()')
         src_sig = self.get_tups()
         ten = tf.constant(self.base_tup.dims())
-        ten = layout_to_sig(ten, src_sig, trg_sig)
+        ten = to_sig(ten, src_sig, trg_sig)
         return ten
 
     def value(self):
@@ -659,7 +694,14 @@ class TensorArg(AST):
         self.name = name
 
     def value(self):
-        return self.cfg.arrays[self.name]
+        # materializes the value to full dimensions.
+        # cfg.arrays may be stored in a form merely broadcastable to the
+        # signature.
+        sig = self.cfg.array_sig[self.name]
+        full_dims = flat_dims(sig)
+        ten = self.cfg.arrays[self.name]
+        ten = tf.broadcast_to(ten, full_dims)
+        return ten
 
 
 if __name__ == '__main__':

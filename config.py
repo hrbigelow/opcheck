@@ -86,7 +86,12 @@ class Config(object):
     def __init__(self, min_dim=5, max_dim=100):
         # map of eintup names to EinTup instances
         self.tups = {}
+
+        # defines the signature (see notes.txt) of arrays
         self.array_sig = {}
+
+        # stores current values of the arrays.  the shape
+        # either matches or is broadcastable to the signature
         self.arrays = {}
         self.min_dim = min_dim
         self.max_dim = max_dim

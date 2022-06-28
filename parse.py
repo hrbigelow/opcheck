@@ -12,7 +12,7 @@ class BCLexer(Lexer):
     ignore = ' \t'
 
     # Regular expression rules for tokens
-    ID    = r'[a-z]+'
+    ID    = r'[a-z][a-z0-9]*'
     COMMA   = r','
     COLON   = r':'
     INT     = r'[0-9]+'
@@ -71,9 +71,13 @@ class BCParser(Parser):
             return p.statement
         else:
             raise RuntimeError('Parse Error at top level')
+    
+    @_('tensor_arg', 'rank')
+    def argument(self, p):
+        return p[0]
 
     @_('ID')
-    def argument(self, p):
+    def tensor_arg(self, p):
         return TensorArg(self.cfg, p.ID)
     
     @_('shape_test', 'tup_limit')
@@ -236,9 +240,9 @@ if __name__ == '__main__':
     import sys
     import json
 
-    cfg = config.Config(5, 20)
+    cfg = config.Config(5, 10)
     parser = BCParser(cfg)
-    with open('parse_tests.json', 'r') as fp:
+    with open('ops/tests.json', 'r') as fp:
         all_tests = json.load(fp)
 
     test_string = sys.argv[1]
@@ -253,13 +257,19 @@ if __name__ == '__main__':
         asts.append(ast)
 
     cfg.set_dims(tests['rank'])
-    # cfg.set_one_dim('', 0, cfg.rank('s'))
+
+    # specific requirement for the gather test
+    # cfg.set_one_dim('coord', 0, cfg.tup('elem').rank())
+
     for ast in asts:
-        print(f'Evaluating {ast}')
-        ast.prepare()
-        ast.evaluate()
+        ast.post_parse_init()
 
     print(cfg)
+
+    for ast in asts:
+        print(f'Evaluating {ast}')
+        ast.evaluate()
+
 
     """
     print('Parsing constraints')
