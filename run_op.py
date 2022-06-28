@@ -2,9 +2,9 @@ import sys
 import json
 import tensorflow as tf
 import numpy as np
-from bcast_parse import BCParser
+from parse import BCParser
 from config import Config
-from bcast_ast import RangeConstraint, LogicalOp
+from ast_nodes import RangeConstraint, LogicalOp
 
 def equal_tensors(a, b, eps):
     return (

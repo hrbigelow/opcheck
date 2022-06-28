@@ -1,6 +1,6 @@
 from enum import Enum
 from sly import Lexer, Parser
-from bcast_ast import *
+from ast_nodes import *
 
 class BCLexer(Lexer):
     # Set of token names.   This is always required

@@ -2,7 +2,7 @@ import tensorflow as tf
 import enum
 import operator
 import re
-import scatter_gather_funcs as sg
+import util
 
 def define_sig(cfg, use_list):
     not_str = next((use for use in use_list if not isinstance(use, str)), None)
@@ -316,8 +316,8 @@ class RValueArray(Array):
 
         star_dims = self.cfg.dims(star_sig)
 
-        out_of_bounds = sg.range_check(sub_ten, star_dims)
-        sub_ten = sg.flatten(sub_ten, star_dims)
+        out_of_bounds = util.range_check(sub_ten, star_dims)
+        sub_ten = util.flatten(sub_ten, star_dims)
         result = tf.gather_nd(top_ten, sub_ten, batch_dims=1)
 
         # TODO: filter out_of_bounds elements
