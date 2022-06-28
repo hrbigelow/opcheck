@@ -118,11 +118,11 @@ class Config(object):
             pass
         elif shadow_of is None:
             self.tups[name] = EinTup(name, None)
-        elif shadow_of in self.tups:
+        elif shadow_of.name in self.tups:
             self.tups[name] = EinTup(name, shadow_of)
         else:
             raise RuntimeError(
-                f'Config::maybe_add_tup - shadow_of \'{shadow_of}\''
+                f'Config::maybe_add_tup - shadow_of \'{shadow_of}\' '
                 f'provided but does not exist')
         return self.tups[name]
 

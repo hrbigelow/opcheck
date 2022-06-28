@@ -1,7 +1,7 @@
 {
   "program": [
-    "params[batch,elem] = RANDOM()",
-    "indices[batch,slice,coord] = RANDINT(0, DIMS(elem)[coord])",
+    "params[batch,elem] = RANDOM(0, 10, FLOAT)",
+    "indices[batch,slice,coord] = RANDOM(0, DIMS(elem)[coord], FLOAT)",
     "result[batch,slice] = params[batch,indices[batch,slice,:]]"
   ],
   "constraints": [
