@@ -45,6 +45,53 @@ def check_sig(cfg, sig_list, use_list):
                 f'check_sig expected string or Slice argument.  Found '
                 f'{type(use)}')
 
+def flat_dims(tups):
+    # tup.dims() may be empty, but this still works correctly
+    return [ dim for tup in tups for dim in tup.dims()]
+
+def get_cardinality(tups):
+    # tup.nelem() returns 1 for a zero-rank tup.  this
+    # seems to work correctly.
+    return [ tup.nelem() for tup in tups ]
+
+# reshape / transpose ten, with starting shape src_sig,
+# to be broadcastable to trg_sig 
+def layout_to_sig(ten, src_sig, trg_sig):
+    if ten.shape != flat_dims(src_sig):
+        raise RuntimeError(
+            f'Tensor shape {ten.shape} not consistent with '
+            f'signature shape {flat_dims(src_sig)}')
+    src_card = get_cardinality(src_sig)
+    ten = tf.reshape(ten, src_card)
+    marg_ex = set(src_sig).difference(trg_sig)
+    if len(marg_ex) != 0:
+        marg_pos = [ i for i, tup in enumerate(src_sig) if tup in marg_ex ]
+        ten = tf.reduce_sum(ten, marg_pos)
+
+    src_sig = [ tup for tup in src_sig if tup not in marg_ex ]
+    card = [ s.nelem() for s in src_sig ]
+    augmented = list(src_sig)
+    trg_dims = []
+
+    for ti, trg in enumerate(trg_sig):
+        if trg not in src_sig:
+            card.append(1)
+            augmented.append(trg)
+            trg_dims.extend([1] * trg.rank())
+        else:
+            trg_dims.extend(trg.dims())
+
+    # trg_sig[i] = augmented[perm[i]], maps augmented to trg_sig
+    perm = []
+    for trg in trg_sig:
+        perm.append(augmented.index(trg))
+
+    ten = tf.reshape(ten, card)
+    ten = tf.transpose(ten, perm)
+    ten = tf.reshape(ten, trg_dims)
+
+    return ten
+
 STAR = ':'
 
 class AST(object):
@@ -65,53 +112,6 @@ class AST(object):
 
     def get_tups(self):
         return {tup for c in self.children for tup in c.get_tups()}
-
-    def flat_dims(self, tups):
-        # tup.dims() may be empty, but this still works correctly
-        return [ dim for tup in tups for dim in tup.dims()]
-
-    def get_cardinality(self, tups):
-        # tup.nelem() returns 1 for a zero-rank tup.  this
-        # seems to work correctly.
-        return [ tup.nelem() for tup in tups ]
-
-    # reshape / transpose ten, with starting shape src_sig,
-    # to be broadcastable to trg_sig 
-    def layout_to_sig(self, ten, src_sig, trg_sig):
-        if ten.shape != self.flat_dims(src_sig):
-            raise RuntimeError(
-                f'Tensor shape {ten.shape} not consistent with '
-                f'signature shape {self.flat_dims(src_sig)}')
-        src_card = self.get_cardinality(src_sig)
-        ten = tf.reshape(ten, src_card)
-        marg_ex = set(src_sig).difference(trg_sig)
-        if len(marg_ex) != 0:
-            marg_pos = [ i for i, tup in enumerate(src_sig) if tup in marg_ex ]
-            ten = tf.reduce_sum(ten, marg_pos)
-
-        src_sig = [ tup for tup in src_sig if tup not in marg_ex ]
-        card = [ s.nelem() for s in src_sig ]
-        augmented = list(src_sig)
-        trg_dims = []
-
-        for ti, trg in enumerate(trg_sig):
-            if trg not in src_sig:
-                card.append(1)
-                augmented.append(trg)
-                trg_dims.extend([1] * trg.rank())
-            else:
-                trg_dims.extend(trg.dims())
-
-        # trg_sig[i] = augmented[perm[i]], maps src to trg 
-        perm = []
-        for aug in augmented:
-            perm.append(trg_sig.index(aug))
-
-        ten = tf.reshape(ten, card)
-        ten = tf.transpose(ten, perm)
-        ten = tf.reshape(ten, trg_dims)
-
-        return ten
 
 class Slice(AST):
     # Represents an expression ary[a,b,c,:,e,...] with exactly one ':' and
@@ -290,8 +290,8 @@ class RValueArray(Array):
         sub_ten, sub_sig = slice_array
 
         # group tuple dimensions together
-        top_card = self.get_cardinality(top_sig)
-        sub_card = self.get_cardinality(sub_sig)
+        top_card = get_cardinality(top_sig)
+        sub_card = get_cardinality(sub_sig)
 
         top_ten = tf.reshape(top_ten, top_card)
         sub_ten = tf.reshape(sub_ten, sub_card)
@@ -311,8 +311,8 @@ class RValueArray(Array):
         target_top = batch_sig + slice_sig + other_sig
         target_res = batch_sig + fetch_sig + other_sig
 
-        top_ten = self.layout_to_sig(top_ten, top_sig, target_top)
-        sub_ten = self.layout_to_sig(sub_ten, sub_sig, target_sub)
+        top_ten = layout_to_sig(top_ten, top_sig, target_top)
+        sub_ten = layout_to_sig(sub_ten, sub_sig, target_sub)
 
         star_dims = self.cfg.dims(star_sig)
 
@@ -321,8 +321,8 @@ class RValueArray(Array):
         result = tf.gather_nd(top_ten, sub_ten, batch_dims=1)
 
         # TODO: filter out_of_bounds elements
-        target_res_dims = self.flat_dims(target_res)
-        result = self.layout_to_sig(result, target_res_dims)
+        target_res_dims = flat_dims(target_res)
+        result = layout_to_sig(result, target_res_dims)
         return result
 
     def evaluate(self, trg_sig):
@@ -330,7 +330,7 @@ class RValueArray(Array):
             return self._evaluate_sliced(trg_sig)
         else:
             ten, src_sig = self.get_array()
-            ten = self.layout_to_sig(ten, src_sig, trg_sig)
+            ten = layout_to_sig(ten, src_sig, trg_sig)
             return ten
 
 class RandomCall(AST):
@@ -358,7 +358,7 @@ class RandomCall(AST):
         mins = tf.cast(mins, self.dtype)
         maxs = self.max_expr.evaluate(trg_sig)
         maxs = tf.cast(maxs, self.dtype)
-        trg_dims = self.flat_dims(trg_sig) 
+        trg_dims = flat_dims(trg_sig) 
         rnd = tf.random.uniform(trg_dims, 0, 2**31-1, dtype=self.dtype)
         ten = rnd % (maxs - mins) + mins
         return ten
@@ -394,7 +394,7 @@ class RangeExpr(AST):
         ten = [tf.range(e) for e in self.key_tup.dims()]
         ten = tf.meshgrid(*ten, indexing='ij')
         ten = tf.stack(ten, axis=self.key_tup.rank())
-        ten = self.layout_to_sig(ten, src_sig, trg_sig)
+        ten = layout_to_sig(ten, src_sig, trg_sig)
         return ten
 
 class ArrayBinOp(AST):
@@ -429,7 +429,7 @@ class ArrayBinOp(AST):
         lval = self.lhs.evaluate(sub_sig)
         rval = self.rhs.evaluate(sub_sig)
         ten = self.op(lval, rval)
-        ten = self.layout_to_sig(ten, sub_sig, trg_sig)
+        ten = layout_to_sig(ten, sub_sig, trg_sig)
         return ten
 
 class Assign(AST):
@@ -459,7 +459,7 @@ class ScalarExpr(AST):
     def evaluate(self, trg_sig):
         src_sig = []
         ten = tf.constant(self.value())
-        return self.layout_to_sig(ten, src_sig, trg_sig)
+        return layout_to_sig(ten, src_sig, trg_sig)
 
 class IntExpr(ScalarExpr):
     def __init__(self, cfg, val):
@@ -548,7 +548,7 @@ class Dims(AST):
                 f'Only {DimKind.Index.value} Dims can call evaluate()')
         src_sig = self.get_tups()
         ten = tf.constant(self.base_tup.dims())
-        ten = self.layout_to_sig(ten, src_sig, trg_sig)
+        ten = layout_to_sig(ten, src_sig, trg_sig)
         return ten
 
     def value(self):

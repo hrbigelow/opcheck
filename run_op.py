@@ -20,10 +20,14 @@ def validate(cfg, json_entry):
     if 'const-args' in dat:
         kwargs.update(dat['const-args'])
 
-    eintup_result = parser.parse(dat['return-value']).value()
+    return_tensor = dat['return-value']
+    eintup_result = parser.parse(return_tensor).value()
     func = eval(dat['func'])
     tf_result = func(**kwargs)
     equal = equal_tensors(tf_result, eintup_result, 1e-6)
+    # print(cfg.array_sig[return_tensor])
+    # print(tf.reduce_sum(tf.subtract(tf_result, eintup_result)))
+    # print(tf_result.device)
     return equal
 
 
@@ -65,6 +69,6 @@ if __name__ == '__main__':
     with open(program_file, 'r') as fp:
         program = json.load(fp)
 
-    cfg = Config(5, 10)
+    cfg = Config(2, 6)
     run_programs(cfg, program)
 

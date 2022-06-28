@@ -1,0 +1,26 @@
+{
+  "program": [
+    "input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)",
+    "filters[fpos,ichan,ochan] = RANDOM(0, 10, FLOAT)",
+    "tmp[batch,ipos,fpos,ochan] = input[batch,ipos,ichan] * filters[fpos,ichan,ochan]",
+    "index[ipos,fpos,coord] = RANGE[ipos,coord] - RANGE[fpos,coord] + MIN(ipos-fpos)",
+    "output[batch,field,ochan] = 0",
+    "output[batch,index[ipos,fpos,:],ochan] += tmp[batch,ipos,fpos,ochan]"
+  ],
+  "constraints": [
+    "RANK(batch) < 3",
+    "DIMS(fpos) < DIMS(ipos)"
+  ],
+  "tfcall": {
+    "func": "tf.nn.convolution",
+    "args": {
+      "input": "input",
+      "filters": "filters"
+    },
+    "const-args": {
+      "padding": "VALID"
+    },
+    "return-value": "output"
+  }
+
+

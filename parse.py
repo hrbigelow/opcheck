@@ -165,8 +165,12 @@ class BCParser(Parser):
             return p.rval_unit
 
     @_('array_name LBRACK star_index_list RBRACK')
+    def slice_node(self, p):
+        return Slice(self.cfg, p.array_name, p.star_index_list)
+
+    @_('array_name LBRACK nested_index_list RBRACK')
     def rval_array(self, p):
-        return RValueArray(self.cfg, p.array_name, p.star_index_list)
+        return RValueArray(self.cfg, p.array_name, p.nested_index_list)
 
     @_('RANDOM LPAREN array_slice COMMA array_slice COMMA DTYPE RPAREN')
     def rand_call(self, p):
@@ -200,8 +204,20 @@ class BCParser(Parser):
         else:
             return [p.star_index_expr]
 
-    @_('COLON', 'tup_name', 'array_slice')
+    @_('COLON', 'tup_name')
     def star_index_expr(self, p):
+        return p[0]
+
+    @_('nested_index_expr',
+       'nested_index_list COMMA nested_index_expr')
+    def nested_index_list(self, p):
+        if hasattr(p, 'COMMA'):
+            return p.nested_index_list + [p.nested_index_expr]
+        else:
+            return [p.nested_index_expr]
+
+    @_('tup_name', 'slice_node')
+    def nested_index_expr(self, p):
         return p[0]
 
     @_('ID')
