@@ -688,10 +688,13 @@ class RangeConstraint(AST):
 
 class TensorArg(AST):
     def __init__(self, cfg, name):
-        if name not in cfg.arrays:
+        if name not in cfg.array_sig:
             raise RuntimeError(f'argument must be array name, got {name}')
         self.cfg = cfg
         self.name = name
+
+    def __repr__(self):
+        return f'TensorArg({self.name})'
 
     def value(self):
         # materializes the value to full dimensions.
@@ -703,6 +706,36 @@ class TensorArg(AST):
         ten = tf.broadcast_to(ten, full_dims)
         return ten
 
+class TFCall(AST):
+    """
+    Represents a python function call of a TensorFlow function.
+    Arguments can be TensorArg, Dims, Rank, or python literals.
+    Python literals are wrapped with 'L(...)'
+    """
+    def __init__(self, func_name, tf_call_list):
+        try:
+            self.func = eval(func_name)
+        except NameError as ne:
+            raise RuntimeError(
+                f'TFCall could not find function {func_name}: {ne}')
+        self.func_name = func_name
+        self.tf_call_list = tf_call_list
+
+    def __repr__(self):
+        return f'TFCall({self.func_name})[{self.tf_call_list}]'
+
+    def value(self):
+        def v(a):
+            return a.value() if isinstance(a, AST) else a
+        calls = self.tf_call_list
+        kwargs = dict((a[0], v(a[1])) for a in calls if isinstance(a, tuple))
+        args = [ v(a) for a in calls if not isinstance(a, tuple) ]
+        result = self.func(*args, **kwargs)
+
+        # promote to list
+        if not isinstance(result, (list, tuple)):
+            result = [result]
+        return result
 
 if __name__ == '__main__':
     import config

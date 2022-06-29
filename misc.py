@@ -1,14 +1,6 @@
 import tensorflow as tf
 from parse import BCParser
 
-def equal_tensors(a, b, eps):
-    if not a.dtype.is_floating:
-        eps = 0
-    return (
-            a.shape == b.shape and
-            tf.reduce_all(tf.less_equal(tf.abs(a - b), eps)).numpy()
-            )
-
 def validate(cfg, json_entry):
     dat = json_entry['tfcall']
     parser = BCParser(cfg)

@@ -1,6 +1,16 @@
+import tensorflow as tf
 import numpy as np
 import itertools
+import re
 from parse import BCParser
+
+def equal_tens(a, b, eps):
+    if not a.dtype.is_floating:
+        eps = 0
+    return (
+            a.shape == b.shape and
+            tf.reduce_all(tf.less_equal(tf.abs(a - b), eps)).numpy()
+            )
 
 class Shape(object):
     # simple data class
@@ -116,20 +126,38 @@ class Config(object):
                 for name, ary in self.arrays.items())
         return f'{tups}\n\n{sigs}\n\n{shapes}\n'
 
-    def compile(self, program_text, constraint_text, output_list=None):
-        statements = program_text.strip().split('\n')
-        constraints = constraint_text.strip().split('\n')
+    def parse_et_file(self, et_file):
+        with open(et_file, 'r') as fh:
+            content = fh.read()
+
+        sections = iter(re.split('\n\n+', content.strip()))
+        statements = next(sections)
+        tf_call = next(sections)
+        tf_output = next(sections)
+        constraints = next(sections, '')
+
+        statements = statements.strip().split('\n')
+        tf_call = tf_call.replace('\n', ' ').strip()
+        tf_output = tf_output.replace('\n', ' ').strip()
+        constraints = constraints.strip().split('\n')
+
         self.parser.set_statement_mode()
         self.statements = [ self.parser.parse(st) for st in statements ]
+
+        self.parser.set_tfcall_mode()
+        self.tf_call = self.parser.parse(tf_call)
+
+        # ordered list of TensorArg nodes in the order matching expected tf
+        # output
+        self.parser.set_output_mode()
+        self.out_args = self.parser.parse(tf_output)
+        
         self.parser.set_constraint_mode()
         self.constraints = [ self.parser.parse(con) for con in constraints ]
+
         for node in self.statements + self.constraints:
             node.post_parse_init()
-        self.parser.argument_mode()
-        if output_list is None:
-            output_list = self.arrays.keys() 
-        self.outputs = [ self.parser.parse(arg) for arg in output_list ]
-
+        
     # run the full program and produce the set of output tensors in the
     # preconfigured order
     def run(self):
@@ -137,8 +165,34 @@ class Config(object):
             return None
         for st in self.statements:
             st.evaluate()
-        outs = { arg.name, arg.value() for arg in self.outputs }
+        outs = { (arg.name, arg.value()) for arg in self.outputs }
         return outs
+
+    # generate all qualifying rank + dims combinations as a rank_map plus
+    # dims_map pair
+    def gen_shapes(self):
+        primary_tup_names = [ tup.name for tup in self.get_primary_tups() ]
+        rank_space = (10,) * len(primary_tup_names)
+        for rank_combo in np.ndindex(rank_space):
+            rank_map = dict(zip(primary_tup_names, rank_combo))
+            self.set_ranks(rank_map)
+            if not all(con.value() for con in self.constraints):
+                continue
+            yield rank_map
+
+    def validate_all(self):
+        for rmap in self.gen_shapes():
+            valid = self.validate()
+            print(f'{rmap} {valid}')
+
+    # validate the current rank + dims setting
+    def validate(self):
+        for st in self.statements:
+            st.evaluate()
+        tf_outputs = self.tf_call.value()
+        z = zip(self.out_args, tf_outputs)
+        valid = [ equal_tens(et.value(), tf_out, 1e-6) for et, tf_out in z ]
+        return valid
 
     def set_ranks(self, rank_map):
         for tup, rank in rank_map.items():

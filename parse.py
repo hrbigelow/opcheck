@@ -4,19 +4,32 @@ from ast_nodes import *
 
 class BCLexer(Lexer):
     # Set of token names.   This is always required
-    tokens = { ID, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES, DIVIDE,
-            TRUEDIV, INT, COMP, ASSIGN, ACCUM, COMMA, COLON, DIMS, RANGE, RANK,
-            RANDOM, MIN, MAX, DTYPE }
+    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, DOT, INT, NUMBER, COMP,
+            ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
+            TRUEDIV, DIVIDE, DIMS, RANGE, RANK, RANDOM, MIN, MAX, L, DTYPE }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
 
     # Regular expression rules for tokens
-    ID    = r'[a-z][a-z0-9]*'
+    DIMS    = 'DIMS'
+    RANGE   = 'RANGE'
+    RANK    = 'RANK'
+    RANDOM  = 'RANDOM'
+    MIN     = 'MIN'
+    MAX     = 'MAX'
+    L       = 'L'
+    DTYPE   = r'(FLOAT|INT)'
+    QUAL_NM = r'[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+'
+    IDENT   = r'[a-zA-Z_][a-zA-Z0-9_]*' 
     COMMA   = r','
     COLON   = r':'
+    SQSTR   = "'(?:\\'|[^'])*'"
+    DQSTR   = '"(?:\\"|[^"])*"' 
+    DOT     = r'\.'
     INT     = r'[0-9]+'
-    COMP = r'(>=|>|<=|<|==)'
+    NUMBER  = r'[\-\+]?[0-9]+(\.[0-9]+)?'
+    COMP    = r'(>=|>|<=|<|==)'
     ASSIGN  = r'='
     ACCUM   = r'\+='
     LPAREN  = r'\('
@@ -28,18 +41,12 @@ class BCLexer(Lexer):
     TIMES   = r'\*'
     TRUEDIV = r'\/\/'
     DIVIDE  = r'\/'
-    DIMS    = 'DIMS'
-    RANGE   = 'RANGE'
-    RANK    = 'RANK'
-    RANDOM  = 'RANDOM'
-    MIN     = 'MIN'
-    MAX     = 'MAX'
-    DTYPE   = r'(FLOAT|INT)'
 
 class ParserMode(Enum):
     Constraint = 0
     Statement = 1
-    Argument = 2
+    TensorOutput = 2
+    TFCall = 3
 
 class BCParser(Parser):
     tokens = BCLexer.tokens
@@ -60,27 +67,37 @@ class BCParser(Parser):
     def set_statement_mode(self):
         self.mode = ParserMode.Statement
 
-    def set_argument_mode(self):
-        self.mode = ParserMode.Argument
+    def set_output_mode(self):
+        self.mode = ParserMode.TensorOutput
 
-    @_('argument', 'constraint', 'statement')
+    def set_tfcall_mode(self):
+        self.mode = ParserMode.TFCall
+
+    @_('tensor_list', 'constraint', 'statement', 'tf_call')
     def toplevel(self, p):
-        if self.mode == ParserMode.Argument and hasattr(p, 'argument'):
-            return p.argument
+        if self.mode == ParserMode.TensorOutput and hasattr(p, 'tensor_list'):
+            return p.tensor_list
         elif self.mode == ParserMode.Constraint and hasattr(p, 'constraint'):
             return p.constraint
         elif self.mode == ParserMode.Statement and hasattr(p, 'statement'):
             return p.statement
+        elif self.mode == ParserMode.TFCall and hasattr(p, 'tf_call'):
+            return p.tf_call
         else:
             raise RuntimeError('Parse Error at top level')
     
-    @_('tensor_arg', 'rank')
-    def argument(self, p):
-        return p[0]
+    @_('tensor_arg',
+       'tensor_list COMMA tensor_arg')
+    def tensor_list(self, p):
+        if hasattr(p, 'COMMA'):
+            p.tensor_list.append(p.tensor_arg)
+            return p.tensor_list
+        else:
+            return [p.tensor_arg]
 
-    @_('ID')
+    @_('IDENT')
     def tensor_arg(self, p):
-        return TensorArg(self.cfg, p.ID)
+        return TensorArg(self.cfg, p.IDENT)
     
     @_('shape_test', 'tup_limit')
     def constraint(self, p):
@@ -91,6 +108,59 @@ class BCParser(Parser):
     def statement(self, p):
         do_accum = hasattr(p, 'ACCUM')
         return Assign(p.lval_array, p.rval_expr, do_accum)
+
+    @_('qualified_name LPAREN tf_call_list RPAREN')
+    def tf_call(self, p):
+        return TFCall(p.qualified_name, p.tf_call_list)
+
+    @_('QUAL_NM', 'IDENT')
+    def qualified_name(self, p):
+        return p[0]
+
+    @_('L LPAREN python_value RPAREN')
+    def python_literal(self, p):
+        return p.python_value
+
+    @_('string_literal', 'number')
+    def python_value(self, p):
+        return p[0]
+
+    @_('SQSTR', 'DQSTR')
+    def string_literal(self, p):
+        return p[0] 
+
+    @_('NUMBER')
+    def number(self, p):
+        try:
+            return int(p.NUMBER)
+        except ValueError:
+            pass
+        try:
+            return float(p.NUMBER)
+        except ValueError:
+            raise RuntimeError(
+                f'Could not convert {p.INT} to int or float')
+
+    @_('tf_call_arg',
+       'tf_call_list COMMA tf_call_arg')
+    def tf_call_list(self, p):
+        if hasattr(p, 'COMMA'):
+            p.tf_call_list.append(p.tf_call_arg)
+            return p.tf_call_list
+        else:
+            return [p.tf_call_arg]
+
+    @_('named_tf_call_arg', 'bare_tf_call_arg')
+    def tf_call_arg(self, p):
+        return p[0]
+
+    @_('IDENT ASSIGN bare_tf_call_arg')
+    def named_tf_call_arg(self, p):
+        return (p.IDENT, p.bare_tf_call_arg)
+
+    @_('python_literal', 'tensor_arg')
+    def bare_tf_call_arg(self, p):
+        return p[0]
 
     @_('shape_expr COMP shape_expr')
     def shape_test(self, p):
@@ -148,9 +218,9 @@ class BCParser(Parser):
         else:
             return p.tup_name
 
-    @_('ID LBRACK index_list RBRACK')
+    @_('IDENT LBRACK index_list RBRACK')
     def lval_array(self, p):
-        return LValueArray(self.cfg, p.ID, p.index_list)
+        return LValueArray(self.cfg, p.IDENT, p.index_list)
 
     @_('rval_array', 
        'rand_call',
@@ -226,13 +296,13 @@ class BCParser(Parser):
     def nested_index_expr(self, p):
         return p[0]
 
-    @_('ID')
+    @_('IDENT')
     def array_name(self, p):
-        return p.ID
+        return p.IDENT
 
-    @_('ID')
+    @_('IDENT')
     def tup_name(self, p):
-        return p.ID
+        return p.IDENT
 
     def parse(self, arg_string):
         return super().parse(self.lexer.tokenize(arg_string))
