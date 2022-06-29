@@ -1,18 +1,13 @@
 input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
 filters[fpos,ichan,ochan] = RANDOM(0, 10, FLOAT)
-output[batch,ipos-fpos,ochan] = input[batch,ipos,ichan] * filters[fpos,ichan,ochan]
+tmp[batch,ipos,fpos,ochan] = input[batch,ipos,ichan] * filters[fpos,ichan,ochan]
+index[ipos,fpos,coord] = RANGE[ipos,coord] - RANGE[fpos,coord] + MIN(ipos-fpos)
+output[batch,field,ochan] = 0
+output[batch,index[ipos,fpos,:],ochan] += tmp[batch,ipos,fpos,ochan]
 
 tf.nn.convolution(input, filters, padding=L('VALID'))
 
 output
 
-RANK(ipos) >= 1
-RANK(ipos) <= 3
-RANK(ipos) == RANK(fpos)
-DIMS(fpos) <= DIMS(ipos)
-RANK(batch) == 1
-RANK(ichan) == 1
-RANK(ochan) == RANK(ichan)
-MIN(ipos-fpos) := 0
-MAX(ipos-fpos) := DIMS(ipos) - DIMS(fpos)
-
+RANK(batch) < 3
+DIMS(fpos) < DIMS(ipos)

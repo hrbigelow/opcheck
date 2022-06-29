@@ -127,7 +127,8 @@ class BCParser(Parser):
 
     @_('SQSTR', 'DQSTR')
     def string_literal(self, p):
-        return p[0] 
+        # strip leading and trailing quote
+        return p[0][1:-1]
 
     @_('NUMBER')
     def number(self, p):
@@ -158,7 +159,7 @@ class BCParser(Parser):
     def named_tf_call_arg(self, p):
         return (p.IDENT, p.bare_tf_call_arg)
 
-    @_('python_literal', 'tensor_arg')
+    @_('python_literal', 'tensor_arg', 'rank', 'dims_index')
     def bare_tf_call_arg(self, p):
         return p[0]
 
