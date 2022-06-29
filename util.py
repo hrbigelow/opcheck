@@ -27,7 +27,7 @@ def range_check(inds, last_dim_bounds):
     in_bounds = tf.logical_and(above, below)
     return in_bounds
 
-def order_union_ixn(a, b):
+def union_ixn(a, b):
     a_extra = [ el for el in a if el not in b ]
     b_extra = [ el for el in b if el not in a ]
     ab_ixn =  [ el for el in a if el in b ]

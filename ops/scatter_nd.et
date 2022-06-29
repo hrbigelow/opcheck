@@ -1,19 +1,15 @@
 indices[slice,coord] = RANDINT(0, DIMS(elem)[coord], INT)
-updates[slice,f] = RANDOM(0, 10, FLOAT)
-tensor[elem,f] = RANDOM(0, 10, FLOAT)
-intensor[elem,f] = tensor[elem,f]
-tensor[indices[slice,:],f] += updates[slice,f]
+updates[slice,elem] = RANDOM(0, 10, FLOAT)
+output[dest,elem] = 0.0 
+output[indices[slice,:],elem] = updates[slice,elem]
 
-tf.tensor_scatter_nd_add(intensor, indices, updates)
+tf.scatter_nd(indices, updates, DIMS(output)[:])
 
-tensor
+output
 
 RANK(coord) == 1
+DIMS(coord)[0] <= RANK(elem)
 RANK(slice) < 8
 RANK(slice) > 0
-RANK(f) > 0
-RANK(f) < 8
-RANK(elem) > 0
 RANK(elem) < 8
-DIMS(coord)[0] == RANK(elem)
 

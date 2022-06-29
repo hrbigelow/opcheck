@@ -284,10 +284,58 @@ class LValueArray(Array):
             val = rhs.evaluate(trg_sig)
             self.cfg.arrays[self.name] = val
 
+    def _evaluate_sliced(self, trg_sig, rhs):
+        # see ops/scatter_nd.et
+        """
+        Approach:
+        1. pack indices (ind), updates (upd) and output (out) sigs
+        2. calculate target sigs for idx, upd and out using util.union_ixn
+        3. construct target 
+        """
+        array, slice_array = self.get_array_and_slice()
+        out_ten, out_sig = array
+        idx_ten, idx_sig = slice_array
+
+        out_ten = tf.reshape(out_ten, packed_dims(out_sig))
+        idx_ten = tf.reshape(idx_ten, packed_dims(idx_sig))
+
+        slice_node = self.maybe_get_slice_node()
+        out_sig_orig = list(out_sig)
+        idx_sig_orig = list(idx_sig)
+
+        slice_tup = out_sig.pop(self.slice_pos)
+        star_tup = idx_sig.pop(slice_node.star_pos)
+
+        ixn_union = util.union_ixn(idx_sig, par_sig)
+        fetch_sig, batch_sig, other_sig = ixn_union
+        if len(batch_sig) > 0:
+            raise RuntimeError(f'cannot support batched scatter')
+
+        target_idx = fetch_sig + [star_tup] 
+        target_upd = fetch_sig + other_sig
+        target_out = [slice_tup] + other_sig
+
+        upd_ten  = rhs.evaluate(target_upd)
+        out_ten = to_sig(out_ten, out_sig_orig, target_out, is_packed=True)
+        idx_ten = to_sig(idx_ten, idx_sig_orig, target_idx, is_packed=True)
+
+        in_bounds = util.range_check(idx_ten, slice_tup.dims())
+        idx_ten = util.flatten(idx_ten, slice_tup.dims())
+        idx_ten = tf.where(in_bounds, idx_ten, -1)
+
+        shape_ten = tf.constant(packed_dims(target_upd))
+        out_ten = tf.scatter_nd(idx_ten, upd_ten, shape_ten)
+
+        out_ten = to_sig(out_ten, target_out, trg_sig)
+        out_ten = tf.reshape(out_ten, flat_dims(trg_sig))
+        return out_ten
+
+
     def add(self, rhs):
         if self.name not in self.cfg.arrays:
             raise RuntimeError(
                 f'Cannot do += on first mention of array \'{self.name}\'')
+
         if self.has_slice():
             raise NotImplementedError
             # use tf.scatter
@@ -312,48 +360,60 @@ class RValueArray(Array):
         return tups
 
     def _evaluate_sliced(self, trg_sig):
-        # see 'gather' test in ops/tests.json
+        # see 'gather' test in ops/gather_nd.et
         """
         Overall approach:
-        1.  pack all tuple dims in the top level and sub level tensors
-        2.  calculate the 3-way intersection/difference sigs
-        3.   
+        1.  pack all tuple dims in the param (par) and indices (idx) tensors
+        2.  calculate the 3-way intersection/difference signatures between
+            par and idx.
+        3.  construct target signatures for par, idx, and result, to conform
+            to expected signature for native tf.gather_nd
+        4.  conform par and idx tensors to these signatures
+        5.  calculate the bounds mask for idx tensor
+        6.  flatten idx tensor values along the last dimension (util.flatten)
+        7.  call tf.gather_nd
+        8.  reform to the target signature
+        9.  flatten the shape and return
+
         """
         array, slice_array = self.get_array_and_slice()
-        top_ten, top_sig = array
-        sub_ten, sub_sig = slice_array
+        par_ten, par_sig = array
+        idx_ten, idx_sig = slice_array
 
-        top_ten = tf.reshape(top_ten, packed_dims(top_sig))
-        sub_ten = tf.reshape(sub_ten, packed_dims(sub_sig))
+        par_ten = tf.reshape(par_ten, packed_dims(par_sig))
+        idx_ten = tf.reshape(idx_ten, packed_dims(idx_sig))
 
         slice_node = self.maybe_get_slice_node()
-        top_sig_orig = list(top_sig)
-        sub_sig_orig = list(sub_sig)
+        par_sig_orig = list(par_sig)
+        idx_sig_orig = list(idx_sig)
 
-        slice_tup = top_sig.pop(self.slice_pos)
-        star_tup = sub_sig.pop(slice_node.star_pos)
-
-        fetch_sig, batch_sig, other_sig = util.order_union_ixn(sub_sig, top_sig)
+        # See ops/gather_nd.et
+        # After slice_tup is removed from par_sig, and star_tup is removed from
+        # idx_sig, we have:
+        # par_sig = batch, other
+        # idx_sig = batch, slice
+        slice_tup = par_sig.pop(self.slice_pos)
+        star_tup = idx_sig.pop(slice_node.star_pos)
+        ixn_union_triplet = util.union_ixn(idx_sig, par_sig)
+        fetch_sig, batch_sig, other_sig = ixn_union_triplet 
 
         # target shapes
-        target_sub = batch_sig + fetch_sig + [star_tup]
-        target_top = batch_sig + [slice_tup] + other_sig
+        target_idx = batch_sig + fetch_sig + [star_tup]
+        target_par = batch_sig + [slice_tup] + other_sig
         target_res = batch_sig + fetch_sig + other_sig
 
-        top_ten = to_sig(top_ten, top_sig_orig, target_top, is_packed=True)
-        sub_ten = to_sig(sub_ten, sub_sig_orig, target_sub, is_packed=True)
+        par_ten = to_sig(par_ten, par_sig_orig, target_par, is_packed=True)
+        idx_ten = to_sig(idx_ten, idx_sig_orig, target_idx, is_packed=True)
 
-        in_bounds = util.range_check(sub_ten, slice_tup.dims())
-        sub_ten = util.flatten(sub_ten, slice_tup.dims())
-        sub_ten = tf.where(in_bounds, sub_ten, -1)
+        in_bounds = util.range_check(idx_ten, slice_tup.dims())
+        idx_ten = util.flatten(idx_ten, slice_tup.dims())
+        idx_ten = tf.where(in_bounds, idx_ten, -1)
 
         num_batch_dims = len(batch_sig)
-        result = tf.gather_nd(top_ten, sub_ten, batch_dims=num_batch_dims)
-        # even though gather returns zero for out-of-bounds indices,
-        # the packed sub_ten may not be out-of-bounds while the flat one is.
+        result = tf.gather_nd(par_ten, idx_ten, batch_dims=num_batch_dims)
 
-        target_res_dims = flat_dims(target_res)
-        result = tf.reshape(result, target_res_dims)
+        result = to_sig(result, target_res, trg_sig, is_packed=True)
+        result = tf.reshape(result, flat_dims(trg_sig))
         return result
 
     def evaluate(self, trg_sig):
