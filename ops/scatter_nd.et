@@ -1,9 +1,9 @@
-indices[slice,coord] = RANDINT(0, DIMS(elem)[coord], INT)
+indices[slice,coord] = RANDOM(0, DIMS(elem)[coord], INT)
 updates[slice,elem] = RANDOM(0, 10, FLOAT)
 output[dest,elem] = 0.0 
 output[indices[slice,:],elem] = updates[slice,elem]
 
-tf.scatter_nd(indices, updates, DIMS(output)[:])
+tf.scatter_nd(indices, updates, DIMS(dest,elem)[:])
 
 output
 

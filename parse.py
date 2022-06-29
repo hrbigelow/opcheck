@@ -4,7 +4,7 @@ from ast_nodes import *
 
 class BCLexer(Lexer):
     # Set of token names.   This is always required
-    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, DOT, INT, NUMBER, COMP,
+    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, INT, NUMBER, COMP,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
             TRUEDIV, DIVIDE, DIMS, RANGE, RANK, RANDOM, MIN, MAX, L, DTYPE }
 
@@ -26,9 +26,8 @@ class BCLexer(Lexer):
     COLON   = r':'
     SQSTR   = "'(?:\\'|[^'])*'"
     DQSTR   = '"(?:\\"|[^"])*"' 
-    DOT     = r'\.'
-    INT     = r'[0-9]+'
     NUMBER  = r'[\-\+]?[0-9]+(\.[0-9]+)?'
+    INT     = r'[0-9]+'
     COMP    = r'(>=|>|<=|<|==)'
     ASSIGN  = r'='
     ACCUM   = r'\+='
@@ -41,6 +40,10 @@ class BCLexer(Lexer):
     TIMES   = r'\*'
     TRUEDIV = r'\/\/'
     DIVIDE  = r'\/'
+
+    def error(self, t):
+        print("Illegal character '%s'" % t.value[0])
+        self.index += 1
 
 class ParserMode(Enum):
     Constraint = 0
@@ -140,7 +143,7 @@ class BCParser(Parser):
             return float(p.NUMBER)
         except ValueError:
             raise RuntimeError(
-                f'Could not convert {p.INT} to int or float')
+                f'Could not convert {p.NUMBER} to int or float')
 
     @_('tf_call_arg',
        'tf_call_list COMMA tf_call_arg')
@@ -159,7 +162,7 @@ class BCParser(Parser):
     def named_tf_call_arg(self, p):
         return (p.IDENT, p.bare_tf_call_arg)
 
-    @_('python_literal', 'tensor_arg', 'rank', 'dims_index')
+    @_('python_literal', 'tensor_arg', 'rank', 'dims_int', 'dims_star')
     def bare_tf_call_arg(self, p):
         return p[0]
 
@@ -187,29 +190,50 @@ class BCParser(Parser):
     def arith_five_op(self, p):
         return p[0]
 
-    @_('integer', 'rank', 'dims_star', 'dims_int')
+    @_('integer_node', 'rank', 'dims_star', 'dims_int')
     def shape(self, p):
         return p[0]
 
-    @_('INT')
-    def integer(self, p):
-        return IntExpr(self.cfg, p.INT)
+    @_('number_node')
+    def integer_node(self, p):
+        if isinstance(p.number_node, FloatExpr):
+            raise RuntimeError(f'Expected an IntExpr here')
+        return p.number_node
 
-    @_('RANK LPAREN tup_name RPAREN')
+    @_('number')
+    def number_node(self, p):
+        if isinstance(p.number, int):
+            return IntExpr(self.cfg, p.number)
+        elif isinstance(p.number, float):
+            return FloatExpr(self.cfg, p.number)
+
+    @_('RANK LPAREN tup_name_list RPAREN')
     def rank(self, p):
-        return Rank(self.cfg, p.tup_name)
+        return Rank(self.cfg, p.tup_name_list)
 
-    @_('DIMS LPAREN tup_name RPAREN LBRACK COLON RBRACK')
+    @_('DIMS LPAREN tup_name_list RPAREN LBRACK COLON RBRACK')
     def dims_star(self, p):
-        return Dims(self.cfg, p.tup_name, DimKind.Star) 
+        return Dims(self.cfg, DimKind.Star, p.tup_name_list) 
 
-    @_('DIMS LPAREN tup_name RPAREN LBRACK INT RBRACK')
+    @_('DIMS LPAREN tup_name_list RPAREN LBRACK number RBRACK')
     def dims_int(self, p):
-        return Dims(self.cfg, p.tup_name, DimKind.Int, p.INT)
+        if not isinstance(p.number, int):
+            raise RuntimeError(
+                f'Expected an integer for Int Dims, got {p.number}')
+        return Dims(self.cfg, DimKind.Int, p.tup_name_list, p.number)
 
-    @_('DIMS LPAREN tup_name RPAREN LBRACK tup_name RBRACK')
+    @_('DIMS LPAREN tup_name_list RPAREN LBRACK tup_name RBRACK')
     def dims_index(self, p):
-        return Dims(self.cfg, p.tup_name0, DimKind.Index, p.tup_name1)
+        return Dims(self.cfg, DimKind.Index, p.tup_name_list, p.tup_name)
+
+    @_('tup_name',
+       'tup_name_list COMMA tup_name')
+    def tup_name_list(self, p):
+        if hasattr(p, 'COMMA'):
+            p.tup_name_list.append(p.tup_name)
+            return p.tup_name_list
+        else:
+            return [p.tup_name]
 
     @_('tup_name',
        'tup_expr arith_five_op tup_name')
@@ -219,16 +243,16 @@ class BCParser(Parser):
         else:
             return p.tup_name
 
-    @_('IDENT LBRACK index_list RBRACK')
+    @_('IDENT LBRACK top_index_list RBRACK')
     def lval_array(self, p):
-        return LValueArray(self.cfg, p.IDENT, p.index_list)
+        return LValueArray(self.cfg, p.IDENT, p.top_index_list)
 
     @_('rval_array', 
        'rand_call',
        'range_array',
        'dims_int',
        'dims_index',
-       'integer')
+       'number_node')
     def rval_unit(self, p):
         return p[0]
 
@@ -241,13 +265,13 @@ class BCParser(Parser):
         else:
             return p.rval_unit
 
-    @_('array_name LBRACK star_index_list RBRACK')
+    @_('array_name LBRACK sub_index_list RBRACK')
     def slice_node(self, p):
-        return Slice(self.cfg, p.array_name, p.star_index_list)
+        return Slice(self.cfg, p.array_name, p.sub_index_list)
 
-    @_('array_name LBRACK nested_index_list RBRACK')
+    @_('array_name LBRACK top_index_list RBRACK')
     def rval_array(self, p):
-        return RValueArray(self.cfg, p.array_name, p.nested_index_list)
+        return RValueArray(self.cfg, p.array_name, p.top_index_list)
 
     @_('RANDOM LPAREN array_slice COMMA array_slice COMMA DTYPE RPAREN')
     def rand_call(self, p):
@@ -257,44 +281,32 @@ class BCParser(Parser):
     def range_array(self, p):
         return RangeExpr(self.cfg, p.tup_name0, p.tup_name1)
 
-    @_('index_expr', 
-       'index_list COMMA index_expr')
-    def index_list(self, p):
+    @_('top_index_expr', 
+       'top_index_list COMMA top_index_expr')
+    def top_index_list(self, p):
         if hasattr(p, 'COMMA'):
-            return p.index_list + [p.index_expr]
+            return p.top_index_list + [p.top_index_expr]
         else:
-            return [p.index_expr]
+            return [p.top_index_expr]
 
-    @_('tup_name', 'array_slice')
-    def index_expr(self, p):
+    @_('tup_name', 'slice_node')
+    def top_index_expr(self, p):
         return p[0]
 
-    @_('integer', 'rank', 'dims_index', 'rval_array')
+    @_('number_node', 'rank', 'dims_index', 'rval_array')
     def array_slice(self, p):
         return p[0]
 
-    @_('star_index_expr',
-       'star_index_list COMMA star_index_expr')
-    def star_index_list(self, p):
+    @_('sub_index_expr',
+       'sub_index_list COMMA sub_index_expr')
+    def sub_index_list(self, p):
         if hasattr(p, 'COMMA'):
-            return p.star_index_list + [p.star_index_expr]
+            return p.sub_index_list + [p.sub_index_expr]
         else:
-            return [p.star_index_expr]
+            return [p.sub_index_expr]
 
     @_('COLON', 'tup_name')
-    def star_index_expr(self, p):
-        return p[0]
-
-    @_('nested_index_expr',
-       'nested_index_list COMMA nested_index_expr')
-    def nested_index_list(self, p):
-        if hasattr(p, 'COMMA'):
-            return p.nested_index_list + [p.nested_index_expr]
-        else:
-            return [p.nested_index_expr]
-
-    @_('tup_name', 'slice_node')
-    def nested_index_expr(self, p):
+    def sub_index_expr(self, p):
         return p[0]
 
     @_('IDENT')

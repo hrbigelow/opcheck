@@ -275,15 +275,6 @@ class LValueArray(Array):
                 for ind in self.index_list)
         return f'LValueArray({self.name})[{ind_list}]'
 
-    def assign(self, rhs):
-        if self.has_slice():
-            raise NotImplementedError
-            # need to use tf.scatter
-        else:
-            trg_sig = self.index_list 
-            val = rhs.evaluate(trg_sig)
-            self.cfg.arrays[self.name] = val
-
     def _evaluate_sliced(self, trg_sig, rhs):
         # see ops/scatter_nd.et
         """
@@ -330,20 +321,29 @@ class LValueArray(Array):
         out_ten = tf.reshape(out_ten, flat_dims(trg_sig))
         return out_ten
 
+    def assign(self, rhs):
+        trg_sig = self.index_list 
+
+        if self.has_slice():
+            val = self._evaluate_sliced(trg_sig, rhs)
+        else:
+            val = rhs.evaluate(trg_sig)
+
+        self.cfg.arrays[self.name] = val
 
     def add(self, rhs):
         if self.name not in self.cfg.arrays:
             raise RuntimeError(
                 f'Cannot do += on first mention of array \'{self.name}\'')
 
+        trg_sig = self.index_list
         if self.has_slice():
-            raise NotImplementedError
-            # use tf.scatter
+            val = self._evaluate_sliced(trg_sig)
         else:
-            trg_inds = self.index_list
-            val = rhs.evaluate(trg_inds)
-            prev = self.cfg.arrays[self.name]
-            self.cfg.arrays[self.name] = tf.add(prev, val)
+            val = rhs.evaluate(trg_sig)
+
+        prev = self.cfg.arrays[self.name]
+        self.cfg.arrays[self.name] = tf.add(prev, val)
     
 class RValueArray(Array):
     def __init__(self, cfg, array_name, index_list):
@@ -561,19 +561,29 @@ class IntExpr(ScalarExpr):
     def value(self):
         return self.val
 
-class Rank(ScalarExpr):
-    def __init__(self, cfg, tup_name):
+class FloatExpr(ScalarExpr):
+    def __init__(self, cfg, val):
         super().__init__()
-        if tup_name not in cfg.tups:
-            raise RuntimeError(f'Rank tup {tup_name} not a known EinTup')
         self.cfg = cfg
-        self.tup_arg = self.cfg.tup(tup_name)
-
-    def __repr__(self):
-        return f'Rank({repr(self.tup_arg)})'
+        self.val = val 
 
     def value(self):
-        return self.tup_arg.rank()
+        return self.val
+
+class Rank(ScalarExpr):
+    def __init__(self, cfg, tup_name_list):
+        super().__init__()
+        for name in tup_name_list:
+            if name not in cfg.tups:
+                raise RuntimeError(f'Rank tup {name} not a known EinTup')
+        self.cfg = cfg
+        self.tups = [ self.cfg.tup(name) for name in tup_name_list ]
+
+    def __repr__(self):
+        return f'Rank({repr(self.tups)})'
+
+    def value(self):
+        return sum(tup.rank() for tup in self.tups)
 
 class DimKind(enum.Enum):
     Star = 'Star'
@@ -589,13 +599,12 @@ class Dims(AST):
     Dims(tupname)[:]       Star       constraint
 
     """
-    def __init__(self, cfg, arg, kind, index_expr=None):
+    def __init__(self, cfg, kind, tup_name_list, index_expr=None):
         super().__init__()
         self.cfg = cfg
-        self.ein_arg = arg
+        self.tup_names = tup_name_list
         self.kind = kind
-
-        self.base_tup = None
+        self.base_tups = []
         self.ind_tup = None
 
         if self.kind == DimKind.Int:
@@ -604,13 +613,14 @@ class Dims(AST):
             self.index = index_expr
 
     def __repr__(self):
-        return f'Dims({self.base_tup.name})[{self.index or ":"}]'
+        return f'{self.kind} Dims({self.base_tups})[{self.ind_tup}]'
 
     def post_parse_init(self):
-        if self.ein_arg not in self.cfg.tups:
-            raise RuntimeError(f'Dims argument \'{self.ein_arg}\' not a known Index')
-        else:
-            self.base_tup = self.cfg.tup(self.ein_arg)
+        for name in self.tup_names:
+            if name not in self.cfg.tups:
+                raise RuntimeError(f'Dims argument \'{name}\' not a known Index')
+            else:
+                self.base_tups.append(self.cfg.tup(name))
 
         if self.kind == DimKind.Index:
             if self.index not in self.cfg.tups:
@@ -625,33 +635,36 @@ class Dims(AST):
             raise RuntimeError(
                 f'Only {DimKind.Index.value} Dims can call evaluate()')
 
-        if self.kind == DimKind.Int and self.index >= self.base_tup.rank():
+        if self.kind == DimKind.Int and self.index >= self.rank():
             raise RuntimeError(
                 f'Dims index \'{self.index}\' must be less than '
-                f'base_tup rank {self.base_tup.rank()}')
+                f'rank {self.rank()}')
 
         if self.kind == DimKind.Index:
             if self.ind_tup.rank() != 1:
                 raise RuntimeError(
                     f'Dims Index index \'{self.ind_tup}\' must be '
                     f'rank 1, got \'{self.ind_tup.rank()}\'')
-            if self.ind_tup.dims()[0] > self.base_tup.rank():
+            if self.ind_tup.dims()[0] > self.rank():
                 raise RuntimeError(
                     f'Dims Index index \'{self.index}\' must'
-                    f' have values in range of Index argument \'{self.base_tup}\'.'
-                    f' {self.ind_tup.dims()[0]} exceeds {self.base_tup.rank()}')
+                    f' have values in range of rank {self.rank()}. ' 
+                    f'{self.ind_tup.dims()[0]} exceeds {self.rank()}')
 
         src_sig = self.get_tups()
-        ten = tf.constant(self.base_tup.dims())
+        ten = tf.constant(flat_dims(self.base_tups))
         ten = to_sig(ten, src_sig, trg_sig)
         return ten
+
+    def rank(self):
+        return sum(tup.rank() for tup in self.base_tups)
 
     def value(self):
         if self.kind == DimKind.Index:
             raise RuntimeError(
                 f'Cannot call value() on a {DimKind.Index.value} Dims')
 
-        dims = self.base_tup.dims()
+        dims = flat_dims(self.base_tups)
         if self.kind == DimKind.Star:
             return dims
         elif self.kind == DimKind.Int:

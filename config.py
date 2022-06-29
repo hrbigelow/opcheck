@@ -118,13 +118,22 @@ class Config(object):
 
     def __repr__(self):
         tups = 'Tups: \n' + '\n'.join(repr(tup) for tup in self.tups.values())
+
         sigs = 'Array Signatures: \n' 
         sigs += '\n'.join(name + ': ' + repr(sig) for name, sig in
                 self.array_sig.items())
+
         shapes = 'Array Shapes: \n'
         shapes += '\n'.join(name + ': ' + repr(ary.shape) 
                 for name, ary in self.arrays.items())
-        return f'{tups}\n\n{sigs}\n\n{shapes}\n'
+
+        tfcall = 'TF Call: \n'
+        tfcall += repr(self.tf_call)
+
+        out_args = 'Output Args: \n'
+        out_args += repr(self.out_args)
+
+        return f'{tups}\n\n{sigs}\n\n{shapes}\n\n{tfcall}\n\n{out_args}\n'
 
     def parse_et_file(self, et_file):
         with open(et_file, 'r') as fh:
