@@ -1,15 +1,15 @@
-indices[slice,coord] = RANDOM(0, DIMS(elem)[coord], INT)
+indices[slice,coord] = RANDOM(0, DIMS(dest)[coord], INT)
 updates[slice,elem] = RANDOM(0, 10, FLOAT)
 output[dest,elem] = 0.0 
 output[indices[slice,:],elem] = updates[slice,elem]
 
-tf.scatter_nd(indices, updates, DIMS(dest,elem)[:])
+tf.scatter_nd(indices, updates, TENSOR(DIMS(dest,elem)[:]))
 
 output
 
+RANK(dest) == 4
 RANK(coord) == 1
-DIMS(coord)[0] <= RANK(elem)
-RANK(slice) < 8
-RANK(slice) > 0
+DIMS(coord)[0] == RANK(dest)
+RANK(slice) < 10
 RANK(elem) < 8
 

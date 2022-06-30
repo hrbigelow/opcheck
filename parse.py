@@ -4,9 +4,10 @@ from ast_nodes import *
 
 class BCLexer(Lexer):
     # Set of token names.   This is always required
-    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, INT, NUMBER, COMP,
+    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, NUMBER, COMP,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
-            TRUEDIV, DIVIDE, DIMS, RANGE, RANK, RANDOM, MIN, MAX, L, DTYPE }
+            TRUEDIV, DIVIDE, DIMS, RANGE, RANK, RANDOM, MIN, MAX, TENSOR, L,
+            DTYPE }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -18,6 +19,7 @@ class BCLexer(Lexer):
     RANDOM  = 'RANDOM'
     MIN     = 'MIN'
     MAX     = 'MAX'
+    TENSOR  = 'TENSOR'
     L       = 'L'
     DTYPE   = r'(FLOAT|INT)'
     QUAL_NM = r'[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+'
@@ -27,7 +29,6 @@ class BCLexer(Lexer):
     SQSTR   = "'(?:\\'|[^'])*'"
     DQSTR   = '"(?:\\"|[^"])*"' 
     NUMBER  = r'[\-\+]?[0-9]+(\.[0-9]+)?'
-    INT     = r'[0-9]+'
     COMP    = r'(>=|>|<=|<|==)'
     ASSIGN  = r'='
     ACCUM   = r'\+='
@@ -61,8 +62,8 @@ class BCParser(Parser):
     def __init__(self):
         self.lexer = BCLexer()
 
-    def set_config(self, cfg):
-        self.cfg = cfg
+    def set_runtime(self, runtime):
+        self.runtime = runtime
 
     def set_constraint_mode(self):
         self.mode = ParserMode.Constraint
@@ -100,7 +101,7 @@ class BCParser(Parser):
 
     @_('IDENT')
     def tensor_arg(self, p):
-        return TensorArg(self.cfg, p.IDENT)
+        return TensorArg(self.runtime, p.IDENT)
     
     @_('shape_test', 'tup_limit')
     def constraint(self, p):
@@ -162,7 +163,8 @@ class BCParser(Parser):
     def named_tf_call_arg(self, p):
         return (p.IDENT, p.bare_tf_call_arg)
 
-    @_('python_literal', 'tensor_arg', 'rank', 'dims_int', 'dims_star')
+    @_('python_literal', 'tensor_arg', 'rank', 'dims_int', 'dims_star',
+       'tensor_wrap')
     def bare_tf_call_arg(self, p):
         return p[0]
 
@@ -203,28 +205,36 @@ class BCParser(Parser):
     @_('number')
     def number_node(self, p):
         if isinstance(p.number, int):
-            return IntExpr(self.cfg, p.number)
+            return IntExpr(self.runtime, p.number)
         elif isinstance(p.number, float):
-            return FloatExpr(self.cfg, p.number)
+            return FloatExpr(self.runtime, p.number)
 
     @_('RANK LPAREN tup_name_list RPAREN')
     def rank(self, p):
-        return Rank(self.cfg, p.tup_name_list)
+        return Rank(self.runtime, p.tup_name_list)
 
     @_('DIMS LPAREN tup_name_list RPAREN LBRACK COLON RBRACK')
     def dims_star(self, p):
-        return Dims(self.cfg, DimKind.Star, p.tup_name_list) 
+        return Dims(self.runtime, DimKind.Star, p.tup_name_list) 
 
     @_('DIMS LPAREN tup_name_list RPAREN LBRACK number RBRACK')
     def dims_int(self, p):
         if not isinstance(p.number, int):
             raise RuntimeError(
                 f'Expected an integer for Int Dims, got {p.number}')
-        return Dims(self.cfg, DimKind.Int, p.tup_name_list, p.number)
+        return Dims(self.runtime, DimKind.Int, p.tup_name_list, p.number)
 
     @_('DIMS LPAREN tup_name_list RPAREN LBRACK tup_name RBRACK')
     def dims_index(self, p):
-        return Dims(self.cfg, DimKind.Index, p.tup_name_list, p.tup_name)
+        return Dims(self.runtime, DimKind.Index, p.tup_name_list, p.tup_name)
+
+    @_('TENSOR LPAREN static_node RPAREN')
+    def tensor_wrap(self, p):
+        return TensorWrap(self.runtime, p.static_node)
+
+    @_('dims_star', 'rank')
+    def static_node(self, p):
+        return p[0]
 
     @_('tup_name',
        'tup_name_list COMMA tup_name')
@@ -245,7 +255,7 @@ class BCParser(Parser):
 
     @_('IDENT LBRACK top_index_list RBRACK')
     def lval_array(self, p):
-        return LValueArray(self.cfg, p.IDENT, p.top_index_list)
+        return LValueArray(self.runtime, p.IDENT, p.top_index_list)
 
     @_('rval_array', 
        'rand_call',
@@ -260,26 +270,26 @@ class BCParser(Parser):
        'rval_expr arith_five_op rval_unit')
     def rval_expr(self, p):
         if hasattr(p, 'arith_five_op'):
-            return ArrayBinOp(self.cfg, p.rval_expr, p.rval_unit,
+            return ArrayBinOp(self.runtime, p.rval_expr, p.rval_unit,
                     p.arith_five_op)
         else:
             return p.rval_unit
 
     @_('array_name LBRACK sub_index_list RBRACK')
     def slice_node(self, p):
-        return Slice(self.cfg, p.array_name, p.sub_index_list)
+        return Slice(self.runtime, p.array_name, p.sub_index_list)
 
     @_('array_name LBRACK top_index_list RBRACK')
     def rval_array(self, p):
-        return RValueArray(self.cfg, p.array_name, p.top_index_list)
+        return RValueArray(self.runtime, p.array_name, p.top_index_list)
 
     @_('RANDOM LPAREN array_slice COMMA array_slice COMMA DTYPE RPAREN')
     def rand_call(self, p):
-        return RandomCall(self.cfg, p.array_slice0, p.array_slice1, p.DTYPE)
+        return RandomCall(self.runtime, p.array_slice0, p.array_slice1, p.DTYPE)
 
     @_('RANGE LBRACK tup_name COMMA tup_name RBRACK')
     def range_array(self, p):
-        return RangeExpr(self.cfg, p.tup_name0, p.tup_name1)
+        return RangeExpr(self.runtime, p.tup_name0, p.tup_name1)
 
     @_('top_index_expr', 
        'top_index_list COMMA top_index_expr')
@@ -321,12 +331,13 @@ class BCParser(Parser):
         return super().parse(self.lexer.tokenize(arg_string))
 
 if __name__ == '__main__':
-    import config
+    import runtime
     import sys
     import json
 
-    cfg = config.Config()
-    parser = BCParser(cfg)
+    rt = runtime.Runtime()
+    parser = BCParser()
+    parser.set_runtime(rt)
     with open('ops/tests.json', 'r') as fp:
         all_tests = json.load(fp)
 
@@ -342,18 +353,18 @@ if __name__ == '__main__':
         asts.append(ast)
 
     if 'rank' in tests:
-        cfg.set_ranks(tests['rank'])
+        rt.set_ranks(tests['rank'])
 
     if 'dims' in tests:
-        cfg.set_dims(tests['dims'])
+        rt.set_dims(tests['dims'])
 
     # specific requirement for the gather test
-    # cfg.set_one_dim('coord', 0, cfg.tup('elem').rank())
+    # rt.set_one_dim('coord', 0, rt.tup('elem').rank())
 
     for ast in asts:
         ast.post_parse_init()
 
-    print(cfg)
+    print(rt)
 
     for ast in asts:
         print(f'Evaluating {ast}')

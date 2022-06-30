@@ -93,7 +93,7 @@ class EinTup(object):
         return self._value
 
 
-class Config(object):
+class Runtime(object):
     def __init__(self, min_dim=5, max_dim=100):
         self.parser = BCParser() 
         # map of eintup names to EinTup instances
@@ -114,7 +114,7 @@ class Config(object):
 
         self.min_dim = min_dim
         self.max_dim = max_dim
-        self.parser.set_config(self)
+        self.parser.set_runtime(self)
 
     def __repr__(self):
         tups = 'Tups: \n' + '\n'.join(repr(tup) for tup in self.tups.values())
@@ -127,13 +127,17 @@ class Config(object):
         shapes += '\n'.join(name + ': ' + repr(ary.shape) 
                 for name, ary in self.arrays.items())
 
+        statements = 'Statements: \n'
+        statements += '\n'.join(repr(st) for st in self.statements)
+
         tfcall = 'TF Call: \n'
         tfcall += repr(self.tf_call)
 
         out_args = 'Output Args: \n'
         out_args += repr(self.out_args)
 
-        return f'{tups}\n\n{sigs}\n\n{shapes}\n\n{tfcall}\n\n{out_args}\n'
+        return (f'{tups}\n\n{sigs}\n\n{shapes}\n\n{statements}\n\n'
+                f'{tfcall}\n\n{out_args}\n')
 
     def parse_et_file(self, et_file):
         with open(et_file, 'r') as fh:
@@ -164,7 +168,9 @@ class Config(object):
         self.parser.set_constraint_mode()
         self.constraints = [ self.parser.parse(con) for con in constraints ]
 
-        for node in self.statements + self.constraints:
+        # post-init all AST nodes
+        all_nodes = self.statements + self.constraints + [self.tf_call]
+        for node in all_nodes: 
             node.post_parse_init()
         
     # run the full program and produce the set of output tensors in the
@@ -231,7 +237,7 @@ class Config(object):
             self.tups[name] = EinTup(name, shadow_of)
         else:
             raise RuntimeError(
-                f'Config::maybe_add_tup - shadow_of \'{shadow_of}\' '
+                f'Runtime::maybe_add_tup - shadow_of \'{shadow_of}\' '
                 f'provided but does not exist')
         return self.tups[name]
 
@@ -241,7 +247,7 @@ class Config(object):
     def tup(self, eintup):
         if eintup not in self.tups:
             raise RuntimeError(
-                    f'Config::tup() got unknown eintup name {eintup}')
+                    f'Runtime::tup() got unknown eintup name {eintup}')
         return self.tups[eintup]
 
     def dims(self, eintup):
@@ -258,8 +264,8 @@ class Config(object):
         return itertools.product(*tups)
 
 if __name__ == '__main__':
-    cfg = Config()
-    cfg.set_ranks({'batch': 2, 'slice': 1})
-    for val in cfg.cycle('slice'):
+    rt = Runtime()
+    rt.set_ranks({'batch': 2, 'slice': 1})
+    for val in rt.cycle('slice'):
         print(val)
 

@@ -4,7 +4,7 @@ import operator
 import re
 import util
 
-def define_sig(cfg, use_list):
+def define_sig(runtime, use_list):
     not_str = next((use for use in use_list if not isinstance(use, str)), None)
     if not_str is not None:
         raise RuntimeError(
@@ -17,10 +17,10 @@ def define_sig(cfg, use_list):
             f'define_sig must have all distinct indices.  Found duplicate '
             f'\'{dup}\'')
 
-    return [ cfg.maybe_add_tup(use) for use in use_list ]
+    return [ runtime.maybe_add_tup(use) for use in use_list ]
 
 # Call at instantiation of an Array with established sig
-def check_sig(cfg, sig_list, use_list):
+def check_sig(runtime, sig_list, use_list):
     if len(sig_list) != len(use_list):
         raise RuntimeError(
             f'check_sig expected {len(sig_list)} indices but found '
@@ -33,7 +33,7 @@ def check_sig(cfg, sig_list, use_list):
 
     for sig_tup, use in zip(sig_list, use_list):
         if isinstance(use, str):
-            use_tup = cfg.maybe_add_tup(use, sig_tup)
+            use_tup = runtime.maybe_add_tup(use, sig_tup)
             if not sig_tup.same_shape_as(use_tup):
                 raise RuntimeError(
                     f'check_sig found incompatible shapes.  Expecting '
@@ -128,13 +128,13 @@ class AST(object):
 class Slice(AST):
     # Represents an expression ary[a,b,c,:,e,...] with exactly one ':' and
     # the rest of the indices simple eintup names.  
-    def __init__(self, cfg, array_name, index_list):
+    def __init__(self, runtime, array_name, index_list):
         super().__init__()
-        if array_name not in cfg.array_sig:
+        if array_name not in runtime.array_sig:
             raise RuntimeError(
                 f'Cannot instantiate Slice as first appearance of array name '
                 f'\'{array_name}\'')
-        sig = cfg.array_sig[array_name]
+        sig = runtime.array_sig[array_name]
         if len(sig) != len(index_list):
             raise RuntimeError(
                 f'Slice instantiated with incorrect number of indices. '
@@ -156,7 +156,7 @@ class Slice(AST):
                 raise RuntimeError(
                     f'Slice object only accepts simple tup names or \':\' as '
                     f'indices.  Got \'{call}\'')
-            call_tup = cfg.maybe_add_tup(call, shadow_of=sig_tup)
+            call_tup = runtime.maybe_add_tup(call, shadow_of=sig_tup)
             if not sig_tup.same_shape_as(call_tup):
                 raise RuntimeError(
                     f'Slice called with incompatible shape. '
@@ -168,9 +168,9 @@ class Slice(AST):
                 f'Got \'{index_list}\'') 
 
         # passed all checks
-        self.cfg = cfg
+        self.runtime = runtime
         self.name = array_name
-        self.index_list = [ self.cfg.tup(name) if name != STAR else name 
+        self.index_list = [ self.runtime.tup(name) if name != STAR else name 
                 for name in index_list ]
 
     def __repr__(self):
@@ -186,27 +186,27 @@ class Slice(AST):
         if rank != 1:
             raise RuntimeError(
                 f'Slice wildcard index must be rank 1.  Got {rank}')
-        if self.name not in self.cfg.arrays:
+        if self.name not in self.runtime.arrays:
             raise RuntimeError(
                 f'Slice is not materialized yet.  Cannot call evaluate()')
-        z = zip(self.cfg.array_sig[self.name], self.index_list)
+        z = zip(self.runtime.array_sig[self.name], self.index_list)
         use_sig = [ sig if use == STAR else use for sig, use in z]
-        return (self.cfg.arrays[self.name], use_sig)
+        return (self.runtime.arrays[self.name], use_sig)
 
 class Array(AST):
-    def __init__(self, cfg, array_name, index_list):
+    def __init__(self, runtime, array_name, index_list):
         super().__init__()
-        array_exists = (array_name in cfg.array_sig)
+        array_exists = (array_name in runtime.array_sig)
         if array_exists:
-            sig_list = cfg.array_sig[array_name]
-            check_sig(cfg, sig_list, index_list)
+            sig_list = runtime.array_sig[array_name]
+            check_sig(runtime, sig_list, index_list)
         else:
-            sig = define_sig(cfg, index_list)
-            cfg.array_sig[array_name] = sig
+            sig = define_sig(runtime, index_list)
+            runtime.array_sig[array_name] = sig
 
-        self.cfg = cfg
+        self.runtime = runtime
         self.name = array_name
-        self.index_list = [ self.cfg.tup(name) if isinstance(name, str)
+        self.index_list = [ self.runtime.tup(name) if isinstance(name, str)
                 else name for name in index_list ]
 
         en = enumerate(self.index_list)
@@ -230,14 +230,20 @@ class Array(AST):
             return self.index_list[self.slice_pos]
         return None
 
+    def get_sig(self):
+        if self.name not in self.runtime.array_sig:
+            raise RuntimeError(
+                f'Array {self.name} does not have a registered signature')
+        return self.runtime.array_sig[self.name]
+
     def _get_array(self):
-        if self.name not in self.cfg.arrays:
+        if self.name not in self.runtime.arrays:
             raise RuntimeError(
                 f'Array {self.name} called evaluate() but not materialized')
         # replace the Slice with the tup if it exists
-        z = zip(self.cfg.array_sig[self.name], self.index_list)
+        z = zip(self.runtime.array_sig[self.name], self.index_list)
         use_sig = [ sig if isinstance(use, Slice) else use for sig, use in z]
-        return (self.cfg.arrays[self.name], use_sig)
+        return (self.runtime.arrays[self.name], use_sig)
 
     def get_array(self):
         if self.has_slice():
@@ -247,7 +253,7 @@ class Array(AST):
 
     def _shape_check(self):
         # check that 
-        sig = self.cfg.array_sig[self.name]
+        sig = self.runtime.array_sig[self.name]
         slice_node = self.maybe_get_slice_node()
         target_sig_tup = sig[self.slice_pos]
         if target_sig_tup.rank() != slice_node.slice_dim():
@@ -267,8 +273,8 @@ class Array(AST):
         return (array, slice_array) 
 
 class LValueArray(Array):
-    def __init__(self, cfg, array_name, index_list):
-        super().__init__(cfg, array_name, index_list)
+    def __init__(self, runtime, array_name, index_list):
+        super().__init__(runtime, array_name, index_list)
 
     def __repr__(self):
         ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
@@ -284,10 +290,8 @@ class LValueArray(Array):
         3. construct target 
         """
         array, slice_array = self.get_array_and_slice()
-        out_ten, out_sig = array
+        _, out_sig = array
         idx_ten, idx_sig = slice_array
-
-        out_ten = tf.reshape(out_ten, packed_dims(out_sig))
         idx_ten = tf.reshape(idx_ten, packed_dims(idx_sig))
 
         slice_node = self.maybe_get_slice_node()
@@ -297,7 +301,7 @@ class LValueArray(Array):
         slice_tup = out_sig.pop(self.slice_pos)
         star_tup = idx_sig.pop(slice_node.star_pos)
 
-        ixn_union = util.union_ixn(idx_sig, par_sig)
+        ixn_union = util.union_ixn(idx_sig, out_sig)
         fetch_sig, batch_sig, other_sig = ixn_union
         if len(batch_sig) > 0:
             raise RuntimeError(f'cannot support batched scatter')
@@ -307,32 +311,32 @@ class LValueArray(Array):
         target_out = [slice_tup] + other_sig
 
         upd_ten  = rhs.evaluate(target_upd)
-        out_ten = to_sig(out_ten, out_sig_orig, target_out, is_packed=True)
+        upd_ten = tf.reshape(upd_ten, packed_dims(target_upd))
         idx_ten = to_sig(idx_ten, idx_sig_orig, target_idx, is_packed=True)
 
         in_bounds = util.range_check(idx_ten, slice_tup.dims())
         idx_ten = util.flatten(idx_ten, slice_tup.dims())
         idx_ten = tf.where(in_bounds, idx_ten, -1)
 
-        shape_ten = tf.constant(packed_dims(target_upd))
+        shape_ten = tf.constant(packed_dims(target_out))
         out_ten = tf.scatter_nd(idx_ten, upd_ten, shape_ten)
 
-        out_ten = to_sig(out_ten, target_out, trg_sig)
+        out_ten = to_sig(out_ten, target_out, trg_sig, is_packed=True)
         out_ten = tf.reshape(out_ten, flat_dims(trg_sig))
         return out_ten
 
     def assign(self, rhs):
-        trg_sig = self.index_list 
+        trg_sig = self.get_sig()
 
         if self.has_slice():
             val = self._evaluate_sliced(trg_sig, rhs)
         else:
             val = rhs.evaluate(trg_sig)
 
-        self.cfg.arrays[self.name] = val
+        self.runtime.arrays[self.name] = val
 
     def add(self, rhs):
-        if self.name not in self.cfg.arrays:
+        if self.name not in self.runtime.arrays:
             raise RuntimeError(
                 f'Cannot do += on first mention of array \'{self.name}\'')
 
@@ -342,12 +346,12 @@ class LValueArray(Array):
         else:
             val = rhs.evaluate(trg_sig)
 
-        prev = self.cfg.arrays[self.name]
-        self.cfg.arrays[self.name] = tf.add(prev, val)
+        prev = self.runtime.arrays[self.name]
+        self.runtime.arrays[self.name] = tf.add(prev, val)
     
 class RValueArray(Array):
-    def __init__(self, cfg, array_name, index_list):
-        super().__init__(cfg, array_name, index_list)
+    def __init__(self, runtime, array_name, index_list):
+        super().__init__(runtime, array_name, index_list)
 
     def __repr__(self):
         ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
@@ -427,9 +431,9 @@ class RValueArray(Array):
 class RandomCall(AST):
     # apply a function pointwise to the materialized arguments
     # args can be: constant or array-like
-    def __init__(self, cfg, min_expr, max_expr, dtype_string):
+    def __init__(self, runtime, min_expr, max_expr, dtype_string):
         super().__init__(min_expr, max_expr)
-        self.cfg = cfg
+        self.runtime = runtime
         self.dtype_string = dtype_string
         if dtype_string == 'INT':
             self.dtype = tf.int32
@@ -458,11 +462,11 @@ class RangeExpr(AST):
     # Problem: no good way to instantiate 'children' here since
     # the eintup's are just strings
     # RANGE[s, c], with s the key_eintup, and c the 1-D last_eintup
-    def __init__(self, cfg, key_eintup, last_eintup):
+    def __init__(self, runtime, key_eintup, last_eintup):
         super().__init__()
-        self.cfg = cfg
-        self.key_tup = cfg.maybe_add_tup(key_eintup)
-        self.last_tup = cfg.maybe_add_tup(last_eintup)
+        self.runtime = runtime
+        self.key_tup = runtime.maybe_add_tup(key_eintup)
+        self.last_tup = runtime.maybe_add_tup(last_eintup)
 
     def __repr__(self):
         return f'RangeExpr({self.key_tup}, {self.last_tup})'
@@ -489,7 +493,7 @@ class RangeExpr(AST):
         return ten
 
 class ArrayBinOp(AST):
-    def __init__(self, cfg, lhs, rhs, op_string):
+    def __init__(self, runtime, lhs, rhs, op_string):
         super().__init__(lhs, rhs)
         # TODO: expand to include Rank, IntExpr, and add evaluate()
         # methods to those classes
@@ -502,7 +506,7 @@ class ArrayBinOp(AST):
             raise RuntimeError(
                 f'right-hand-side argument is type {type(rhs)}, not allowed')
 
-        self.cfg = cfg
+        self.runtime = runtime
         self.lhs = lhs
         self.rhs = rhs
         # TODO: fix problem with tf.int32 vs tf.float64 tensors
@@ -553,31 +557,31 @@ class ScalarExpr(AST):
         return to_sig(ten, src_sig, trg_sig)
 
 class IntExpr(ScalarExpr):
-    def __init__(self, cfg, val):
+    def __init__(self, runtime, val):
         super().__init__()
-        self.cfg = cfg
+        self.runtime = runtime
         self.val = int(val)
 
     def value(self):
         return self.val
 
 class FloatExpr(ScalarExpr):
-    def __init__(self, cfg, val):
+    def __init__(self, runtime, val):
         super().__init__()
-        self.cfg = cfg
+        self.runtime = runtime
         self.val = val 
 
     def value(self):
         return self.val
 
 class Rank(ScalarExpr):
-    def __init__(self, cfg, tup_name_list):
+    def __init__(self, runtime, tup_name_list):
         super().__init__()
         for name in tup_name_list:
-            if name not in cfg.tups:
+            if name not in runtime.tups:
                 raise RuntimeError(f'Rank tup {name} not a known EinTup')
-        self.cfg = cfg
-        self.tups = [ self.cfg.tup(name) for name in tup_name_list ]
+        self.runtime = runtime
+        self.tups = [ self.runtime.tup(name) for name in tup_name_list ]
 
     def __repr__(self):
         return f'Rank({repr(self.tups)})'
@@ -599,9 +603,9 @@ class Dims(AST):
     Dims(tupname)[:]       Star       constraint
 
     """
-    def __init__(self, cfg, kind, tup_name_list, index_expr=None):
+    def __init__(self, runtime, kind, tup_name_list, index_expr=None):
         super().__init__()
-        self.cfg = cfg
+        self.runtime = runtime
         self.tup_names = tup_name_list
         self.kind = kind
         self.base_tups = []
@@ -610,24 +614,24 @@ class Dims(AST):
         if self.kind == DimKind.Int:
             self.index = int(index_expr) 
         elif self.kind == DimKind.Index:
-            self.index = index_expr
+            self.ind_tup_name = index_expr
 
     def __repr__(self):
         return f'{self.kind} Dims({self.base_tups})[{self.ind_tup}]'
 
     def post_parse_init(self):
         for name in self.tup_names:
-            if name not in self.cfg.tups:
+            if name not in self.runtime.tups:
                 raise RuntimeError(f'Dims argument \'{name}\' not a known Index')
             else:
-                self.base_tups.append(self.cfg.tup(name))
+                self.base_tups.append(self.runtime.tup(name))
 
         if self.kind == DimKind.Index:
-            if self.index not in self.cfg.tups:
+            if self.ind_tup_name not in self.runtime.tups:
                 raise RuntimeError(
-                    f'Dims Index name \'{self.index}\' not known Index')
+                    f'Dims Index name \'{self.ind_tup_name}\' not known Index')
             else:
-                self.ind_tup = self.cfg.tup(self.index)
+                self.ind_tup = self.runtime.tup(self.ind_tup_name)
 
 
     def evaluate(self, trg_sig):
@@ -645,11 +649,12 @@ class Dims(AST):
                 raise RuntimeError(
                     f'Dims Index index \'{self.ind_tup}\' must be '
                     f'rank 1, got \'{self.ind_tup.rank()}\'')
-            if self.ind_tup.dims()[0] > self.rank():
+            if self.ind_tup.dims()[0] != self.rank():
+                tup_list = [tup.name for tup in self.base_tups]
                 raise RuntimeError(
-                    f'Dims Index index \'{self.index}\' must'
-                    f' have values in range of rank {self.rank()}. ' 
-                    f'{self.ind_tup.dims()[0]} exceeds {self.rank()}')
+                    f'Index Dims index {self.ind_tup} first value '
+                    f'({self.ind_tup.dims()[0]}) must be equal to rank of '
+                    f'base tup list {tup_list} ({self.rank()})')
 
         src_sig = self.get_tups()
         ten = tf.constant(flat_dims(self.base_tups))
@@ -760,10 +765,11 @@ class RangeConstraint(AST):
         return self.value_expr.value()
 
 class TensorArg(AST):
-    def __init__(self, cfg, name):
-        if name not in cfg.array_sig:
+    def __init__(self, runtime, name):
+        super().__init__()
+        if name not in runtime.array_sig:
             raise RuntimeError(f'argument must be array name, got {name}')
-        self.cfg = cfg
+        self.runtime = runtime
         self.name = name
 
     def __repr__(self):
@@ -771,13 +777,27 @@ class TensorArg(AST):
 
     def value(self):
         # materializes the value to full dimensions.
-        # cfg.arrays may be stored in a form merely broadcastable to the
+        # runtime.arrays may be stored in a form merely broadcastable to the
         # signature.
-        sig = self.cfg.array_sig[self.name]
+        sig = self.runtime.array_sig[self.name]
         full_dims = flat_dims(sig)
-        ten = self.cfg.arrays[self.name]
+        ten = self.runtime.arrays[self.name]
         ten = tf.broadcast_to(ten, full_dims)
         return ten
+
+class TensorWrap(AST):
+    """
+    Wraps a static value and produces a constant tensor
+    """
+    def __init__(self, runtime, node):
+        if not isinstance(node, (Dims, Rank)):
+            raise RuntimeError(
+                f'TensorWrap can only wrap a Dims or Rank instance')
+        super().__init__(node)
+        self.node = node
+
+    def value(self):
+        return tf.constant(self.node.value())
 
 class TFCall(AST):
     """
@@ -786,6 +806,8 @@ class TFCall(AST):
     Python literals are wrapped with 'L(...)'
     """
     def __init__(self, func_name, tf_call_list):
+        ast_nodes = [ el for el in tf_call_list if isinstance(el, AST) ]
+        super().__init__(*ast_nodes)
         try:
             self.func = eval(func_name)
         except NameError as ne:
@@ -811,24 +833,24 @@ class TFCall(AST):
         return result
 
 if __name__ == '__main__':
-    import config
-    cfg = config.Config(5, 10)
+    from runtime import Runtime
+    rt = Runtime(5, 10)
 
-    cfg.maybe_add_tup('batch')
-    cfg.maybe_add_tup('slice')
-    cfg.maybe_add_tup('coord')
-    cfg.set_dims({'batch': 3, 'slice': 3, 'coord': 1})
-    cfg.tups['coord'].set_dim(0, 3)
-    # rng = RangeExpr(cfg, 'batch', 'coord')
+    rt.maybe_add_tup('batch')
+    rt.maybe_add_tup('slice')
+    rt.maybe_add_tup('coord')
+    rt.set_dims({'batch': 3, 'slice': 3, 'coord': 1})
+    rt.tups['coord'].set_dim(0, 3)
+    # rng = RangeExpr(rt, 'batch', 'coord')
     # ten = rng.evaluate(['slice', 'batch', 'coord'])
     
-    # d1 = Dims(cfg, 'batch', DimKind.Index, 'coord')
-    # d2 = Dims(cfg, 'slice', DimKind.Index, 'coord')
-    # rk = Rank(cfg, 'batch')
-    # rnd = RandomCall(cfg, IntExpr(cfg, 0), rk, 'INT')
+    # d1 = Dims(rt, 'batch', DimKind.Index, 'coord')
+    # d2 = Dims(rt, 'slice', DimKind.Index, 'coord')
+    # rk = Rank(rt, 'batch')
+    # rnd = RandomCall(rt, IntExpr(rt, 0), rk, 'INT')
     # ten = rnd.evaluate(['slice', 'batch', 'coord'])
 
     print(ten)
     print(ten.shape)
-    print(cfg.tups)
+    print(rt.tups)
 
