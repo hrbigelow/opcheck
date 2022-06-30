@@ -33,4 +33,3 @@ def union_ixn(a, b):
     ab_ixn =  [ el for el in a if el in b ]
     return a_extra, ab_ixn, b_extra
 
-

@@ -413,7 +413,9 @@ class RValueArray(Array):
         idx_ten = util.flatten(idx_ten, slice_tup.dims())
         idx_ten = tf.where(in_bounds, idx_ten, -1)
 
+        # all tensors are packed, so one dim per EinTup in batch_sig
         num_batch_dims = len(batch_sig)
+        # does not work for CPU for out-of-bounds
         result = tf.gather_nd(par_ten, idx_ten, batch_dims=num_batch_dims)
 
         result = to_sig(result, target_res, trg_sig, is_packed=True)
@@ -588,6 +590,9 @@ class Rank(ScalarExpr):
 
     def value(self):
         return sum(tup.rank() for tup in self.tups)
+
+    def get_tups(self):
+        return self.tups
 
 class DimKind(enum.Enum):
     Star = 'Star'

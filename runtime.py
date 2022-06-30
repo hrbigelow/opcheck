@@ -183,22 +183,28 @@ class Runtime(object):
         outs = { (arg.name, arg.value()) for arg in self.outputs }
         return outs
 
-    # generate all qualifying rank + dims combinations as a rank_map plus
-    # dims_map pair
-    def gen_shapes(self):
-        primary_tup_names = [ tup.name for tup in self.get_primary_tups() ]
-        rank_space = (10,) * len(primary_tup_names)
-        for rank_combo in np.ndindex(rank_space):
-            rank_map = dict(zip(primary_tup_names, rank_combo))
-            self.set_ranks(rank_map)
-            if not all(con.value() for con in self.constraints):
-                continue
-            yield rank_map
-
+    # cycle through all combinations of ranks up to 9 satisfying the
+    # constraints
+    def cycle(self, k):
+        cons = self.constraints
+        if k == -1:
+            yield 
+            return
+        pre_tups = set(tup.name for con in cons[:k] for tup in con.get_tups())
+        cur_tups = set(tup.name for tup in cons[k].get_tups())
+        extra = list(cur_tups.difference(pre_tups))
+        for _ in self.cycle(k-1):
+            for cur_ranks in np.ndindex((10,) * len(extra)):
+                update = dict(zip(extra, cur_ranks))
+                self.set_ranks(update)
+                if cons[k].value():
+                    yield
+        
     def validate_all(self):
-        for rmap in self.gen_shapes():
+        for _ in self.cycle(len(self.constraints)-1):
+            config = [ tup.rank() for tup in self.tups.values() ]
             valid = self.validate()
-            print(f'{rmap} {valid}')
+            print(f'{config}: {valid}')
 
     # validate the current rank + dims setting
     def validate(self):
@@ -259,13 +265,7 @@ class Runtime(object):
     def nelem(self, eintup):
         return self.tup(eintup).nelem()
 
-    def cycle(self, *eintups):
-        tups = [self.tup(e) for e in eintups]
-        return itertools.product(*tups)
-
 if __name__ == '__main__':
     rt = Runtime()
     rt.set_ranks({'batch': 2, 'slice': 1})
-    for val in rt.cycle('slice'):
-        print(val)
 

@@ -6,9 +6,8 @@ tf.gather_nd(params, indices, batch_dims=RANK(batch))
 
 result
 
-RANK(batch) + RANK(slice) + RANK(other) < 8
-RANK(batch) + RANK(elem) + RANK(other) < 8
-RANK(elem) > 0
+RANK(batch,slice,other) < 8
+RANK(batch,elem,other) < 8
 RANK(coord) == 1
 DIMS(coord)[0] == RANK(elem)
 

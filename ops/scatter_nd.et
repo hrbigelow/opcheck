@@ -10,6 +10,6 @@ output
 RANK(dest) == 4
 RANK(coord) == 1
 DIMS(coord)[0] == RANK(dest)
-RANK(slice) < 10
-RANK(elem) < 8
+RANK(slice) < 5 
+RANK(elem) < 5 
 
