@@ -99,6 +99,11 @@ def to_sig(ten, src_sig, trg_sig, is_packed=False):
 
     return ten
 
+def broadcastable(array_dims, sig_dims):
+    if len(array_dims) != len(sig_dims):
+        return False
+    return all(ad in (1, sd) for ad, sd in zip(array_dims, sig_dims))
+
 STAR = ':'
 
 
@@ -342,6 +347,12 @@ class LValueArray(Array):
         else:
             val = rhs.evaluate(trg_sig)
 
+        trg_dims = flat_dims(trg_sig)
+        val_dims = val.shape.as_list()
+        if not broadcastable(val_dims, trg_dims):
+            raise RuntimeError(
+                f'Actual array shape {val_dims} not broadcastable to '
+                f'signature-based shape {trg_dims}')
         self.runtime.arrays[self.name] = val
 
     def add(self, rhs):
@@ -565,7 +576,8 @@ class ScalarExpr(AST):
     def evaluate(self, trg_sig):
         src_sig = []
         ten = tf.constant(self.value())
-        return to_sig(ten, src_sig, trg_sig)
+        ten = to_sig(ten, src_sig, trg_sig)
+        return ten
 
 class IntExpr(ScalarExpr):
     def __init__(self, runtime, val):

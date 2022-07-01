@@ -31,6 +31,27 @@ The functions AST::evaluate, flat_dims, get_inds, get_cardinality,
 layout_to_sig all take / return lists of EinTups.
 
 
+Constraint Logic
+
+The constraints can be divided into two groups.  Rank-only constraints, in
+which the rank of one or more EinTups are constrained.  And, Dims-containing
+constraints.  The runtime automatically generates all possible combinations of
+ranks in [0, 10) x N, with N being the number of primary EinTups.  It retains
+only those combinations which satisfy the Rank-only constraints.
+
+Then, it generates Dims for each, using the Dims-containing constraints.  These
+constraints can be Dims-IntExpr, Dims-Rank, or Dims-Dims.  The Dims-Dims
+constraints induce a graph on the set of primary EinTups, and cannot form any
+cycle.  Because of this, the system is able to generate dims for each primary
+EinTup using DFS on this graph.  A node (Shape) is 'visited' when its Dims are
+generated via gen_dims(), and thus it returns True for has_dims().
+
+Dims-Dims constraints must have matching rank.  However, there currently is no
+clean way to determine that two such Dims have matching rank until the ranks
+have been set by Runtime::cycle iterations.
+
+
+
 
 Overview
 

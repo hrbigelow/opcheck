@@ -53,8 +53,16 @@ class Shape(object):
         if self.has_dims():
             return
 
-        def is_ready(ex):
-            return all(d.has_dims() for d in ex.get_nodes_of_type(Dims))
+        def is_ready(expr):
+            dnodes = expr.get_nodes_of_type(Dims)
+            return all(tup.has_dims() for d in dnodes for tup in d.base_tups)
+
+        # check that all Dims-containing constraints match the rank
+        for nb in self.dims_neighbors():
+            if any(tup.rank() != self.rank for tup in nb.base_tups):
+                raise RuntimeError(
+                    f'Dims constraint {nb} contains one or more EinTups with '
+                    f'rank differing from this shape\'s rank {self.rank}')
 
         min_expr = self.min_exprs[0]
         for ex in self.min_exprs[1:]:
@@ -78,10 +86,15 @@ class Shape(object):
         dims = [ np.random.randint(lo, hi) for lo, hi in z ]
         self.dims = dims
 
+        assert len(self.dims) == self.rank, (
+                f'gen_dims {self.dims} does not match rank {self.rank}')
+
         for nbor in self.dims_neighbors():
-            nbor.gen_dims()
+            for tup in nbor.base_tups:
+                tup.gen_dims()
 
     def set_rank(self, rank):
+        self.dims = None
         self.rank = rank
 
     def get_rank(self):
@@ -90,17 +103,25 @@ class Shape(object):
                 f'Cannot call Shape::get_rank() before rank is set')
         return self.rank
 
+    def _add_limit_expr(self, expr, is_max):
+        for dn in expr.get_nodes_of_type(Dims):
+            if len(dn.base_tups) != 1:
+                raise RuntimeError(
+                    f'Only single-EinTup Dims expressions allowed '
+                    f'in constraints. Got {dn}')
+        if is_max:
+            self.max_exprs.append(expr)
+        else:
+            self.min_exprs.append(expr)
+
     def add_max_expr(self, max_expr):
-        self.max_exprs.append(max_expr)
+        return self._add_limit_expr(max_expr, True)
 
     def add_min_expr(self, min_expr):
-        self.min_exprs.append(min_expr)
+        return self._add_limit_expr(min_expr, False)
 
     def has_dims(self):
         return self.dims is not None
-
-    def clear(self):
-        self.dims = None
 
     def set_elem(self, ind, dim):
         if self.dims is None:
@@ -139,7 +160,7 @@ class EinTup(object):
         shadow = ''
         if not self.primary():
             shadow = f'(shadowing {self.shadow_of.name})'
-        return f'EinTup \'{self.name}\': rank {rankstring} [{dimstring}]'
+        return f'EinTup \'{self.name}\' |{rankstring}| [{dimstring}]'
 
     def __len__(self):
         return len(self.dims())
@@ -186,16 +207,6 @@ class EinTup(object):
 
     def nelem(self):
         return np.prod(self.dims(), dtype=np.int32)
-
-    """
-    def set_dims(self, dims):
-        if self.shadow_of is not None:
-            raise RuntimeError(f'cannot call set_dims on shadowing EinTup')
-        self.shape.set(dims)
-
-    def set_dim(self, ind, val):
-        self.shape.set_elem(ind, val)
-    """
 
     def value(self):
         if self._value is None:

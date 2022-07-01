@@ -17,11 +17,14 @@ RANK(field) == RANK(fpos)
 RANK(coord) == 1
 RANK(ichan) == 1
 RANK(ochan) == 1
+DIMS(field)[:] == DIMS(ipos)[:] - DIMS(fpos)[:] + 1
 DIMS(coord)[0] == RANK(ipos)
 DIMS(fpos)[:] < 10
 DIMS(ipos)[:] > 30
 DIMS(batch)[:] < 5
 DIMS(ichan)[:] < 5
+DIMS(ichan)[:] > 0
 DIMS(ochan)[:] < 5
+DIMS(ochan)[:] > 0
 
 
