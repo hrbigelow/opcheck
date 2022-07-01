@@ -101,6 +101,7 @@ def to_sig(ten, src_sig, trg_sig, is_packed=False):
 
 STAR = ':'
 
+
 class AST(object):
     def __init__(self, *children):
         self.children = list(children)
@@ -124,6 +125,14 @@ class AST(object):
 
     def get_tups(self):
         return {tup for c in self.children for tup in c.get_tups()}
+
+    def get_nodes_of_type(self, typ):
+        nodes = []
+        if isinstance(self, typ):
+            nodes.append(self)
+        for ch in self.children:
+            nodes.extend(ch.get_nodes_of_type(typ))
+        return nodes
 
 class Slice(AST):
     # Represents an expression ary[a,b,c,:,e,...] with exactly one ':' and
@@ -689,7 +698,9 @@ class Dims(AST):
 class StaticBinOpBase(AST):
     """
     A Binary operator for use only in constraints.
-    Accepts IntExpr, Rank, Dims (Int and Star) types
+    Accepts IntExpr, Rank, Dims (Int and Star) types.
+    If both arguments are scalar, returns a scalar.  Otherwise, returns
+    a list, broadcasting one argument if necessary
     """
     # Dims types   
     def __init__(self, arg1, arg2):
@@ -716,18 +727,16 @@ class StaticBinOpBase(AST):
         is_list1 = isinstance(vals1, (list, tuple))
         is_list2 = isinstance(vals2, (list, tuple))
         if is_list1 and not is_list2:
-            vals2 = [vals2] * len(vals1)
+            return [ self.op(el, vals2) for el in vals1 ]
         elif not is_list1 and is_list2:
-            vals1 = [vals1] * len(vals2)
+            return [ self.op(vals1, el) for el in vals2 ]
         elif is_list1 and is_list2:
             if len(vals1) != len(vals2):
                 cls_name = super().__class__.__name__
-                raise RuntimeError(
-                    f'{cls_name} got unequal length values')
+                raise RuntimeError(f'{cls_name} got unequal length values')
+            return [ self.op(el1, el2) for el1, el2 in zip(vals1, vals2) ]
         else:
-            vals1 = [vals1]
-            vals2 = [vals2]
-        return [ self.op(el1, el2) for el1, el2 in zip(vals1, vals2) ]
+            return self.op(vals1, vals2)
 
     def value(self):
         return self.reduce(self._map_op())
@@ -736,8 +745,8 @@ class ArithmeticBinOp(StaticBinOpBase):
     def __init__(self, arg1, arg2, op):
         super().__init__(arg1, arg2)
         opfuncs = [ operator.add, operator.sub, operator.mul, operator.truediv,
-                operator.floordiv ]
-        self.op = dict(zip(['+', '-', '*', '/', '//'], opfuncs))[op]
+                operator.floordiv, min, max ]
+        self.op = dict(zip(['+', '-', '*', '/', '//', 'min', 'max'], opfuncs))[op]
 
     def reduce(self, op_vals):
         return op_vals
@@ -756,7 +765,10 @@ class LogicalOp(StaticBinOpBase):
                 f'{repr(self.arg2)})')
 
     def reduce(self, op_vals):
-        return all(op_vals)
+        if isinstance(op_vals, list):
+            return all(op_vals)
+        else:
+            return op_vals
 
 class RangeConstraint(AST):
     def __init__(self, eintup_binop, kind, value_expr):

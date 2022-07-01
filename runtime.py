@@ -3,6 +3,7 @@ import numpy as np
 import itertools
 import re
 from parse import BCParser
+from ast_nodes import IntExpr, Dims, ArithmeticBinOp
 
 def equal_tens(a, b, eps):
     if not a.dtype.is_floating:
@@ -12,13 +13,94 @@ def equal_tens(a, b, eps):
             tf.reduce_all(tf.less_equal(tf.abs(a - b), eps)).numpy()
             )
 
+def maybe_broadcast(a, length):
+    if isinstance(a, (list, tuple)):
+        if len(a) != length:
+            raise RuntimeError(
+                f'Cannot broadcast {a} to length {length}')
+        else:
+            return a
+    else:
+        return [a] * length
+
+
 class Shape(object):
     # simple data class
-    def __init__(self):
+    def __init__(self, min_expr, max_expr):
         self.dims = None
+        self.rank = None
+        self.min_exprs = [min_expr]
+        self.max_exprs = [max_expr]
 
-    def set(self, dims):
-        self.dims = [ int(d) for d in dims ]
+    def __repr__(self):
+        return (f'Shape: rank {self.rank}, dims {self.dims}, ' 
+                f'mins: {self.min_exprs}, maxs: {self.max_exprs}')
+
+    # two Shapes are considered neighbors if there exists a constraint
+    # with Dims on either side.  The set of all such Dims-Dims constraints
+    # cannot produce a cycle among the induced graph of all Shapes.
+    def dims_neighbors(self): 
+        exprs = self.min_exprs + self.max_exprs
+        return { dn for ex in exprs for dn in ex.get_nodes_of_type(Dims) }
+
+    # recursively generate dimensions for this and any neighbors.
+    # neighbor connections are defined by 
+    def gen_dims(self):
+        if self.rank is None:
+            raise RuntimeError(
+                f'Cannot call Shape::gen_dims() before rank is set')
+
+        if self.has_dims():
+            return
+
+        def is_ready(ex):
+            return all(d.has_dims() for d in ex.get_nodes_of_type(Dims))
+
+        min_expr = self.min_exprs[0]
+        for ex in self.min_exprs[1:]:
+            if is_ready(ex):
+                min_expr = ArithmeticBinOp(min_expr, ex, 'max')
+        max_expr = self.max_exprs[0]
+        for ex in self.max_exprs[1:]:
+            if is_ready(ex):
+                max_expr = ArithmeticBinOp(max_expr, ex, 'min')
+        try:
+            min_vals = min_expr.value()
+            max_vals = max_expr.value()
+        except RuntimeError as rt:
+            raise RuntimeError(
+                f'Shape::gen_dims has inconsistent ranked constraints. '
+                f'{rt.value}')
+        min_vals = maybe_broadcast(min_vals, self.rank)
+        max_vals = maybe_broadcast(max_vals, self.rank)
+
+        z = zip(min_vals, max_vals)
+        dims = [ np.random.randint(lo, hi) for lo, hi in z ]
+        self.dims = dims
+
+        for nbor in self.dims_neighbors():
+            nbor.gen_dims()
+
+    def set_rank(self, rank):
+        self.rank = rank
+
+    def get_rank(self):
+        if self.rank is None:
+            raise RuntimeError(
+                f'Cannot call Shape::get_rank() before rank is set')
+        return self.rank
+
+    def add_max_expr(self, max_expr):
+        self.max_exprs.append(max_expr)
+
+    def add_min_expr(self, min_expr):
+        self.min_exprs.append(min_expr)
+
+    def has_dims(self):
+        return self.dims is not None
+
+    def clear(self):
+        self.dims = None
 
     def set_elem(self, ind, dim):
         if self.dims is None:
@@ -29,17 +111,20 @@ class Shape(object):
                 f'{len(self.dims)} dims')
         self.dims[ind] = dim
 
-    def get(self):
+    def get_dims(self):
         if self.dims is None:
-            raise RuntimeError('Cannot call get() on uninitialized Shape')
+            raise RuntimeError('Cannot call get_dims() on uninitialized Shape')
         return self.dims
 
 
 class EinTup(object):
-    def __init__(self, name, shadow_of=None):
+    def __init__(self, name, min_expr, max_expr, shadow_of=None):
         self.name = name
         self.shadow_of = shadow_of
-        self.shape = Shape() if shadow_of is None else shadow_of.shape
+        if shadow_of is None:
+            self.shape = Shape(min_expr, max_expr) 
+        else:
+            self.shape = shadow_of.shape
         self._value = None
 
     def __repr__(self):
@@ -47,10 +132,14 @@ class EinTup(object):
             dimstring = ','.join([str(d) for d in self.dims()])
         except RuntimeError:
             dimstring = '?'
+        try:
+            rankstring = self.rank()
+        except RuntimeError:
+            rankstring = '?'
         shadow = ''
         if not self.primary():
             shadow = f'(shadowing {self.shadow_of.name})'
-        return f'EinTup \'{self.name}\': [{dimstring}]'
+        return f'EinTup \'{self.name}\': rank {rankstring} [{dimstring}]'
 
     def __len__(self):
         return len(self.dims())
@@ -70,15 +159,35 @@ class EinTup(object):
     def same_shape_as(self, other):
         return self.shape is other.shape 
 
+    def set_rank(self, rank):
+        self.shape.set_rank(rank)
+
+    def maybe_add_max_expr(self, max_expr):
+        if self.primary():
+            self.shape.add_max_expr(max_expr)
+
+    def maybe_add_min_expr(self, min_expr):
+        if self.primary():
+            self.shape.add_min_expr(min_expr)
+
+    def gen_dims(self):
+        if self.shadow_of is not None:
+            raise RuntimeError(f'cannot call set_dims on shadowing EinTup')
+        self.shape.gen_dims()
+
+    def has_dims(self):
+        return self.shape.has_dims()
+
     def dims(self):
-        return self.shape.get()
+        return self.shape.get_dims()
 
     def rank(self):
-        return len(self.shape.get())
+        return self.shape.get_rank()
 
     def nelem(self):
         return np.prod(self.dims(), dtype=np.int32)
 
+    """
     def set_dims(self, dims):
         if self.shadow_of is not None:
             raise RuntimeError(f'cannot call set_dims on shadowing EinTup')
@@ -86,6 +195,7 @@ class EinTup(object):
 
     def set_dim(self, ind, val):
         self.shape.set_elem(ind, val)
+    """
 
     def value(self):
         if self._value is None:
@@ -112,8 +222,8 @@ class Runtime(object):
         # Ast nodes representing rank and dim comstraints
         self.constraints = None
 
-        self.min_dim = min_dim
-        self.max_dim = max_dim
+        self.min_dim = IntExpr(self, min_dim)
+        self.max_dim = IntExpr(self, max_dim) 
         self.parser.set_runtime(self)
 
     def __repr__(self):
@@ -166,12 +276,53 @@ class Runtime(object):
         self.out_args = self.parser.parse(tf_output)
         
         self.parser.set_constraint_mode()
-        self.constraints = [ self.parser.parse(con) for con in constraints ]
+        cons = [ self.parser.parse(con) for con in constraints ]
+        def dims_con(con):
+            return isinstance(con.arg1, Dims) or isinstance(con.arg2, Dims) 
+
+        self.rank_constraints = [ con for con in cons if not dims_con(con) ]
+        self.dims_constraints = [ con for con in cons if dims_con(con) ]
 
         # post-init all AST nodes
-        all_nodes = self.statements + self.constraints + [self.tf_call]
+        all_nodes = (
+                self.statements + self.rank_constraints +
+                self.dims_constraints  + [self.tf_call])
+
         for node in all_nodes: 
             node.post_parse_init()
+
+        self.register_dims_limits()
+
+    def register_dims_limits(self):
+        # add Dims constraints to appropriate EinTups
+        def plus1(expr):
+            return ArithmeticBinOp(expr, IntExpr(self, 1), '+')
+
+        all_ops = ['<','<=','==','>=','>']
+        for con in self.dims_constraints:
+            flipped_op = dict(zip(all_ops, reversed(all_ops)))[con.op_string]
+            g1 = (con.op_string, con.arg1, con.arg2)
+            g2 = (flipped_op, con.arg2, con.arg1)
+            for op, lhs, rhs in g1, g2:
+                min_expr = max_expr = None
+                if isinstance(lhs, Dims):
+                    if op == '<':
+                        max_expr = rhs
+                    elif op == '<=':
+                        max_expr = plus1(rhs)
+                    elif op == '==':
+                        min_expr = rhs 
+                        max_expr = plus1(rhs) 
+                    elif op == '>=':
+                        min_expr = rhs 
+                    elif op == '>':
+                        min_expr = plus1(rhs) 
+                if min_expr is not None:
+                    for tup in lhs.base_tups:
+                        tup.maybe_add_min_expr(min_expr)
+                if max_expr is not None:
+                    for tup in lhs.base_tups:
+                        tup.maybe_add_max_expr(max_expr)
         
     # run the full program and produce the set of output tensors in the
     # preconfigured order
@@ -183,10 +334,15 @@ class Runtime(object):
         outs = { (arg.name, arg.value()) for arg in self.outputs }
         return outs
 
-    # cycle through all combinations of ranks up to 9 satisfying the
-    # constraints
+    def gen_dims(self):
+        for tup in self.tups.values():
+            if not tup.primary() or tup.has_dims():
+                continue
+            tup.gen_dims()
+
+    # cycle through all combinations of ranks < 10 satisfying constraints
     def cycle(self, k):
-        cons = self.constraints
+        cons = self.rank_constraints
         if k == -1:
             yield 
             return
@@ -201,8 +357,14 @@ class Runtime(object):
                     yield
         
     def validate_all(self):
-        for _ in self.cycle(len(self.constraints)-1):
-            config = [ tup.rank() for tup in self.tups.values() ]
+        k = len(self.rank_constraints) - 1
+        keys = list(self.tups.keys())
+        key_header = ','.join(keys)
+        print(f'{key_header}')
+        for _ in self.cycle(k):
+            # config = [ tup.rank() for tup in self.tups.values() ]
+            self.gen_dims()
+            config = ','.join([ repr(self.tups[k].dims()) for k in keys ])
             valid = self.validate()
             print(f'{config}: {valid}')
 
@@ -218,13 +380,11 @@ class Runtime(object):
     def set_ranks(self, rank_map):
         for tup, rank in rank_map.items():
             if tup not in self.tups:
-                raise RuntimeError(
-                    f'Cannot set dims for unknown EinTup {tup}')
+                raise RuntimeError('Cannot set dims for unknown EinTup {tup}')
             if not self.tup(tup).primary():
                 raise RuntimeError(
-                    f'Cannot set dims for non-primary EinTup {tup}')
-            dims = np.random.randint(self.min_dim, self.max_dim, rank)
-            self.tup(tup).set_dims(dims)
+                    f'Cannot set rank for non-primary EinTup {tup}')
+            self.tup(tup).set_rank(rank)
 
     def set_dims(self, dims_map):
         for name, dims in dims_map.items():
@@ -238,9 +398,9 @@ class Runtime(object):
         if name in self.tups:
             pass
         elif shadow_of is None:
-            self.tups[name] = EinTup(name, None)
+            self.tups[name] = EinTup(name, self.min_dim, self.max_dim, None)
         elif shadow_of.name in self.tups:
-            self.tups[name] = EinTup(name, shadow_of)
+            self.tups[name] = EinTup(name, self.min_dim, self.max_dim, shadow_of)
         else:
             raise RuntimeError(
                 f'Runtime::maybe_add_tup - shadow_of \'{shadow_of}\' '

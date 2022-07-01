@@ -5,17 +5,23 @@ index[ipos,fpos,coord] = RANGE[ipos,coord] - RANGE[fpos,coord]
 output[batch,field,ochan] = 0
 output[batch,index[ipos,fpos,:],ochan] = tmp[batch,ipos,fpos,ochan]
 
-tf.nn.convolution(input, filters, padding=L('VALID'))
+tf.nn.convolution(input=input, filters=filters, padding=L('VALID'))
 
 output
 
+RANK(batch) == 1
+RANK(ipos) > 0
+RANK(ipos) <= 3
+RANK(fpos) == RANK(ipos)
+RANK(field) == RANK(fpos)
 RANK(coord) == 1
 RANK(ichan) == 1
 RANK(ochan) == 1
-RANK(field) == DIMS(coord)[0]
-RANK(fpos) == DIMS(coord)[0]
-RANK(ipos) == DIMS(coord)[0]
-RANK(field) <= 3
-DIMS(fpos)[:] < DIMS(ipos)[:]
-RANK(batch) < 3
+DIMS(coord)[0] == RANK(ipos)
+DIMS(fpos)[:] < 10
+DIMS(ipos)[:] > 30
+DIMS(batch)[:] < 5
+DIMS(ichan)[:] < 5
+DIMS(ochan)[:] < 5
+
 
