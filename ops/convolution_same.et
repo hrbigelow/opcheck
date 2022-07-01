@@ -1,11 +1,11 @@
 input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
 filters[fpos,ichan,ochan] = RANDOM(0, 1, FLOAT)
 tmp[batch,ipos,fpos,ochan] = input[batch,ipos,ichan] * filters[fpos,ichan,ochan]
-index[ipos,fpos,coord] = RANGE[ipos,coord] - RANGE[fpos,coord]
+index[ipos,fpos,coord] = RANGE[ipos,coord] - RANGE[fpos,coord] + (DIMS(fpos)[coord] - 1) // 2
 output[batch,field,ochan] = 0
-output[batch,index[ipos,fpos,:],ochan] = tmp[batch,ipos,fpos,ochan]
+output[batch,index[ipos,fpos,:],ochan] = tmp[batch,ipos,fpos,ochan] 
 
-tf.nn.convolution(input=input, filters=filters, padding=L('VALID'))
+tf.nn.convolution(input=input, filters=filters, padding=L('SAME'))
 
 output
 
@@ -17,7 +17,7 @@ RANK(field) == RANK(fpos)
 RANK(coord) == 1
 RANK(ichan) == 1
 RANK(ochan) == 1
-DIMS(field)[:] == DIMS(ipos)[:] - DIMS(fpos)[:] + 1
+DIMS(field)[:] == DIMS(ipos)[:] 
 DIMS(coord)[:] == RANK(ipos)
 DIMS(fpos)[:] < 10
 DIMS(ipos)[:] > 30

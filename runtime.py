@@ -370,14 +370,14 @@ class Runtime(object):
     def validate_all(self):
         k = len(self.rank_constraints) - 1
         keys = list(self.tups.keys())
-        key_header = ','.join(keys)
-        print(f'{key_header}')
+        key_header = '\t'.join(keys)
+        print(f'{key_header}\tValidated')
         for _ in self.cycle(k):
             # config = [ tup.rank() for tup in self.tups.values() ]
             self.gen_dims()
-            config = ','.join([ repr(self.tups[k].dims()) for k in keys ])
+            config = '\t'.join([ repr(self.tups[k].dims()) for k in keys ])
             valid = self.validate()
-            print(f'{config}: {valid}')
+            print(f'{config}\t{valid}')
 
     # validate the current rank + dims setting
     def validate(self):
@@ -400,7 +400,6 @@ class Runtime(object):
     def set_dims(self, dims_map):
         for name, dims in dims_map.items():
             self.tups[name].set_dims(dims)
-
 
     def set_one_dim(self, tup, ind, val):
         self.tup(tup).set_dim(ind, val)

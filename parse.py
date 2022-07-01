@@ -6,8 +6,7 @@ class BCLexer(Lexer):
     # Set of token names.   This is always required
     tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, NUMBER, COMP,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
-            TRUEDIV, DIVIDE, DIMS, RANGE, RANK, RANDOM, MIN, MAX, TENSOR, L,
-            DTYPE }
+            TRUEDIV, DIVIDE, DIMS, RANGE, RANK, RANDOM, TENSOR, L, DTYPE }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -17,8 +16,6 @@ class BCLexer(Lexer):
     RANGE   = 'RANGE'
     RANK    = 'RANK'
     RANDOM  = 'RANDOM'
-    MIN     = 'MIN'
-    MAX     = 'MAX'
     TENSOR  = 'TENSOR'
     L       = 'L'
     DTYPE   = r'(FLOAT|INT)'
@@ -39,8 +36,8 @@ class BCLexer(Lexer):
     PLUS    = r'\+'
     MINUS   = r'\-'
     TIMES   = r'\*'
-    TRUEDIV = r'\/\/'
-    DIVIDE  = r'\/'
+    DIVIDE  = r'\/\/'
+    TRUEDIV = r'\/'
 
     def error(self, t):
         print("Illegal character '%s'" % t.value[0])
@@ -55,8 +52,8 @@ class ParserMode(Enum):
 class BCParser(Parser):
     tokens = BCLexer.tokens
     precedence = (
+       ('left', TIMES, DIVIDE, TRUEDIV),
        ('left', PLUS, MINUS),
-       ('left', TIMES, DIVIDE),
     )
 
     def __init__(self):
@@ -103,7 +100,7 @@ class BCParser(Parser):
     def tensor_arg(self, p):
         return TensorArg(self.runtime, p.IDENT)
     
-    @_('shape_test', 'tup_limit')
+    @_('shape_test')
     def constraint(self, p):
         return p[0]
 
@@ -172,25 +169,42 @@ class BCParser(Parser):
     def shape_test(self, p):
         return LogicalOp(p.shape_expr0, p.shape_expr1, p.COMP)
 
-    @_('limit_type LPAREN tup_expr RPAREN ASSIGN shape_expr')
-    def tup_limit(self, p):
-        return RangeConstraint(p.tup_expr, p.limit_type, p.shape_expr)
-
-    @_('MIN', 'MAX')
-    def limit_type(self, p):
-        return p[0]
+    @_('shape_term',
+       'shape_expr expr_op shape_term')
+    def shape_expr(self, p):
+        if hasattr(p, 'shape_expr'):
+            return ArithmeticBinOp(p.shape_expr, p.shape_term, p.expr_op)
+        else:
+            return p.shape_term
+    
+    @_('shape_factor',
+       'shape_term int_term_op shape_factor')
+    def shape_term(self, p):
+        if hasattr(p, 'int_term_op'):
+            return ArithmeticBinOp(p.shape_term, p.int_term_op, p.shape_factor)
+        else:
+            return p.shape_factor
 
     @_('shape',
-       'shape_expr arith_five_op shape')
-    def shape_expr(self, p):
-        if hasattr(p, 'arith_five_op'):
-            return ArithmeticBinOp(p.shape_expr, p.shape, p.arith_five_op)
+       'LPAREN shape_expr RPAREN')
+    def shape_factor(self, p):
+        if hasattr(p, 'shape_expr'):
+            return p.shape_expr
         else:
             return p.shape
 
-    @_('PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'TRUEDIV')
-    def arith_five_op(self, p):
+    @_('PLUS', 'MINUS')
+    def expr_op(self, p):
         return p[0]
+
+    @_('TIMES', 'DIVIDE')
+    def int_term_op(self, p):
+        return p[0]
+
+    @_('TIMES', 'DIVIDE', 'TRUEDIV')
+    def term_op(self, p):
+        return p[0]
+
 
     @_('integer_node', 'rank', 'dims_star', 'dims_int')
     def shape(self, p):
@@ -245,14 +259,6 @@ class BCParser(Parser):
         else:
             return [p.tup_name]
 
-    @_('tup_name',
-       'tup_expr arith_five_op tup_name')
-    def tup_expr(self, p):
-        if hasattr(p, 'arith_five_op'):
-            return ArithmeticBinOp(p.tup_expr, p.tup_name, p.arith_five_op)
-        else:
-            return p.tup_name
-
     @_('IDENT LBRACK top_index_list RBRACK')
     def lval_array(self, p):
         return LValueArray(self.runtime, p.IDENT, p.top_index_list)
@@ -266,12 +272,29 @@ class BCParser(Parser):
     def rval_unit(self, p):
         return p[0]
 
-    @_('rval_unit',
-       'rval_expr arith_five_op rval_unit')
+    @_('rval_term',
+       'rval_expr expr_op rval_term')
     def rval_expr(self, p):
-        if hasattr(p, 'arith_five_op'):
-            return ArrayBinOp(self.runtime, p.rval_expr, p.rval_unit,
-                    p.arith_five_op)
+        if hasattr(p, 'expr_op'):
+            return ArrayBinOp(self.runtime, p.rval_expr, p.rval_term, p.expr_op)
+        else:
+            return p.rval_term
+
+    @_('rval_factor',
+       'rval_term term_op rval_factor')
+    def rval_term(self, p):
+        if hasattr(p, 'term_op'):
+            return ArrayBinOp(self.runtime, p.rval_term, p.rval_factor, 
+                    p.term_op)
+        else:
+            return p.rval_factor
+
+
+    @_('rval_unit',
+       'LPAREN rval_expr RPAREN')
+    def rval_factor(self, p):
+        if hasattr(p, 'rval_expr'):
+            return p.rval_expr
         else:
             return p.rval_unit
 
