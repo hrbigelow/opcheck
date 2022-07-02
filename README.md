@@ -39,7 +39,7 @@ Einstein indices in a fixed order.  In the assignment, indices which appear on
 the right hand side but not the left are marginalized out.  Indices which
 appear on the left but not the right cause broadcasting of the right-hand-side
 expression.  For an example of broadcasting behavior, here is the definition of
-meshgrid:
+`tf.meshgrid` for `N = 4`:
 
 ```python
 in1[a] = RANDOM(0, 10, INT)
@@ -85,6 +85,8 @@ tensors.  It then performs the TensorFlow call.  Finally, it compares the
 TensorFlow op outputs with those from the Eintup program, and returns True or
 False if equal.
 
+For other examples, see the [ops](ops) directory.  A full description of Einsum
+Tuple language is in [eintup.md](eintup.md).
 
 
 
