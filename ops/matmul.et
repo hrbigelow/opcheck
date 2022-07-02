@@ -6,12 +6,10 @@ tf.linalg.matmul(mat1, mat2)
 
 result
 
+RANK(row) == RANK(col) == RANK(inner) == 1
 RANK(batch) < 4
-RANK(row) == 1
-RANK(inner) == 1
-RANK(col) == 1
-DIMS(batch)[:] < 4
-DIMS(row)[:] < 50
-DIMS(inner)[:] < 100
-DIMS(col)[:] < 50
+DIMS(batch) < 4
+DIMS(row) < 50
+DIMS(inner) < 100
+DIMS(col) < 50
 

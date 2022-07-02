@@ -9,10 +9,10 @@ result
 RANK(batch,slice,other) < 8
 RANK(batch,elem,other) < 8
 RANK(coord) == 1
-RANK(elem) >= 1
-DIMS(coord)[:] == RANK(elem)
-DIMS(batch)[:] < 5
-DIMS(slice)[:] < 20
-DIMS(elem)[:] < 20
-DIMS(other)[:] < 20
+DIMS(coord) == RANK(elem) >= 1
+DIMS(batch) < 5
+DIMS(slice) < 20
+0 < DIMS(elem) < 20
+0 < DIMS(other) < 20
+
 

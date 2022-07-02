@@ -287,7 +287,7 @@ class Runtime(object):
         self.out_args = self.parser.parse(tf_output)
         
         self.parser.set_constraint_mode()
-        cons = [ self.parser.parse(con) for con in constraints ]
+        cons = [ con for s in constraints for con in self.parser.parse(s) ]
         def dims_con(con):
             return isinstance(con.arg1, Dims) or isinstance(con.arg2, Dims) 
 

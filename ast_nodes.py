@@ -617,14 +617,12 @@ class Rank(ScalarExpr):
 
 class DimKind(enum.Enum):
     Star = 'Star'
-    Int = 'Int' 
     Index = 'Index'
 
 class Dims(AST):
     """
     Dims can exist in three sub-types.  
     Expression             Type       Usage
-    Dims(tupname)[0]       Int        statement, constraint
     Dims(tupname)[ind_tup] Index      statement
     Dims(tupname)[:]       Star       constraint
 
@@ -637,9 +635,7 @@ class Dims(AST):
         self.base_tups = []
         self.ind_tup = None
 
-        if self.kind == DimKind.Int:
-            self.index = int(index_expr) 
-        elif self.kind == DimKind.Index:
+        if self.kind == DimKind.Index:
             self.ind_tup_name = index_expr
 
     def __repr__(self):
@@ -664,11 +660,6 @@ class Dims(AST):
         if self.kind != DimKind.Index:
             raise RuntimeError(
                 f'Only {DimKind.Index.value} Dims can call evaluate()')
-
-        if self.kind == DimKind.Int and self.index >= self.rank():
-            raise RuntimeError(
-                f'Dims index \'{self.index}\' must be less than '
-                f'rank {self.rank()}')
 
         if self.kind == DimKind.Index:
             if self.ind_tup.rank() != 1:
@@ -698,8 +689,6 @@ class Dims(AST):
         dims = flat_dims(self.base_tups)
         if self.kind == DimKind.Star:
             return dims
-        elif self.kind == DimKind.Int:
-            return dims[self.index]
     
     def get_tups(self):
         if self.kind == DimKind.Index:
@@ -710,7 +699,7 @@ class Dims(AST):
 class StaticBinOpBase(AST):
     """
     A Binary operator for use only in constraints.
-    Accepts IntExpr, Rank, Dims (Int and Star) types.
+    Accepts IntExpr, Rank, Dims Star types.
     If both arguments are scalar, returns a scalar.  Otherwise, returns
     a list, broadcasting one argument if necessary
     """
@@ -758,7 +747,11 @@ class ArithmeticBinOp(StaticBinOpBase):
         super().__init__(arg1, arg2)
         opfuncs = [ operator.add, operator.sub, operator.mul, operator.truediv,
                 operator.floordiv, min, max ]
+        self.op_string = op
         self.op = dict(zip(['+', '-', '*', '/', '//', 'min', 'max'], opfuncs))[op]
+
+    def __repr__(self):
+        return f'ArithmeticBinOp {self.arg1} {self.op_string} {self.arg2}'
 
     def reduce(self, op_vals):
         return op_vals
@@ -826,7 +819,7 @@ class TensorWrap(AST):
         self.node = node
 
     def value(self):
-        return tf.constant(self.node.value())
+        return tf.constant(self.node.value(), dtype=tf.int32)
 
 class TFCall(AST):
     """
@@ -834,8 +827,9 @@ class TFCall(AST):
     Arguments can be TensorArg, Dims, Rank, or python literals.
     Python literals are wrapped with 'L(...)'
     """
-    def __init__(self, func_name, tf_call_list):
-        ast_nodes = [ el for el in tf_call_list if isinstance(el, AST) ]
+    def __init__(self, func_name, call_list):
+        all_nodes = [ a[1] if isinstance(a, tuple) else a for a in call_list ]
+        ast_nodes = [ el for el in all_nodes if isinstance(el, AST) ]
         super().__init__(*ast_nodes)
         try:
             self.func = eval(func_name)
@@ -843,7 +837,7 @@ class TFCall(AST):
             raise RuntimeError(
                 f'TFCall could not find function {func_name}: {ne}')
         self.func_name = func_name
-        self.tf_call_list = tf_call_list
+        self.tf_call_list = call_list
 
     def __repr__(self):
         return f'TFCall({self.func_name})[{self.tf_call_list}]'

@@ -11,8 +11,5 @@ tf.meshgrid(in1, in2, in3, in4, indexing=L('ij'))
 
 out1, out2, out3, out4
 
-RANK(a) == 1
-RANK(b) == 1
-RANK(c) == 1
-RANK(d) == 1
+RANK(a) == RANK(b) == RANK(c) == RANK(d) == 1
 

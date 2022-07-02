@@ -100,7 +100,7 @@ class BCParser(Parser):
     def tensor_arg(self, p):
         return TensorArg(self.runtime, p.IDENT)
     
-    @_('shape_test')
+    @_('shape_tests')
     def constraint(self, p):
         return p[0]
 
@@ -160,14 +160,20 @@ class BCParser(Parser):
     def named_tf_call_arg(self, p):
         return (p.IDENT, p.bare_tf_call_arg)
 
-    @_('python_literal', 'tensor_arg', 'rank', 'dims_int', 'dims_star',
-       'tensor_wrap')
+    @_('python_literal', 'tensor_arg', 'rank', 'dims_star', 'tensor_wrap')
     def bare_tf_call_arg(self, p):
         return p[0]
 
-    @_('shape_expr COMP shape_expr')
-    def shape_test(self, p):
-        return LogicalOp(p.shape_expr0, p.shape_expr1, p.COMP)
+    @_('shape_expr COMP shape_expr',
+       'shape_tests COMP shape_expr')
+    def shape_tests(self, p):
+        if hasattr(p, 'shape_tests'):
+            prev_test = p.shape_tests[-1]
+            test = LogicalOp(prev_test.arg2, p.shape_expr, p.COMP)
+            p.shape_tests.append(test)
+            return p.shape_tests
+        else:
+            return [LogicalOp(p.shape_expr0, p.shape_expr1, p.COMP)]
 
     @_('shape_term',
        'shape_expr expr_op shape_term')
@@ -205,8 +211,7 @@ class BCParser(Parser):
     def term_op(self, p):
         return p[0]
 
-
-    @_('integer_node', 'rank', 'dims_star', 'dims_int')
+    @_('integer_node', 'rank', 'dims_star')
     def shape(self, p):
         return p[0]
 
@@ -227,10 +232,6 @@ class BCParser(Parser):
     def rank(self, p):
         return Rank(self.runtime, p.tup_name_list)
 
-    @_('DIMS LPAREN tup_name_list RPAREN LBRACK COLON RBRACK')
-    def dims_star(self, p):
-        return Dims(self.runtime, DimKind.Star, p.tup_name_list) 
-
     @_('DIMS LPAREN tup_name_list RPAREN LBRACK number RBRACK')
     def dims_int(self, p):
         if not isinstance(p.number, int):
@@ -241,6 +242,10 @@ class BCParser(Parser):
     @_('DIMS LPAREN tup_name_list RPAREN LBRACK tup_name RBRACK')
     def dims_index(self, p):
         return Dims(self.runtime, DimKind.Index, p.tup_name_list, p.tup_name)
+
+    @_('DIMS LPAREN tup_name_list RPAREN')
+    def dims_star(self, p):
+        return Dims(self.runtime, DimKind.Star, p.tup_name_list) 
 
     @_('TENSOR LPAREN static_node RPAREN')
     def tensor_wrap(self, p):

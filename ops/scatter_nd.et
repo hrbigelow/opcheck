@@ -3,13 +3,16 @@ updates[slice,elem] = RANDOM(0, 10, FLOAT)
 output[dest,elem] = 0.0 
 output[indices[slice,:],elem] = updates[slice,elem]
 
-tf.scatter_nd(indices, updates, TENSOR(DIMS(dest,elem)[:]))
+tf.scatter_nd(indices=indices, updates=updates, shape=TENSOR(DIMS(dest,elem)))
 
 output
 
-RANK(dest) == 4
+0 < RANK(slice) < 5
+0 < RANK(elem) < 5
+0 < RANK(dest) < 4
+0 < DIMS(elem) < 15 
+0 < DIMS(dest) < 15
 RANK(coord) == 1
-DIMS(coord)[0] == RANK(dest)
-RANK(slice) < 5 
-RANK(elem) < 5 
+DIMS(coord) == RANK(dest)
+DIMS(slice) < 15 
 
