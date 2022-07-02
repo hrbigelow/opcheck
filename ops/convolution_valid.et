@@ -2,8 +2,8 @@ input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
 filters[fpos,ichan,ochan] = RANDOM(0, 1, FLOAT)
 tmp[batch,ipos,fpos,ochan] = input[batch,ipos,ichan] * filters[fpos,ichan,ochan]
 index[ipos,fpos,coord] = RANGE[ipos,coord] - RANGE[fpos,coord]
-output[batch,field,ochan] = 0
-output[batch,index[ipos,fpos,:],ochan] = tmp[batch,ipos,fpos,ochan]
+output[batch,field,ochan] = 0.0
+output[batch,index[ipos,fpos,:],ochan] += tmp[batch,ipos,fpos,ochan]
 
 tf.nn.convolution(input=input, filters=filters, padding=L('VALID'))
 

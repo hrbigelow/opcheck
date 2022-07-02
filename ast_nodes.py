@@ -341,7 +341,6 @@ class LValueArray(Array):
 
     def assign(self, rhs):
         trg_sig = self.get_sig()
-
         if self.has_slice():
             val = self._evaluate_sliced(trg_sig, rhs)
         else:
@@ -360,9 +359,9 @@ class LValueArray(Array):
             raise RuntimeError(
                 f'Cannot do += on first mention of array \'{self.name}\'')
 
-        trg_sig = self.index_list
+        trg_sig = self.get_sig()
         if self.has_slice():
-            val = self._evaluate_sliced(trg_sig)
+            val = self._evaluate_sliced(trg_sig, rhs)
         else:
             val = rhs.evaluate(trg_sig)
 
@@ -575,7 +574,9 @@ class ScalarExpr(AST):
 
     def evaluate(self, trg_sig):
         src_sig = []
-        ten = tf.constant(self.value())
+        val = self.value()
+        dtype = tf.int32 if isinstance(val, int) else tf.float64
+        ten = tf.constant(val, dtype=dtype)
         ten = to_sig(ten, src_sig, trg_sig)
         return ten
 

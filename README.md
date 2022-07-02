@@ -1,16 +1,16 @@
-# Tuple Einstein Notation Mini-language 
+# Einsum Tuple Mini-language 
 
 A language for expressing Tensorflow operations in a rank-agnostic way
 
 ## Synopsis
 
 ```bash
-# Run an op defined in Tuple Einstein notation on all allowed sub-rank
+# Run an op defined in Einsum Tuple language (.et) on all allowed sub-rank
 # combinations of inputs.  Check for validity against the Tensorflow op output.
 
-python run_op.py ops/gather_nd.json
-python run_op.py ops/scatter_nd.json
-python run_op.py ops/matmul.json
+python run.py ops/gather_nd.et
+python run.py ops/scatter_nd.et
+python run.py ops/matmul.et
 ...
 ```
 
@@ -23,75 +23,70 @@ for a number of batch dimensions from 0 to at least 9.  `gatherNd` works with
 variable numbers of dimensions for batching, slice layout and slice
 dimensions.
 
-Though the internal logic of the operations is often very clear, there isn't a
-straightforward way to define it in a rank-agnostic way.  This language
-attempts to provide a definition.
+Intuitively, the logic of these operations seems clear, although there is often
+not a very clear way to denote it in a rank-agnostic way.  This language
+attempts to provide that.
 
-There are several benefits to having such a language.  Once it is comprehended,
-the definition serves as a precise documentation of its behavior and allowed
-inputs.  Second, it can serve as a contract for unit tests.  Third, having such
-a clear language might encourage new op proposals to be communicated.
+There are several benefits to having such a language:  documentation, unit
+test generation, and facilitation of new proposed ops are three possibilities.
 
 ## Definition of Tuple Einstein notation
 
-Tuple Einstein notation is an extension of Einstein summation notation in which
-a group of Einstein indices in a fixed order (a tuple) is given a name, like
-`batch` or `slice`, for example.  The expression is then "compiled" by first
-choosing a rank (and dimensions) (i.e. a *shape*) for each tuple.  Then, each
-statement is evaluated on the full combination of eintup values.  There are
-other constructs introduced which will be explained later.  For example, here
-is the definition for `gatherNd`:
+Einsum Tuple notation is inspired by Einstein summation notation, and consists
+of tensor assignment statements.  While Einstein summation uses subscripts,
+Einsum Tuple notation uses bracketed indices.  Einsum indices denote tuples of
+Einstein indices in a fixed order.  In the assignment, indices which appear on
+the right hand side but not the left are marginalized out.  Indices which
+appear on the left but not the right cause broadcasting of the right-hand-side
+expression.  For an example of broadcasting behavior, here is the definition of
+meshgrid:
 
-`ops/gather_nd.json`
-```json
-{
-  "program": [
-    "params[batch,elem] = RANDOM()",
-    "indices[batch,slice,coord] = RANDINT(0, DIMS(elem)[coord])",
-    "result[batch,slice] = params[batch,indices[batch,slice,:]]"
-  ],
-  "constraints": [
-    "RANK(batch) + RANK(slice) < 8",
-    "RANK(batch) + RANK(elem) < 8",
-    "RANK(elem) > 0",
-    "RANK(coord) == 1",
-    "DIMS(coord)[0] == RANK(elem)"
-  ],
-  "tfcall": {
-    "func": "tf.gather_nd",
-    "args": {
-      "params": "params",
-      "indices": "indices",
-      "batch_dims": "RANK(batch)"
-    },
-    "return-value": "result"
-  }
-}
+```python
+in1[a] = RANDOM(0, 10, INT)
+in2[b] = RANDOM(0, 10, INT)
+in3[c] = RANDOM(0, 10, INT)
+in4[d] = RANDOM(0, 20, INT)
+out1[a,b,c,d] = in1[a]
+out2[a,b,c,d] = in2[b]
+out3[a,b,c,d] = in3[c]
+out4[a,b,c,d] = in4[d]
+
+tf.meshgrid(in1, in2, in3, in4, indexing=L('ij'))
+
+out1, out2, out3, out4
+
+RANK(a) == RANK(b) == RANK(c) == RANK(d) == 1
 ```
 
-The definition is provided by the `program` field in three lines.  Every line
-is a single assignment statement in which the left-hand side is a scalar access
-of an array.  The right-hand-side is either a function call producing a scalar,
-or an array element access producing a scalar.  Array indices are a
-comma-separated list of the eintups.  
+The `.et` file has four sections, separated by a blank line.  The first is the
+program.  The second is a python-like function call of some TensorFlow op,
+which references the tensors defined in the program.  The third section is a
+line that names tensors in the program which are to be compared with the return
+values of the TensorFlow call.  The last section lists constraints on the ranks
+of the Eintups, and also dimensions (not shown in this example).
 
-In the above example, the eintups are `batch`, `elem`, `slice`, and `coord`.
-The function `RANK(batch)` gives the number of Einstein indices in `batch`.
-`DIMS(batch)` is an array whose elements are the number of values, i.e. the
-*shape*.  `batch` takes on all value combinations produced by
-`np.ndindex(DIMS(batch))`.  For example, suppose `RANK(batch) = 3` and
-`DIMS(batch) = [2,4,3]`.  Then, `batch` would take on the combination of values
-in `[0, 2) x [0,4), x [0,3)`
+In the program, four Eintups `a`, `b`, `c`, and `d` are defined, with one array
+for each of them.  Then, four output arrays are defined, each with the compound
+shape `a,b,c,d`.  The four assignment statements illustrate broadcasting
+behavior.  The first one broadcasts along `b,c,d` since these are present
+only on the left. 
 
-Non-scalar array access may be used to provide the values for an eintup, but
-not at the top level.  In the right-hand side of the third statement,
-`params[batch,indices[batch,slice,:]]`, the `:` takes the place of `coord`, and
-`indices[batch,slice,:]` provides the value for the `elem` eintup in the
-`params` array.  This is possible because of the provided constraints
-`RANK(coord) == 1` and `DIMS(coord)[0] == RANK(elem)`, so the slice has the
-appropriate number of values.
+The above file can be run as:
 
-The two special functions `RANDOM()` and `RANDINT()` symbolize
-`np.random.uniform` and `np.random.randint`, respectively.  They are used both
-to initialize arrays, and implicitly define their type as float or integer.
+```bash
+python run.py ops/meshgrid.et
+a     b     c     d     Validated
+[50]  [93]  [26]  [90]  [True, True, True, True]
+```
+
+The system generates shapes for the four Eintups randomly, obeying the
+constraints given.  It then runs the Eintup program, populating the eight
+tensors.  It then performs the TensorFlow call.  Finally, it compares the
+TensorFlow op outputs with those from the Eintup program, and returns True or
+False if equal.
+
+
+
+
+
 
