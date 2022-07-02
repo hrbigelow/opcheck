@@ -54,6 +54,24 @@ def packed_dims(tups):
     # seems to work correctly.
     return [ tup.nelem() for tup in tups ]
 
+# used to construct a slightly order-preserving signature for
+# the result of a binary op
+def merge_tup_lists(a, b):
+    ait, bit = iter(a), iter(b)
+    ae = next(ait, None)
+    be = next(bit, None)
+    out = []
+    while ae is not None or be is not None:
+        if ae is None:
+            if be not in out:
+                out.append(be)
+            be = next(bit, None)
+        else:
+            out.append(ae)
+            ae = next(ait, None)
+    return out
+
+
 # reshape / transpose ten, with starting shape src_sig,
 # to be broadcastable to trg_sig.  if is_packed, consume
 # and produce the packed form of the signature
@@ -129,7 +147,11 @@ class AST(object):
             ch.post_parse_init()
 
     def get_tups(self):
-        return {tup for c in self.children for tup in c.get_tups()}
+        tuplists = [ ch.get_tups() for ch in self.children ]
+        merged = tuplists[0] if len(tuplists) else []
+        for l in tuplists[1:]:
+            merged = merge_tup_lists(merged, l)
+        return merged
 
     def get_nodes_of_type(self, typ):
         nodes = []
@@ -379,7 +401,7 @@ class RValueArray(Array):
 
     def get_tups(self):
         # TODO: what to do if this is nested?
-        tups = { tup for tup in self.index_list if not isinstance(tup, Slice) }
+        tups = [ tup for tup in self.index_list if not isinstance(tup, Slice) ]
         return tups
 
     def _evaluate_sliced(self, trg_sig):
@@ -493,7 +515,7 @@ class RangeExpr(AST):
         return f'RangeExpr({self.key_tup}, {self.last_tup})'
 
     def get_tups(self):
-        return {self.key_tup, self.last_tup}
+        return [self.key_tup, self.last_tup]
 
     def evaluate(self, trg_sig):
         if self.last_tup.rank() != 1:
@@ -538,10 +560,13 @@ class ArrayBinOp(AST):
     def __repr__(self):
         return f'ArrayBinOp({repr(self.lhs)} {self.op_string} {repr(self.rhs)})'
 
+    def get_tups(self):
+        a = self.lhs.get_tups()
+        b = self.rhs.get_tups()
+        return merge_tup_lists(a, b)
+
     def evaluate(self, trg_sig):
-        # TODO: optimize index ordering
         sub_sig = self.get_tups()
-        sub_sig = list(sub_sig)
         lval = self.lhs.evaluate(sub_sig)
         rval = self.rhs.evaluate(sub_sig)
         ten = self.op(lval, rval)
@@ -693,9 +718,9 @@ class Dims(AST):
     
     def get_tups(self):
         if self.kind == DimKind.Index:
-            return {self.ind_tup}
+            return [self.ind_tup]
         else:
-            return set()
+            return []
 
 class StaticBinOpBase(AST):
     """

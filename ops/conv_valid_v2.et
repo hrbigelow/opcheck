@@ -1,0 +1,21 @@
+input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
+filters[fpos,ichan,ochan] = RANDOM(0, 1, FLOAT)
+index[ipos,opos,coord] = RANGE[ipos,coord] - RANGE[opos,coord]
+unrolled[ipos,opos,ichan,ochan] = filters[index[ipos,opos,:],ichan,ochan]
+output[batch,opos,ochan] = unrolled[ipos,opos,ichan,ochan] * input[batch,ipos,ichan]
+
+tf.nn.convolution(input=input, filters=filters, padding=L('VALID'))
+
+output
+
+DIMS(batch) < 5
+0 < RANK(ipos) <= 3
+RANK(fpos) == RANK(ipos) == RANK(opos) 
+RANK(batch) == RANK(coord) == RANK(ichan) == RANK(ochan) == 1
+DIMS(opos) == DIMS(ipos) - DIMS(fpos) + 1
+DIMS(coord) == RANK(ipos)
+DIMS(fpos) < 10
+DIMS(ipos) > 30
+0 < DIMS(ichan) < 5
+0 < DIMS(ochan) < 5
+

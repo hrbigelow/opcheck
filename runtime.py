@@ -82,6 +82,11 @@ class Shape(object):
         min_vals = maybe_broadcast(min_vals, self.rank)
         max_vals = maybe_broadcast(max_vals, self.rank)
 
+        if any(lo >= hi for lo, hi in zip(min_vals, max_vals)):
+            raise RuntimeError(
+                f'Shape constraints resolve to empty range '
+                f'{min_vals} to {max_vals}')
+
         z = zip(min_vals, max_vals)
         dims = [ np.random.randint(lo, hi) for lo, hi in z ]
         self.dims = dims
@@ -194,7 +199,12 @@ class EinTup(object):
     def gen_dims(self):
         if self.shadow_of is not None:
             raise RuntimeError(f'cannot call set_dims on shadowing EinTup')
-        self.shape.gen_dims()
+        try:
+            self.shape.gen_dims()
+        except RuntimeError as rt:
+            raise RuntimeError(
+                f'Eintup {self} cannot generate any dims: '
+                f'{rt.args[0]}')
 
     def has_dims(self):
         return self.shape.has_dims()
@@ -215,7 +225,7 @@ class EinTup(object):
 
 
 class Runtime(object):
-    def __init__(self, min_dim=5, max_dim=100):
+    def __init__(self, min_dim=0, max_dim=100):
         self.parser = BCParser() 
         # map of eintup names to EinTup instances
         self.tups = {}
