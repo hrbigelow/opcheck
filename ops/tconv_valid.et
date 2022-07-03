@@ -1,0 +1,23 @@
+input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
+filters[fpos,ochan,ichan] = RANDOM(0, 1, FLOAT)
+index[ipos,opos,coord] = RANGE[opos,coord] - RANGE[ipos,coord]
+unrolled[ipos,opos,ichan,ochan] = filters[index[ipos,opos,:],ochan,ichan]
+output[batch,opos,ochan] = unrolled[ipos,opos,ichan,ochan] * input[batch,ipos,ichan]
+
+tf.nn.conv_transpose(input=input, filters=filters, 
+    output_shape=TENSOR(DIMS(batch,opos,ochan)), 
+    strides=L(1), padding=L('VALID'))
+
+output
+
+0 < DIMS(batch) < 5
+0 < RANK(ipos) < 4
+RANK(fpos) == RANK(ipos) == RANK(opos) 
+RANK(batch) == RANK(coord) == RANK(ichan) == RANK(ochan) == 1
+DIMS(opos) == DIMS(ipos) + DIMS(fpos) - 1
+DIMS(coord) == RANK(ipos)
+0 < DIMS(fpos) < 8
+15 < DIMS(ipos) < 20
+DIMS(ichan) == 2
+DIMS(ochan) == 3
+

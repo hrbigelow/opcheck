@@ -23,8 +23,8 @@ class BCLexer(Lexer):
     IDENT   = r'[a-zA-Z_][a-zA-Z0-9_]*' 
     COMMA   = r','
     COLON   = r':'
-    SQSTR   = "'(?:\\'|[^'])*'"
-    DQSTR   = '"(?:\\"|[^"])*"' 
+    SQSTR   = r"'(?:\\'|[^'])*'"
+    DQSTR   = r'"(?:\\"|[^"])*"' 
     NUMBER  = r'[\-\+]?[0-9]+(\.[0-9]+)?'
     COMP    = r'(>=|>|<=|<|==)'
     ASSIGN  = r'='
@@ -187,7 +187,7 @@ class BCParser(Parser):
        'shape_term int_term_op shape_factor')
     def shape_term(self, p):
         if hasattr(p, 'int_term_op'):
-            return ArithmeticBinOp(p.shape_term, p.int_term_op, p.shape_factor)
+            return ArithmeticBinOp(p.shape_term, p.shape_factor, p.int_term_op)
         else:
             return p.shape_factor
 
