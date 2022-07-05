@@ -6,7 +6,7 @@ class BCLexer(Lexer):
     # Set of token names.   This is always required
     tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, NUMBER, COMP,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
-            TRUEDIV, DIVIDE, DIMS, RANGE, RANK, RANDOM, TENSOR, L, DTYPE }
+            TRUEDIV, TRUNCDIV, DIMS, RANGE, RANK, RANDOM, TENSOR, L, DTYPE }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -36,7 +36,7 @@ class BCLexer(Lexer):
     PLUS    = r'\+'
     MINUS   = r'\-'
     TIMES   = r'\*'
-    DIVIDE  = r'\/\/'
+    TRUNCDIV  = r'\/\/'
     TRUEDIV = r'\/'
 
     def error(self, t):
@@ -52,7 +52,7 @@ class ParserMode(Enum):
 class BCParser(Parser):
     tokens = BCLexer.tokens
     precedence = (
-       ('left', TIMES, DIVIDE, TRUEDIV),
+       ('left', TIMES, TRUNCDIV, TRUEDIV),
        ('left', PLUS, MINUS),
     )
 
@@ -203,11 +203,11 @@ class BCParser(Parser):
     def expr_op(self, p):
         return p[0]
 
-    @_('TIMES', 'DIVIDE')
+    @_('TIMES', 'TRUNCDIV')
     def int_term_op(self, p):
         return p[0]
 
-    @_('TIMES', 'DIVIDE', 'TRUEDIV')
+    @_('TIMES', 'TRUNCDIV', 'TRUEDIV')
     def term_op(self, p):
         return p[0]
 
@@ -294,7 +294,6 @@ class BCParser(Parser):
         else:
             return p.rval_factor
 
-
     @_('rval_unit',
        'LPAREN rval_expr RPAREN')
     def rval_factor(self, p):
@@ -305,7 +304,7 @@ class BCParser(Parser):
 
     @_('array_name LBRACK sub_index_list RBRACK')
     def slice_node(self, p):
-        return Slice(self.runtime, p.array_name, p.sub_index_list)
+        return SliceNode(self.runtime, p.array_name, p.sub_index_list)
 
     @_('array_name LBRACK top_index_list RBRACK')
     def rval_array(self, p):
@@ -327,7 +326,7 @@ class BCParser(Parser):
         else:
             return [p.top_index_expr]
 
-    @_('tup_name', 'slice_node')
+    @_('slice_node', 'tup_expr')
     def top_index_expr(self, p):
         return p[0]
 
@@ -350,6 +349,40 @@ class BCParser(Parser):
     @_('IDENT')
     def array_name(self, p):
         return p.IDENT
+
+    def get_etrange(self, maybe_tup_name):
+        if isinstance(maybe_tup_name, str):
+            return EinTupRange(self.runtime, maybe_tup_name)
+        else:
+            return maybe_tup_name
+
+    @_('tup_term',
+       'tup_expr expr_op tup_term')
+    def tup_expr(self, p):
+        if hasattr(p, 'expr_op'):
+            tup_expr = self.get_etrange(p.tup_expr)
+            tup_term = self.get_etrange(p.tup_term)
+            return RangeBinOp(self.runtime, tup_expr, tup_term, p.expr_op)
+        else:
+            return p.tup_term
+
+    @_('tup_factor',
+       'tup_term int_term_op tup_factor')
+    def tup_term(self, p):
+        if hasattr(p, 'int_term_op'):
+            tup_term = self.get_etrange(p.tup_term)
+            tup_factor = self.get_etrange(p.tup_factor)
+            return RangeBinOp(self.runtime, tup_term, tup_factor, p.int_term_op)
+        else:
+            return p.tup_factor
+
+    @_('tup_name',
+       'LPAREN tup_expr RPAREN')
+    def tup_factor(self, p):
+        if hasattr(p, 'tup_expr'):
+            return p.tup_expr
+        else:
+            return p.tup_name
 
     @_('IDENT')
     def tup_name(self, p):

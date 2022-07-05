@@ -1,0 +1,11 @@
+params[elem,other] = RANDOM(0, DIMS(elem)[coord], FLOAT)
+ids[batch,slice,coord] = RANDOM(0, 10, INT)
+output[
+
+tf.nn.embedding_lookup(params=params, ids=ids)
+
+output
+
+
+
+

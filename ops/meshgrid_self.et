@@ -1,0 +1,13 @@
+in[a] = RANDOM(0, 10, INT)
+out1[a,b,c,d] = in[a]
+out2[a,b,c,d] = in[b]
+out3[a,b,c,d] = in[c]
+out4[a,b,c,d] = in[d]
+
+tf.meshgrid(in, in, in, in, indexing=L('ij'))
+
+out1, out2, out3, out4
+
+RANK(a) == 1
+
+

@@ -50,6 +50,101 @@ Dims-Dims constraints must have matching rank.  However, there currently is no
 clean way to determine that two such Dims have matching rank until the ranks
 have been set by Runtime::cycle iterations.
 
+Primary vs Non-primary Eintups (this may become obsolete)
+
+If an Eintup identifier first appears on the left of an assignment, it is
+Primary, and owns the containing shape.  If it first appears on the right,
+however, then, it will be used in a previously mentioned tensor, since all
+tensors are first mentioned on the left.  In this case, it takes on the same
+shape as the Primary Eintup in that role.  For example, the statements:
+
+in[a] = RANDOM(0, 10, INT)
+
+cart[a,b] = in[a] * in[b]
+
+
+Nested Expression
+
+An Array expression such as `ary[batch,elem,other]`, in which the index list
+consists entirely of EinTup names, is called non-nested.  There are two forms
+of 'nested' expressions:
+
+ary[batch,indices[fpos,ipos,:],other]
+ary[batch,fpos-ipos,other]
+
+In the first form, an actual materialized array called 'indices' appears as an
+indexing element.  It is called a 'SliceNode' because it has a single ':' (STAR
+index).  The signature for indices might be [fpos, ipos, elem] and so, accessed
+with a ':' node, the values for a given setting for fpos and ipos take on the
+same rank as elem.  The SliceNode is said to have rank equal to RANK(elem).
+
+In the second case, the expression fpos-ipos becomes instantiated as a
+RangeBinOp.  In such an expression, all mentioned EinTups (in this case, 'fpos'
+and 'ipos' must have the same rank, and the rank of the RangeBinOp becomes that
+rank.  Like the SliceNode, the RangeBinOp produces values according to its
+rank.  Both SliceNode and RangeBinOp derive from an otherwise empty class
+called Slice, which requires member functions 'rank' and 'get_array'.  Then,
+LValueArray and RValueArray may contain zero or one instances of a Slice node
+in their index_list.
+
+tf.scatter_nd(indices, updates, shape)
+
+Example:
+output[batch,index[ipos,fpos,:],ochan] += tmp[batch,ipos,fpos,ochan]
+
+
+# Starting shapes:
+indices[idx_sig]
+output[out_sig]
+
+Remove star_tup from idx_sig
+Remove slice_tup from out_sig
+
+fetch_sig is the elements in idx_sig not in out_sig
+batch_sig is elements in common
+other_sig is elements in out_sig not in idx_sig
+
+target_idx = fetch_sig + [star_tup] 
+target_upd = fetch_sig + other_sig
+target_out = [slice_tup] + other_sig
+
+# This simply reorders the star_tup to the end
+indices[target_idx]
+
+# This reorders the updates to be compatible with scatter_nd (I think)
+updates[target_upd]
+
+# This reorders the slice_tup to the front
+output[target_out]
+
+So, what is happening is, star_tup is rank 1, and its shape should equal
+slice_tup.rank(), because each value in star_tup should index a different
+component of slice_tup.
+
+
+
+How does scatter_nd work?  
+
+From the docs:
+
+"indices is an integer tensor of shape 'shape'."
+(This is not true)
+
+The last dimension of indices can be at most the rank of shape:
+
+indices.shape[-1] <= shape.rank
+
+The last dimension of indices corresponds to indices of elements (if
+indices.shape[-1] = shape.rank) or slices (if indices.shape[-1] < shape.rank)
+along dimension indices.shape[-1] of shape.
+
+updates is a tensor with shape:
+
+indices.shape[:-1] + shape[indices.shape[-1]:]
+
+
+
+
 
 
 
@@ -58,3 +153,24 @@ Overview
 The system parses the 'program' first.  The program is a list of statements.
 This creates AST nodes and also registers EinTups at the moment new names are
 parsed.
+
+
+Parsing
+
+I adopted this technique for parsing parenthesized arithmetic expressions:
+
+expr       : expr + term
+           | expr - term
+           | term
+
+term       : term * factor
+           | term / factor
+           | factor
+
+factor     : NUMBER
+           | ( expr )
+
+Taken from https://sly.readthedocs.io/en/latest/sly.html#writing-a-parser
+
+This is used for shape_expr, rval_expr and tup_expr in parse.py
+

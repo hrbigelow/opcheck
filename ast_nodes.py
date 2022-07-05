@@ -26,10 +26,10 @@ def check_sig(runtime, sig_list, use_list):
             f'check_sig expected {len(sig_list)} indices but found '
             f'{len(use_list)}')
 
-    nslices = len([use for use in use_list if isinstance(use, Slice)])
+    nslices = len([u for u in use_list if isinstance(u, Slice)])
     if nslices > 1:
         raise RuntimeError(
-            f'check_sig expected 0 or 1 Slice arguments.  Found {nslices}')
+            f'check_sig expected 0 or 1 non-EinTup arguments.  Found {nslices}')
 
     for sig_tup, use in zip(sig_list, use_list):
         if isinstance(use, str):
@@ -42,8 +42,8 @@ def check_sig(runtime, sig_list, use_list):
             pass # nothing to check during instantiation
         else:
             raise RuntimeError(
-                f'check_sig expected string or Slice argument.  Found '
-                f'{type(use)}')
+                f'check_sig expected string or Slice argument.  '
+                f'Found {type(use)}')
 
 def flat_dims(tups):
     # tup.dims() may be empty, but this still works correctly
@@ -122,6 +122,12 @@ def broadcastable(array_dims, sig_dims):
         return False
     return all(ad in (1, sd) for ad, sd in zip(array_dims, sig_dims))
 
+def ndrange(dims):
+    ten = [tf.range(e) for e in dims]
+    ten = tf.meshgrid(*ten, indexing='ij')
+    ten = tf.stack(ten, axis=len(dims))
+    return ten
+
 STAR = ':'
 
 
@@ -162,18 +168,34 @@ class AST(object):
         return nodes
 
 class Slice(AST):
+    def __init__(self, *args):
+        super().__init__(*args)
+
+    def __repr__(self):
+        raise NotImplementedError
+
+    def rank(self):
+        raise NotImplementedError
+
+    def get_array(self):
+        raise NotImplementedError
+
+    def star_pos(self):
+        raise NotImplementedError
+
+class SliceNode(Slice):
     # Represents an expression ary[a,b,c,:,e,...] with exactly one ':' and
     # the rest of the indices simple eintup names.  
     def __init__(self, runtime, array_name, index_list):
         super().__init__()
         if array_name not in runtime.array_sig:
             raise RuntimeError(
-                f'Cannot instantiate Slice as first appearance of array name '
+                f'Cannot instantiate SliceNode as first appearance of array name '
                 f'\'{array_name}\'')
         sig = runtime.array_sig[array_name]
         if len(sig) != len(index_list):
             raise RuntimeError(
-                f'Slice instantiated with incorrect number of indices. '
+                f'SliceNode instantiated with incorrect number of indices. '
                 f'Expecting {len(sig)} but got {len(index_list)}')
 
         found_star = False
@@ -183,24 +205,24 @@ class Slice(AST):
                 if found_star:
                     raise RuntimeError(
                         f'Found a second \':\' index.  Only one wildcard is '
-                        f'allowed in a Slice instance')
+                        f'allowed in a SliceNode instance')
                 found_star = True
                 self.star_tup = sig_tup
-                self.star_pos = pos
+                self._star_pos = pos
                 continue
             elif not isinstance(call, str):
                 raise RuntimeError(
-                    f'Slice object only accepts simple tup names or \':\' as '
+                    f'SliceNode object only accepts simple tup names or \':\' as '
                     f'indices.  Got \'{call}\'')
             call_tup = runtime.maybe_add_tup(call, shadow_of=sig_tup)
             if not sig_tup.same_shape_as(call_tup):
                 raise RuntimeError(
-                    f'Slice called with incompatible shape. '
+                    f'SliceNode called with incompatible shape. '
                     f'{call_tup} called in slot of {sig_tup}')
 
         if not found_star:
             raise RuntimeError(
-                f'Slice must contain at least one \':\' in index_list. '
+                f'SliceNode must contain at least one \':\' in index_list. '
                 f'Got \'{index_list}\'') 
 
         # passed all checks
@@ -212,22 +234,102 @@ class Slice(AST):
     def __repr__(self):
         ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
                 for ind in self.index_list)
-        return f'Slice({self.name})[{ind_list}]'
+        return f'SliceNode({self.name})[{ind_list}]'
 
-    def slice_dim(self):
+    def rank(self):
+        # a little odd, but the 'rank' of a slice is thought of as the rank
+        # of the EinTup which it replaces.
         return self.star_tup.dims()[0]
 
+    # returns the materialized array and its signature.  
     def get_array(self):
         rank = self.star_tup.rank() 
         if rank != 1:
             raise RuntimeError(
-                f'Slice wildcard index must be rank 1.  Got {rank}')
+                f'SliceNode wildcard index must be rank 1.  Got {rank}')
         if self.name not in self.runtime.arrays:
             raise RuntimeError(
-                f'Slice is not materialized yet.  Cannot call evaluate()')
+                f'SliceNode is not materialized yet.  Cannot call evaluate()')
         z = zip(self.runtime.array_sig[self.name], self.index_list)
         use_sig = [ sig if use == STAR else use for sig, use in z]
         return (self.runtime.arrays[self.name], use_sig)
+
+    def star_pos(self):
+        return self._star_pos
+
+class RangeBinOp(Slice):
+    def __init__(self, runtime, lhs, rhs, op_string):
+        super().__init__(lhs, rhs)
+        allowed_types = (IntExpr, Dims, RangeBinOp, EinTupRange)
+        if not isinstance(lhs, allowed_types):
+            raise RuntimeError(
+                f'left-hand-side argument is type {type(lhs)}, not allowed')
+        if not isinstance(rhs, allowed_types):
+            raise RuntimeError(
+                f'right-hand-side argument is type {type(rhs)}, not allowed')
+
+        def check_dims_compat(dims):
+            if isinstance(dims, Dims):
+                if dims.kind != DimKind.Star:
+                    raise RuntimeError(
+                        f'Only Star Dims allowed for RangeBinOp.  Got {dims}')
+                if len(dims.base_tups) != 1:
+                    raise RuntimeError(
+                        f'Can only have single-tup Dims in RangeBinOp.  Got '
+                        f'{dims}')
+        check_dims_compat(lhs)
+        check_dims_compat(rhs)
+
+        self.runtime = runtime
+        ops = [ tf.add, tf.subtract, tf.multiply, tf.math.floordiv ]
+        self.op = dict(zip(['+', '-', '*', '//'], ops))[op_string]
+        self.op_string = op_string
+        self.lhs = lhs
+        self.rhs = rhs
+
+    def __repr__(self):
+        return f'RangeBinOp({self.lhs} {self.up_string} {self.rhs})' 
+
+    def rank(self):
+        # if ranks are unequal, the lower will be 0 and broadcastable
+        return max(self.lhs.rank(), self.rhs.rank())
+
+    # special case version - this omits the last rank-1 dimension
+    def get_tups(self):
+        return merge_tup_lists(self.lhs.get_tups(), self.rhs.get_tups())
+
+    def check_ranks(self):
+        lr = self.lhs.rank()
+        rr = self.rhs.rank()
+        if lr != 0 and rr != 0 and lr != rr:
+            raise RuntimeError(
+                f'Ranks of left and right hand side must either be '
+                f'broadcastable or equal.  Got {lr} and {rr}')
+
+            if sig_tup.rank() != use.rank():
+                raise RuntimeError(
+                    f'check_sig found mismatching ranks.  Signature expected '
+                    f'{sig_tup.rank()}, usage was {use.rank()}')
+
+    def evaluate(self, trg_sig):
+        self.check_ranks()
+        src_sig = self.get_tups()
+        lten = self.lhs.evaluate(src_sig)
+        rten = self.rhs.evaluate(src_sig)
+        ten = self.op(lten, rten)
+        ind_tup = self.runtime.get_index_eintup(src_sig[0])
+        ten = to_sig(ten, src_sig + [ind_tup], trg_sig + [ind_tup])
+        return ten
+
+    def get_array(self):
+        array = self.evaluate(self.get_tups())
+        sig = self.get_tups()
+        ind_tup = self.runtime.get_index_eintup(sig[0])
+        return array, sig + [ind_tup]
+
+    # return the position of the 
+    def star_pos(self):
+        return len(self.get_tups())
 
 class Array(AST):
     def __init__(self, runtime, array_name, index_list):
@@ -287,22 +389,22 @@ class Array(AST):
                 f'Cannot call Array::get_array() on slice-containing array')
         return self._get_array()
 
-    def _shape_check(self):
-        # check that 
+    def _rank_check(self):
+        # check that the rank of the slice matches the expected rank
         sig = self.runtime.array_sig[self.name]
         slice_node = self.maybe_get_slice_node()
         target_sig_tup = sig[self.slice_pos]
-        if target_sig_tup.rank() != slice_node.slice_dim():
+        if target_sig_tup.rank() != slice_node.rank():
             raise RuntimeError(
-                f'Array contains Slice of size {slice_node.slice_dim()} '
+                f'Array contains Slice of rank {slice_node.rank()} '
                 f'for target {target_sig_tup} of rank {target_sig_tup.rank()}.'
-                f' Size and rank must match')
+                f'ranks must match')
 
     def get_array_and_slice(self):
         if not self.has_slice():
             raise RuntimeError(
                 f'Cannot call Array:get_array_and_slice() on non-slice array')
-        self._shape_check()
+        self._rank_check()
         array = self._get_array()
         slice_node = self.maybe_get_slice_node()
         slice_array = slice_node.get_array()
@@ -335,7 +437,7 @@ class LValueArray(Array):
         idx_sig_orig = list(idx_sig)
 
         slice_tup = out_sig.pop(self.slice_pos)
-        star_tup = idx_sig.pop(slice_node.star_pos)
+        star_tup = idx_sig.pop(slice_node.star_pos())
 
         ixn_union = util.union_ixn(idx_sig, out_sig)
         fetch_sig, batch_sig, other_sig = ixn_union
@@ -438,7 +540,7 @@ class RValueArray(Array):
         # par_sig = batch, other
         # idx_sig = batch, slice
         slice_tup = par_sig.pop(self.slice_pos)
-        star_tup = idx_sig.pop(slice_node.star_pos)
+        star_tup = idx_sig.pop(slice_node.star_pos())
         ixn_union_triplet = util.union_ixn(idx_sig, par_sig)
         fetch_sig, batch_sig, other_sig = ixn_union_triplet 
 
@@ -528,11 +630,34 @@ class RangeExpr(AST):
                     f'RangeExpr: last EinTup \'{self.last_tup}\' has dimension '
                     f'{ind_dims} but must be equal to key EinTup '
                     f'\'{self.key_tup}\' rank {key_rank}')
-        src_sig = [self.key_tup, self.last_tup]
-        ten = [tf.range(e) for e in self.key_tup.dims()]
-        ten = tf.meshgrid(*ten, indexing='ij')
-        ten = tf.stack(ten, axis=self.key_tup.rank())
+        src_sig = self.get_tups() 
+        ten = ndrange(self.key_tup.dims())
         ten = to_sig(ten, src_sig, trg_sig)
+        return ten
+
+class EinTupRange(AST):
+    def __init__(self, runtime, eintup_name):
+        super().__init__()
+        self.runtime = runtime
+        self.tup = self.runtime.maybe_add_tup(eintup_name)
+
+    def __repr__(self):
+        return f'EinTupRange({self.tup})'
+
+
+    # omits the last Rank 1 tup
+    def get_tups(self):
+        return [self.tup]
+
+    def rank(self):
+        return self.tup.rank()
+
+    # evaluate adds one Rank 1 tup onto the requested trg_sig
+    def evaluate(self, trg_sig):
+        ind_tup = self.runtime.get_index_eintup(self.tup)
+        src_sig = [self.tup, ind_tup] 
+        ten = ndrange(self.tup.dims()) 
+        ten = to_sig(ten, src_sig, trg_sig + [ind_tup])
         return ten
 
 class ArrayBinOp(AST):
@@ -597,6 +722,9 @@ class ScalarExpr(AST):
     def __repr__(self):
         return f'{self.__class__.__name__}({self.value()})'
 
+    def rank(self):
+        return 0
+
     def evaluate(self, trg_sig):
         src_sig = []
         val = self.value()
@@ -628,7 +756,11 @@ class Rank(ScalarExpr):
         super().__init__()
         for name in tup_name_list:
             if name not in runtime.tups:
-                raise RuntimeError(f'Rank tup {name} not a known EinTup')
+                raise RuntimeError(
+                    f'Rank tup {name} not a known EinTup.  Only EinTups '
+                    f'instantiated in the program may be used as constraints. '
+                    f'Known EinTups are: {runtime.tups.keys()}')
+
         self.runtime = runtime
         self.tups = [ self.runtime.tup(name) for name in tup_name_list ]
 
@@ -651,7 +783,6 @@ class Dims(AST):
     Expression             Type       Usage
     Dims(tupname)[ind_tup] Index      statement
     Dims(tupname)[:]       Star       constraint
-
     """
     def __init__(self, runtime, kind, tup_name_list, index_expr=None):
         super().__init__()
@@ -670,7 +801,10 @@ class Dims(AST):
     def post_parse_init(self):
         for name in self.tup_names:
             if name not in self.runtime.tups:
-                raise RuntimeError(f'Dims argument \'{name}\' not a known Index')
+                raise RuntimeError(
+                    f'Dims argument \'{name}\' not a known EinTup.  Only EinTups'
+                    f'instantiated in the program may be used as constraints. '
+                    f'Known EinTups are: {[*self.runtime.tups.keys()]}')
             else:
                 self.base_tups.append(self.runtime.tup(name))
 
@@ -681,23 +815,21 @@ class Dims(AST):
             else:
                 self.ind_tup = self.runtime.tup(self.ind_tup_name)
 
-
     def evaluate(self, trg_sig):
         if self.kind != DimKind.Index:
             raise RuntimeError(
                 f'Only {DimKind.Index.value} Dims can call evaluate()')
 
-        if self.kind == DimKind.Index:
-            if self.ind_tup.rank() != 1:
-                raise RuntimeError(
-                    f'Dims Index index \'{self.ind_tup}\' must be '
-                    f'rank 1, got \'{self.ind_tup.rank()}\'')
-            if self.ind_tup.dims()[0] != self.rank():
-                tup_list = [tup.name for tup in self.base_tups]
-                raise RuntimeError(
-                    f'Index Dims index {self.ind_tup} first value '
-                    f'({self.ind_tup.dims()[0]}) must be equal to rank of '
-                    f'base tup list {tup_list} ({self.rank()})')
+        if self.ind_tup.rank() != 1:
+            raise RuntimeError(
+                f'Dims Index index \'{self.ind_tup}\' must be '
+                f'rank 1, got \'{self.ind_tup.rank()}\'')
+        if self.ind_tup.dims()[0] != self.rank():
+            tup_list = [tup.name for tup in self.base_tups]
+            raise RuntimeError(
+                f'Index Dims index {self.ind_tup} first value '
+                f'({self.ind_tup.dims()[0]}) must be equal to rank of '
+                f'base tup list {tup_list} ({self.rank()})')
 
         src_sig = self.get_tups()
         ten = tf.constant(flat_dims(self.base_tups))

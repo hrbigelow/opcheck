@@ -23,7 +23,6 @@ def maybe_broadcast(a, length):
     else:
         return [a] * length
 
-
 class Shape(object):
     # simple data class
     def __init__(self, min_expr, max_expr):
@@ -35,6 +34,10 @@ class Shape(object):
     def __repr__(self):
         return (f'Shape: rank {self.rank}, dims {self.dims}, ' 
                 f'mins: {self.min_exprs}, maxs: {self.max_exprs}')
+
+    def initialize(self, dims):
+        self.rank = len(dims)
+        self.dims = list(dims)
 
     # two Shapes are considered neighbors if there exists a constraint
     # with Dims on either side.  The set of all such Dims-Dims constraints
@@ -128,20 +131,10 @@ class Shape(object):
     def has_dims(self):
         return self.dims is not None
 
-    def set_elem(self, ind, dim):
-        if self.dims is None:
-            raise RuntimeError('Cannot call set_elem() on uninitialized Shape')
-        if ind >= len(self.dims):
-            raise RuntimeError(
-                f'set_elem() index {ind} out of bounds for length '
-                f'{len(self.dims)} dims')
-        self.dims[ind] = dim
-
     def get_dims(self):
         if self.dims is None:
             raise RuntimeError('Cannot call get_dims() on uninitialized Shape')
         return self.dims
-
 
 class EinTup(object):
     def __init__(self, name, min_expr, max_expr, shadow_of=None):
@@ -151,7 +144,6 @@ class EinTup(object):
             self.shape = Shape(min_expr, max_expr) 
         else:
             self.shape = shadow_of.shape
-        self._value = None
 
     def __repr__(self):
         try:
@@ -162,22 +154,16 @@ class EinTup(object):
             rankstring = self.rank()
         except RuntimeError:
             rankstring = '?'
-        shadow = ''
-        if not self.primary():
-            shadow = f'(shadowing {self.shadow_of.name})'
+        # shadow = ''
+        # if not self.primary():
+            # shadow = f'(shadowing {self.shadow_of.name})'
         return f'EinTup \'{self.name}\' |{rankstring}| [{dimstring}]'
 
     def __len__(self):
         return len(self.dims())
 
-    def __iter__(self):
-        self.index = np.ndindex(*self.dims())
-        return self
-
-    def __next__(self):
-        # intentionally silent.  simply used to advance the position
-        self._value = next(self.index)
-        return self.value()
+    def initialize(self, dims):
+        self.shape.initialize(dims)
     
     def primary(self):
         return self.shadow_of is None
@@ -217,12 +203,6 @@ class EinTup(object):
 
     def nelem(self):
         return np.prod(self.dims(), dtype=np.int32)
-
-    def value(self):
-        if self._value is None:
-            raise RuntimeError(f'{self} called value() before iteration')
-        return self._value
-
 
 class Runtime(object):
     def __init__(self, min_dim=0, max_dim=100):
@@ -269,6 +249,12 @@ class Runtime(object):
 
         return (f'{tups}\n\n{sigs}\n\n{shapes}\n\n{statements}\n\n'
                 f'{tfcall}\n\n{out_args}\n')
+
+    @staticmethod
+    def get_index_eintup(tup):
+        ind_tup = EinTup('anon_index', None, None)
+        ind_tup.initialize([tup.rank()])
+        return ind_tup
 
     def parse_et_file(self, et_file):
         with open(et_file, 'r') as fh:
