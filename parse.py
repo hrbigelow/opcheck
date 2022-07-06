@@ -232,13 +232,6 @@ class BCParser(Parser):
     def rank(self, p):
         return Rank(self.runtime, p.tup_name_list)
 
-    @_('DIMS LPAREN tup_name_list RPAREN LBRACK number RBRACK')
-    def dims_int(self, p):
-        if not isinstance(p.number, int):
-            raise RuntimeError(
-                f'Expected an integer for Int Dims, got {p.number}')
-        return Dims(self.runtime, DimKind.Int, p.tup_name_list, p.number)
-
     @_('DIMS LPAREN tup_name_list RPAREN LBRACK tup_name RBRACK')
     def dims_index(self, p):
         return Dims(self.runtime, DimKind.Index, p.tup_name_list, p.tup_name)
@@ -271,7 +264,6 @@ class BCParser(Parser):
     @_('rval_array', 
        'rand_call',
        'range_array',
-       'dims_int',
        'dims_index',
        'number_node')
     def rval_unit(self, p):
@@ -377,12 +369,14 @@ class BCParser(Parser):
             return p.tup_factor
 
     @_('tup_name',
+       'integer_node',
+       'dims_star',
        'LPAREN tup_expr RPAREN')
     def tup_factor(self, p):
-        if hasattr(p, 'tup_expr'):
+        if hasattr(p, 'LPAREN'):
             return p.tup_expr
         else:
-            return p.tup_name
+            return p[0]
 
     @_('IDENT')
     def tup_name(self, p):

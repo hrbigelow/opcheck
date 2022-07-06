@@ -72,17 +72,17 @@ def merge_tup_lists(a, b):
     return out
 
 
-# reshape / transpose ten, with starting shape src_sig,
-# to be broadcastable to trg_sig.  if is_packed, consume
-# and produce the packed form of the signature
-def to_sig(ten, src_sig, trg_sig, is_packed=False):
-    expect_dims = packed_dims(src_sig) if is_packed else flat_dims(src_sig)
+# reshape / transpose ten, with starting shape src_sig, to be broadcastable to
+# trg_sig.  if in_packed, expect ten shape to be in the packed form of src_sig.
+# produce a tensor with either packed or flat (broadcastable) form of trg_sig
+def to_sig(ten, src_sig, trg_sig, in_packed=False, out_packed=False):
+    expect_dims = packed_dims(src_sig) if in_packed else flat_dims(src_sig)
     if ten.shape != expect_dims:
-        desc = 'packed' if is_packed else 'flat'
+        desc = 'packed' if in_packed else 'flat'
         raise RuntimeError(
             f'Tensor shape {ten.shape} not consistent with '
             f'signature {desc} shape {expect_dims}')
-    if not is_packed:
+    if not in_packed:
         src_dims = packed_dims(src_sig)
         ten = tf.reshape(ten, src_dims)
 
@@ -112,7 +112,7 @@ def to_sig(ten, src_sig, trg_sig, is_packed=False):
     ten = tf.reshape(ten, card)
     ten = tf.transpose(ten, perm)
 
-    if not is_packed:
+    if not out_packed:
         ten = tf.reshape(ten, trg_dims)
 
     return ten
@@ -180,6 +180,9 @@ class Slice(AST):
     def get_array(self):
         raise NotImplementedError
 
+    def get_tups(self):
+        raise NotImplementedError
+
     def star_pos(self):
         raise NotImplementedError
 
@@ -241,6 +244,9 @@ class SliceNode(Slice):
         # of the EinTup which it replaces.
         return self.star_tup.dims()[0]
 
+    def get_tups(self):
+        raise NotImplementedError
+
     # returns the materialized array and its signature.  
     def get_array(self):
         rank = self.star_tup.rank() 
@@ -288,7 +294,7 @@ class RangeBinOp(Slice):
         self.rhs = rhs
 
     def __repr__(self):
-        return f'RangeBinOp({self.lhs} {self.up_string} {self.rhs})' 
+        return f'RangeBinOp({self.lhs} {self.op_string} {self.rhs})' 
 
     def rank(self):
         # if ranks are unequal, the lower will be 0 and broadcastable
@@ -450,7 +456,8 @@ class LValueArray(Array):
 
         upd_ten  = rhs.evaluate(target_upd)
         upd_ten = tf.reshape(upd_ten, packed_dims(target_upd))
-        idx_ten = to_sig(idx_ten, idx_sig_orig, target_idx, is_packed=True)
+        idx_ten = to_sig(idx_ten, idx_sig_orig, target_idx, in_packed=True,
+                out_packed=True)
 
         in_bounds = util.range_check(idx_ten, slice_tup.dims())
         idx_ten = util.flatten(idx_ten, slice_tup.dims())
@@ -459,8 +466,9 @@ class LValueArray(Array):
         shape_ten = tf.constant(packed_dims(target_out))
         out_ten = tf.scatter_nd(idx_ten, upd_ten, shape_ten)
 
-        out_ten = to_sig(out_ten, target_out, trg_sig, is_packed=True)
-        out_ten = tf.reshape(out_ten, flat_dims(trg_sig))
+        out_ten = to_sig(out_ten, target_out, trg_sig, in_packed=True,
+                out_packed=False)
+        # out_ten = tf.reshape(out_ten, flat_dims(trg_sig))
         return out_ten
 
     def assign(self, rhs):
@@ -502,8 +510,12 @@ class RValueArray(Array):
         return f'RValueArray({self.name})[{ind_list}]'
 
     def get_tups(self):
-        # TODO: what to do if this is nested?
-        tups = [ tup for tup in self.index_list if not isinstance(tup, Slice) ]
+        tups = []
+        for item in self.index_list:
+            if isinstance(item, Slice):
+                tups.extend(item.get_tups())
+            else:
+                tups.append(item)
         return tups
 
     def _evaluate_sliced(self, trg_sig):
@@ -549,8 +561,10 @@ class RValueArray(Array):
         target_par = batch_sig + [slice_tup] + other_sig
         target_res = batch_sig + fetch_sig + other_sig
 
-        par_ten = to_sig(par_ten, par_sig_orig, target_par, is_packed=True)
-        idx_ten = to_sig(idx_ten, idx_sig_orig, target_idx, is_packed=True)
+        par_ten = to_sig(par_ten, par_sig_orig, target_par, in_packed=True,
+                out_packed=True)
+        idx_ten = to_sig(idx_ten, idx_sig_orig, target_idx, in_packed=True,
+                out_packed=True)
 
         in_bounds = util.range_check(idx_ten, slice_tup.dims())
         idx_ten = util.flatten(idx_ten, slice_tup.dims())
@@ -561,8 +575,10 @@ class RValueArray(Array):
         # does not work for CPU for out-of-bounds
         result = tf.gather_nd(par_ten, idx_ten, batch_dims=num_batch_dims)
 
-        result = to_sig(result, target_res, trg_sig, is_packed=True)
-        result = tf.reshape(result, flat_dims(trg_sig))
+        result = to_sig(result, target_res, trg_sig, in_packed=True,
+                out_packed=False)
+        # need a method for flattening the dims but that respects broadcasting
+        # result = tf.reshape(result, flat_dims(trg_sig))
         return result
 
     def evaluate(self, trg_sig):
@@ -643,7 +659,6 @@ class EinTupRange(AST):
 
     def __repr__(self):
         return f'EinTupRange({self.tup})'
-
 
     # omits the last Rank 1 tup
     def get_tups(self):
