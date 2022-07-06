@@ -1,6 +1,6 @@
 input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
 filters[fpos,ichan,ochan] = RANDOM(0, 1, FLOAT)
-output[batch,opos,ochan] = filters[ipos- 2*opos,ichan,ochan] * input[batch,ipos,ichan]
+output[batch,opos,ochan] = filters[ipos-2*opos,ichan,ochan] * input[batch,ipos,ichan]
 
 tf.nn.convolution(input=input, filters=filters, strides=L(2), padding=L('VALID'))
 

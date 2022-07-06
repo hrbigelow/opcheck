@@ -4,7 +4,7 @@ from ast_nodes import *
 
 class BCLexer(Lexer):
     # Set of token names.   This is always required
-    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, NUMBER, COMP,
+    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, UNSIGNED, COMP,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
             TRUEDIV, TRUNCDIV, DIMS, RANGE, RANK, RANDOM, TENSOR, L, DTYPE }
 
@@ -25,7 +25,7 @@ class BCLexer(Lexer):
     COLON   = r':'
     SQSTR   = r"'(?:\\'|[^'])*'"
     DQSTR   = r'"(?:\\"|[^"])*"' 
-    NUMBER  = r'[\-\+]?[0-9]+(\.[0-9]+)?'
+    UNSIGNED= r'[0-9]+(\.[0-9]+)?'
     COMP    = r'(>=|>|<=|<|==)'
     ASSIGN  = r'='
     ACCUM   = r'\+='
@@ -52,8 +52,9 @@ class ParserMode(Enum):
 class BCParser(Parser):
     tokens = BCLexer.tokens
     precedence = (
-       ('left', TIMES, TRUNCDIV, TRUEDIV),
        ('left', PLUS, MINUS),
+       ('left', TIMES, TRUNCDIV, TRUEDIV),
+       ('right', UMINUS)
     )
 
     def __init__(self):
@@ -131,17 +132,25 @@ class BCParser(Parser):
         # strip leading and trailing quote
         return p[0][1:-1]
 
-    @_('NUMBER')
-    def number(self, p):
+    @_('UNSIGNED')
+    def unsigned(self, p):
         try:
-            return int(p.NUMBER)
+            return int(p.UNSIGNED)
         except ValueError:
             pass
         try:
-            return float(p.NUMBER)
+            return float(p.UNSIGNED)
         except ValueError:
             raise RuntimeError(
-                f'Could not convert {p.NUMBER} to int or float')
+                f'Could not convert {p.UNSIGNED} to int or float')
+
+    @_('MINUS unsigned %prec UMINUS',
+       'unsigned')
+    def number(self, p):
+        if hasattr(p, 'MINUS'):
+            return - p.unsigned
+        else:
+            return p.unsigned
 
     @_('tf_call_arg',
        'tf_call_list COMMA tf_call_arg')
