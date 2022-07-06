@@ -1,3 +1,11 @@
+TODO: checks for zero-sized dimensions which cause the error:
+2022-07-05 14:35:35.070113: F ./tensorflow/core/util/gpu_launch_config.h:129] Check failed: work_element_count > 0 (0 vs. 0)
+TODO: check for GPU availability - either refuse to run on CPU, or implement
+some filtering step for out-of-bounds when scatter_nd or gather_nd must be
+used.
+TODO: fix parsing error of confusion between unary and binary +/-
+
+
 Concepts
 
 A 'Signature' of a Tensor is an enriched version of the notion of shape.
@@ -141,6 +149,13 @@ along dimension indices.shape[-1] of shape.
 updates is a tensor with shape:
 
 indices.shape[:-1] + shape[indices.shape[-1]:]
+
+
+Zero-dimensions
+
+When a tensor has a dimension with zero size, I see this error:
+
+2022-07-05 14:35:35.070113: F ./tensorflow/core/util/gpu_launch_config.h:129] Check failed: work_element_count > 0 (0 vs. 0)
 
 
 

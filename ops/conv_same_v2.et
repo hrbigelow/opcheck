@@ -8,7 +8,7 @@ tf.nn.convolution(input=input, filters=filters, padding=L('SAME'))
 
 output
 
-DIMS(batch) < 3
+0 < DIMS(batch) < 3
 0 < RANK(ipos) <= 3
 RANK(fpos) == RANK(ipos) == RANK(opos) 
 RANK(batch) == RANK(coord) == RANK(ichan) == RANK(ochan) == 1

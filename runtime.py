@@ -205,7 +205,7 @@ class EinTup(object):
         return np.prod(self.dims(), dtype=np.int32)
 
 class Runtime(object):
-    def __init__(self, min_dim=0, max_dim=100):
+    def __init__(self, min_dim=1, max_dim=100):
         self.parser = BCParser() 
         # map of eintup names to EinTup instances
         self.tups = {}
@@ -372,6 +372,7 @@ class Runtime(object):
             # config = [ tup.rank() for tup in self.tups.values() ]
             self.gen_dims()
             config = '\t'.join([ repr(self.tups[k].dims()) for k in keys ])
+            # print(f'preview: {config}')
             valid = self.validate()
             print(f'{config}\t{valid}')
 
