@@ -251,9 +251,9 @@ class Runtime(object):
                 f'{tfcall}\n\n{out_args}\n')
 
     @staticmethod
-    def get_index_eintup(tup):
+    def get_index_eintup(rank):
         ind_tup = EinTup('anon_index', None, None)
-        ind_tup.initialize([tup.rank()])
+        ind_tup.initialize([rank])
         return ind_tup
 
     def parse_et_file(self, et_file):

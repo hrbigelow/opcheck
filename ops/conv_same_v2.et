@@ -1,8 +1,6 @@
 input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
 filters[fpos,ichan,ochan] = RANDOM(0, 1, FLOAT)
-index[ipos,opos,coord] = RANGE[ipos,coord] - RANGE[opos,coord] + (DIMS(fpos)[coord] - 1) // 2
-unrolled[ipos,opos,ichan,ochan] = filters[index[ipos,opos,:],ichan,ochan]
-output[batch,opos,ochan] = unrolled[ipos,opos,ichan,ochan] * input[batch,ipos,ichan]
+output[batch,opos,ochan] = filters[ipos-opos+(DIMS(fpos)-1)//2,ichan,ochan] * input[batch,ipos,ichan]
 
 tf.nn.convolution(input=input, filters=filters, padding=L('SAME'))
 
@@ -11,12 +9,10 @@ output
 0 < DIMS(batch) < 3
 0 < RANK(ipos) <= 3
 RANK(fpos) == RANK(ipos) == RANK(opos) 
-RANK(batch) == RANK(coord) == RANK(ichan) == RANK(ochan) == 1
+RANK(batch) == RANK(ichan) == RANK(ochan) == 1
 DIMS(opos) == DIMS(ipos) 
-DIMS(coord) == RANK(ipos)
 2 < DIMS(fpos) < 10
 15 < DIMS(ipos) < 30
 0 < DIMS(ichan) < 4
 0 < DIMS(ochan) < 4
-
 

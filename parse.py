@@ -329,6 +329,10 @@ class BCParser(Parser):
 
     @_('slice_node', 'tup_expr')
     def top_index_expr(self, p):
+        if isinstance(p[0], RangeBinOp):
+            # 1 is a dummy value.  will be updated
+            ind_tup = self.runtime.get_index_eintup(1)
+            p[0].set_index_tup(ind_tup)
         return p[0]
 
     @_('number_node', 'rank', 'dims_index', 'rval_array')

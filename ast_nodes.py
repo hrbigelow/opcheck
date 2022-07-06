@@ -279,10 +279,10 @@ class RangeBinOp(Slice):
                 if dims.kind != DimKind.Star:
                     raise RuntimeError(
                         f'Only Star Dims allowed for RangeBinOp.  Got {dims}')
-                if len(dims.base_tups) != 1:
+                if len(dims.tup_names) != 1:
                     raise RuntimeError(
                         f'Can only have single-tup Dims in RangeBinOp.  Got '
-                        f'{dims}')
+                        f'{dims} {dims.tup_names}')
         check_dims_compat(lhs)
         check_dims_compat(rhs)
 
@@ -296,13 +296,29 @@ class RangeBinOp(Slice):
     def __repr__(self):
         return f'RangeBinOp({self.lhs} {self.op_string} {self.rhs})' 
 
+    # TODO: Create base class to support this semantics
+    def set_index_tup(self, ind_tup):
+        if isinstance(self.lhs, (Dims, RangeBinOp, EinTupRange)):
+            self.lhs.set_index_tup(ind_tup)
+        if isinstance(self.rhs, (Dims, RangeBinOp, EinTupRange)):
+            self.rhs.set_index_tup(ind_tup)
+
     def rank(self):
         # if ranks are unequal, the lower will be 0 and broadcastable
         return max(self.lhs.rank(), self.rhs.rank())
 
-    # special case version - this omits the last rank-1 dimension
     def get_tups(self):
-        return merge_tup_lists(self.lhs.get_tups(), self.rhs.get_tups())
+        lhs_tups = self.lhs.get_tups()
+        rhs_tups = self.rhs.get_tups()
+        if isinstance(self.lhs, IntExpr):
+            return rhs_tups 
+        elif isinstance(self.rhs, IntExpr):
+            return lhs_tups
+        else:
+            ind_tup = lhs_tups.pop()
+            rhs_tups.pop()
+            merged = merge_tup_lists(lhs_tups, rhs_tups) + [ind_tup]
+            return merged
 
     def check_ranks(self):
         lr = self.lhs.rank()
@@ -312,30 +328,28 @@ class RangeBinOp(Slice):
                 f'Ranks of left and right hand side must either be '
                 f'broadcastable or equal.  Got {lr} and {rr}')
 
-            if sig_tup.rank() != use.rank():
-                raise RuntimeError(
-                    f'check_sig found mismatching ranks.  Signature expected '
-                    f'{sig_tup.rank()}, usage was {use.rank()}')
+    def set_index_tup_dim(self):
+        ind_tup = self.get_tups()[-1]
+        ind_tup.initialize([self.rank()])
 
     def evaluate(self, trg_sig):
         self.check_ranks()
+        self.set_index_tup_dim()
         src_sig = self.get_tups()
         lten = self.lhs.evaluate(src_sig)
         rten = self.rhs.evaluate(src_sig)
         ten = self.op(lten, rten)
-        ind_tup = self.runtime.get_index_eintup(src_sig[0])
-        ten = to_sig(ten, src_sig + [ind_tup], trg_sig + [ind_tup])
+        ten = to_sig(ten, src_sig, trg_sig)
         return ten
 
     def get_array(self):
         array = self.evaluate(self.get_tups())
         sig = self.get_tups()
-        ind_tup = self.runtime.get_index_eintup(sig[0])
-        return array, sig + [ind_tup]
+        return array, sig
 
-    # return the position of the 
+    # return the position of the indexing tup 
     def star_pos(self):
-        return len(self.get_tups())
+        return len(self.get_tups()) - 1
 
 class Array(AST):
     def __init__(self, runtime, array_name, index_list):
@@ -464,7 +478,8 @@ class LValueArray(Array):
         idx_ten = tf.where(in_bounds, idx_ten, -1)
 
         shape_ten = tf.constant(packed_dims(target_out))
-        out_ten = tf.scatter_nd(idx_ten, upd_ten, shape_ten)
+        with tf.device('/GPU:0'):
+            out_ten = tf.scatter_nd(idx_ten, upd_ten, shape_ten)
 
         out_ten = to_sig(out_ten, target_out, trg_sig, in_packed=True,
                 out_packed=False)
@@ -513,7 +528,10 @@ class RValueArray(Array):
         tups = []
         for item in self.index_list:
             if isinstance(item, Slice):
-                tups.extend(item.get_tups())
+                slice_tups = item.get_tups()
+                # explicitly omit the ind_tup at the top level since it
+                # 'integrates out'
+                tups.extend(slice_tups[:-1])
             else:
                 tups.append(item)
         return tups
@@ -572,8 +590,11 @@ class RValueArray(Array):
 
         # all tensors are packed, so one dim per EinTup in batch_sig
         num_batch_dims = len(batch_sig)
-        # does not work for CPU for out-of-bounds
-        result = tf.gather_nd(par_ten, idx_ten, batch_dims=num_batch_dims)
+        with tf.device('/GPU:0'):
+            # TODO: this still happily executes on CPU when the GPU is not
+            # available.  hmm...
+            # gather_nd uses zero for out-of-bounds on GPU, but throws for CPU 
+            result = tf.gather_nd(par_ten, idx_ten, batch_dims=num_batch_dims)
 
         result = to_sig(result, target_res, trg_sig, in_packed=True,
                 out_packed=False)
@@ -656,23 +677,26 @@ class EinTupRange(AST):
         super().__init__()
         self.runtime = runtime
         self.tup = self.runtime.maybe_add_tup(eintup_name)
+        self.index_tup = None
 
     def __repr__(self):
         return f'EinTupRange({self.tup})'
 
-    # omits the last Rank 1 tup
+    def set_index_tup(self, ind_tup):
+        self.index_tup = ind_tup
+
     def get_tups(self):
-        return [self.tup]
+        if self.index_tup is None:
+            raise RuntimeError(f'EinTupRange: Call set_index_tup() after parsing')
+        return [self.tup, self.index_tup]
 
     def rank(self):
         return self.tup.rank()
 
-    # evaluate adds one Rank 1 tup onto the requested trg_sig
     def evaluate(self, trg_sig):
-        ind_tup = self.runtime.get_index_eintup(self.tup)
-        src_sig = [self.tup, ind_tup] 
+        src_sig = self.get_tups()
         ten = ndrange(self.tup.dims()) 
-        ten = to_sig(ten, src_sig, trg_sig + [ind_tup])
+        ten = to_sig(ten, src_sig, trg_sig)
         return ten
 
 class ArrayBinOp(AST):
@@ -797,7 +821,7 @@ class Dims(AST):
     Dims can exist in three sub-types.  
     Expression             Type       Usage
     Dims(tupname)[ind_tup] Index      statement
-    Dims(tupname)[:]       Star       constraint
+    Dims(tupname)          Star       constraint or tup expression
     """
     def __init__(self, runtime, kind, tup_name_list, index_expr=None):
         super().__init__()
@@ -812,6 +836,12 @@ class Dims(AST):
 
     def __repr__(self):
         return f'{self.kind} Dims({self.base_tups})[{self.ind_tup}]'
+
+    def set_index_tup(self, ind_tup):
+        if self.kind != DimKind.Star:
+            raise RuntimeError(
+                f'Can only call set_index_tup on Star Dims')
+        self.ind_tup = ind_tup
 
     def post_parse_init(self):
         for name in self.tup_names:
@@ -831,9 +861,14 @@ class Dims(AST):
                 self.ind_tup = self.runtime.tup(self.ind_tup_name)
 
     def evaluate(self, trg_sig):
-        if self.kind != DimKind.Index:
-            raise RuntimeError(
-                f'Only {DimKind.Index.value} Dims can call evaluate()')
+        if self.kind == DimKind.Star:
+            if len(self.base_tups) != 1:
+                raise RuntimeError(
+                    f'Only single-tup Star Dims can call evaluate()')
+            src_sig = self.get_tups()
+            ten = tf.constant(self.value(), dtype=tf.int32)
+            ten = to_sig(ten, src_sig, trg_sig)
+            return ten
 
         if self.ind_tup.rank() != 1:
             raise RuntimeError(
@@ -864,10 +899,7 @@ class Dims(AST):
             return dims
     
     def get_tups(self):
-        if self.kind == DimKind.Index:
-            return [self.ind_tup]
-        else:
-            return []
+        return [self.ind_tup]
 
 class StaticBinOpBase(AST):
     """
