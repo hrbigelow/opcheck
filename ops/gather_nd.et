@@ -1,5 +1,5 @@
-params[batch,elem,other] = RANDOM(0, DIMS(elem)[coord], FLOAT)
-indices[batch,slice,coord] = RANDOM(0, 10, INT)
+params[batch,elem,other] = RANDOM(0, 10, FLOAT)
+indices[batch,slice,coord] = RANDOM(0, DIMS(elem)[coord], INT)
 result[batch,slice,other] = params[batch,indices[batch,slice,:],other]
 
 tf.gather_nd(params, indices, batch_dims=RANK(batch))

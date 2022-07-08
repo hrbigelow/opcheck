@@ -39,6 +39,23 @@ The functions AST::evaluate, flat_dims, get_inds, get_cardinality,
 layout_to_sig all take / return lists of EinTups.
 
 
+SliceExpr
+
+ShapeExpr
+
+A ShapeExpr is the base class for anything that can be used to define a
+signature.  to_sig expects src_sig and trg_sig to have only ShapeExpr
+instances.
+
+A SliceExpr can be used in place of an eintup name in array index lists.  The
+SliceExpr has a signature of basis + [rank_sig].  rank_sig is a rank-1
+ShapeExpr such as [4].  Conceptually, this means that the SliceExpr can be used
+in a rank-4 location (that is, an array index entry of rank 4.  That's why it
+is called the rank_sig.
+
+
+
+
 Constraint Logic
 
 The constraints can be divided into two groups.  Rank-only constraints, in

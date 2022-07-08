@@ -4,7 +4,7 @@ from ast_nodes import *
 
 class BCLexer(Lexer):
     # Set of token names.   This is always required
-    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, UNSIGNED, COMP,
+    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, UFLOAT, UINT, COMP,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
             TRUEDIV, TRUNCDIV, DIMS, RANGE, RANK, RANDOM, TENSOR, L, DTYPE }
 
@@ -25,7 +25,8 @@ class BCLexer(Lexer):
     COLON   = r':'
     SQSTR   = r"'(?:\\'|[^'])*'"
     DQSTR   = r'"(?:\\"|[^"])*"' 
-    UNSIGNED= r'[0-9]+(\.[0-9]+)?'
+    UFLOAT  = r'[0-9]+(\.[0-9]+)'
+    UINT    = r'[0-9]+' 
     COMP    = r'(>=|>|<=|<|==)'
     ASSIGN  = r'='
     ACCUM   = r'\+='
@@ -132,25 +133,33 @@ class BCParser(Parser):
         # strip leading and trailing quote
         return p[0][1:-1]
 
-    @_('UNSIGNED')
-    def unsigned(self, p):
-        try:
-            return int(p.UNSIGNED)
-        except ValueError:
-            pass
-        try:
-            return float(p.UNSIGNED)
-        except ValueError:
-            raise RuntimeError(
-                f'Could not convert {p.UNSIGNED} to int or float')
+    @_('UFLOAT')
+    def unsigned_float(self, p):
+        return float(p.UFLOAT)
 
-    @_('MINUS unsigned %prec UMINUS',
-       'unsigned')
-    def number(self, p):
+    @_('UINT')
+    def unsigned_int(self, p):
+        return int(p.UINT)
+
+    @_('MINUS unsigned_float %prec UMINUS',
+       'unsigned_float')
+    def float(self, p):
         if hasattr(p, 'MINUS'):
-            return - p.unsigned
+            return - p.unsigned_float
         else:
-            return p.unsigned
+            return p.unsigned_float
+
+    @_('MINUS unsigned_int %prec UMINUS',
+       'unsigned_int')
+    def integer(self, p):
+        if hasattr(p, 'MINUS'):
+            return - p.unsigned_int
+        else:
+            return p.unsigned_int
+
+    @_('integer', 'float')
+    def number(self, p):
+        return p[0]
 
     @_('tf_call_arg',
        'tf_call_list COMMA tf_call_arg')
@@ -220,7 +229,7 @@ class BCParser(Parser):
     def term_op(self, p):
         return p[0]
 
-    @_('integer_node', 'rank', 'dims_star')
+    @_('integer_node', 'rank', 'dims_star', 'static_array_slice')
     def shape(self, p):
         return p[0]
 
@@ -244,6 +253,10 @@ class BCParser(Parser):
     @_('DIMS LPAREN tup_name_list RPAREN LBRACK tup_name RBRACK')
     def dims_index(self, p):
         return Dims(self.runtime, DimKind.Index, p.tup_name_list, p.tup_name)
+
+    @_('DIMS LPAREN tup_name_list RPAREN')
+    def dims_slice(self, p):
+        return DimsSlice(self.runtime, p.tup_name_list)
 
     @_('DIMS LPAREN tup_name_list RPAREN')
     def dims_star(self, p):
@@ -303,17 +316,21 @@ class BCParser(Parser):
         else:
             return p.rval_unit
 
+    @_('array_name LBRACK COLON RBRACK')
+    def static_array_slice(self, p):
+        return StaticArraySlice(self.runtime, p.array_name)
+
     @_('array_name LBRACK sub_index_list RBRACK')
-    def slice_node(self, p):
-        return SliceNode(self.runtime, p.array_name, p.sub_index_list)
+    def array_slice(self, p):
+        return ArraySlice(self.runtime, p.array_name, p.sub_index_list)
 
     @_('array_name LBRACK top_index_list RBRACK')
     def rval_array(self, p):
         return RValueArray(self.runtime, p.array_name, p.top_index_list)
 
-    @_('RANDOM LPAREN array_slice COMMA array_slice COMMA DTYPE RPAREN')
+    @_('RANDOM LPAREN rand_arg COMMA rand_arg COMMA DTYPE RPAREN')
     def rand_call(self, p):
-        return RandomCall(self.runtime, p.array_slice0, p.array_slice1, p.DTYPE)
+        return RandomCall(self.runtime, p.rand_arg0, p.rand_arg1, p.DTYPE)
 
     @_('RANGE LBRACK tup_name COMMA tup_name RBRACK')
     def range_array(self, p):
@@ -327,16 +344,12 @@ class BCParser(Parser):
         else:
             return [p.top_index_expr]
 
-    @_('slice_node', 'tup_expr')
+    @_('tup_expr')
     def top_index_expr(self, p):
-        if isinstance(p[0], RangeBinOp):
-            # 1 is a dummy value.  will be updated
-            ind_tup = self.runtime.get_index_eintup(1)
-            p[0].set_index_tup(ind_tup)
         return p[0]
 
     @_('number_node', 'rank', 'dims_index', 'rval_array')
-    def array_slice(self, p):
+    def rand_arg(self, p):
         return p[0]
 
     @_('sub_index_expr',
@@ -355,19 +368,19 @@ class BCParser(Parser):
     def array_name(self, p):
         return p.IDENT
 
-    def get_etrange(self, maybe_tup_name):
-        if isinstance(maybe_tup_name, str):
-            return EinTupRange(self.runtime, maybe_tup_name)
+    def maybe_get_etslice(self, item):
+        if isinstance(item, str):
+            return EinTupSlice(self.runtime, item)
         else:
-            return maybe_tup_name
+            return item
 
     @_('tup_term',
        'tup_expr expr_op tup_term')
     def tup_expr(self, p):
         if hasattr(p, 'expr_op'):
-            tup_expr = self.get_etrange(p.tup_expr)
-            tup_term = self.get_etrange(p.tup_term)
-            return RangeBinOp(self.runtime, tup_expr, tup_term, p.expr_op)
+            tup_expr = self.maybe_get_etslice(p.tup_expr)
+            tup_term = self.maybe_get_etslice(p.tup_term)
+            return SliceBinOp(self.runtime, tup_expr, tup_term, p.expr_op)
         else:
             return p.tup_term
 
@@ -375,21 +388,33 @@ class BCParser(Parser):
        'tup_term int_term_op tup_factor')
     def tup_term(self, p):
         if hasattr(p, 'int_term_op'):
-            tup_term = self.get_etrange(p.tup_term)
-            tup_factor = self.get_etrange(p.tup_factor)
-            return RangeBinOp(self.runtime, tup_term, tup_factor, p.int_term_op)
+            tup_term = self.maybe_get_etslice(p.tup_term)
+            tup_factor = self.maybe_get_etslice(p.tup_factor)
+            return SliceBinOp(self.runtime, tup_term, tup_factor, p.int_term_op)
         else:
             return p.tup_factor
 
     @_('tup_name',
-       'integer_node',
-       'dims_star',
+       'unsigned_int',
+       'dims_slice',
+       'rank',
+       'array_slice',
        'LPAREN tup_expr RPAREN')
     def tup_factor(self, p):
         if hasattr(p, 'LPAREN'):
             return p.tup_expr
+        elif hasattr(p, 'unsigned_int'):
+            return IntSlice(p.unsigned_int)
+        elif hasattr(p, 'dims_slice'):
+            return p.dims_slice
+        elif hasattr(p, 'rank'):
+            return RankSlice(p.rank)
+        elif hasattr(p, 'array_slice'):
+            return p.array_slice
+        elif hasattr(p, 'tup_name'):
+            return p.tup_name
         else:
-            return p[0]
+            raise RuntimeError(f'Parsing Error for rule tup_factor')
 
     @_('IDENT')
     def tup_name(self, p):

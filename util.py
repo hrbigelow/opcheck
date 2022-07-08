@@ -33,3 +33,111 @@ def union_ixn(a, b):
     ab_ixn =  [ el for el in a if el in b ]
     return a_extra, ab_ixn, b_extra
 
+def broadcastable(array_dims, sig_dims):
+    if len(array_dims) != len(sig_dims):
+        return False
+    return all(ad in (1, sd) for ad, sd in zip(array_dims, sig_dims))
+
+def ndrange(dims):
+    ten = [tf.range(e) for e in dims]
+    ten = tf.meshgrid(*ten, indexing='ij')
+    ten = tf.stack(ten, axis=len(dims))
+    return ten
+
+def flat_dims(tups):
+    # tup.dims() may be empty, but this still works correctly
+    return [ dim for tup in tups for dim in tup.dims()]
+
+def packed_dims(tups):
+    # tup.nelem() returns 1 for a zero-rank tup.  this
+    # seems to work correctly.
+    return [ tup.nelem() for tup in tups ]
+
+def pack(ten, sig):
+    if flat_dims(sig) != ten.shape.as_list():
+        raise RuntimeError(
+            f'pack expects tensor shape to match signature. Got '
+            f'{ten.shape.as_list()} vs {flat_dims(sig)}')
+    return tf.reshape(ten, packed_dims(sig))
+
+
+# used to construct a slightly order-preserving signature for
+# the result of a binary op
+def merge_tup_lists(a, b):
+    ait, bit = iter(a), iter(b)
+    ae = next(ait, None)
+    be = next(bit, None)
+    out = []
+    while ae is not None or be is not None:
+        if ae is None:
+            if be not in out:
+                out.append(be)
+            be = next(bit, None)
+        else:
+            out.append(ae)
+            ae = next(ait, None)
+    return out
+
+# reshape / transpose ten, with starting shape src_sig, to be broadcastable to
+# trg_sig.  if in_packed, expect ten shape to be in the packed form of src_sig.
+# produce a tensor with either packed or flat (broadcastable) form of trg_sig
+def to_sig(ten, src_sig, trg_sig, in_packed=False, out_packed=False):
+    expect_dims = packed_dims(src_sig) if in_packed else flat_dims(src_sig)
+    if ten.shape != expect_dims:
+        desc = 'packed' if in_packed else 'flat'
+        raise RuntimeError(
+            f'Tensor shape {ten.shape} not consistent with '
+            f'signature {desc} shape {expect_dims}')
+    if not in_packed:
+        src_dims = packed_dims(src_sig)
+        ten = tf.reshape(ten, src_dims)
+
+    marg_ex = set(src_sig).difference(trg_sig)
+    if len(marg_ex) != 0:
+        marg_pos = [ i for i, tup in enumerate(src_sig) if tup in marg_ex ]
+        ten = tf.reduce_sum(ten, marg_pos)
+
+    src_sig = [ tup for tup in src_sig if tup not in marg_ex ]
+    card = packed_dims(src_sig)
+    augmented = list(src_sig)
+    trg_dims = []
+
+    for ti, trg in enumerate(trg_sig):
+        if trg not in src_sig:
+            card.append(1)
+            augmented.append(trg)
+            trg_dims.extend([1] * trg.rank())
+        else:
+            trg_dims.extend(trg.dims())
+
+    # trg_sig[i] = augmented[perm[i]], maps augmented to trg_sig
+    perm = []
+    for trg in trg_sig:
+        perm.append(augmented.index(trg))
+
+    ten = tf.reshape(ten, card)
+    ten = tf.transpose(ten, perm)
+
+    if not out_packed:
+        ten = tf.reshape(ten, trg_dims)
+
+    return ten
+
+def equal_tens(a, b, eps):
+    if not a.dtype.is_floating:
+        eps = 0
+    return (
+            a.shape == b.shape and
+            tf.reduce_all(tf.less_equal(tf.abs(a - b), eps)).numpy()
+            )
+
+def maybe_broadcast(a, length):
+    if isinstance(a, (list, tuple)):
+        if len(a) != length:
+            raise RuntimeError(
+                f'Cannot broadcast {a} to length {length}')
+        else:
+            return a
+    else:
+        return [a] * length
+

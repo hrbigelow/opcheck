@@ -2,207 +2,9 @@ import tensorflow as tf
 import numpy as np
 import itertools
 import re
+import util
 from parse import BCParser
-from ast_nodes import IntExpr, Dims, ArithmeticBinOp
-
-def equal_tens(a, b, eps):
-    if not a.dtype.is_floating:
-        eps = 0
-    return (
-            a.shape == b.shape and
-            tf.reduce_all(tf.less_equal(tf.abs(a - b), eps)).numpy()
-            )
-
-def maybe_broadcast(a, length):
-    if isinstance(a, (list, tuple)):
-        if len(a) != length:
-            raise RuntimeError(
-                f'Cannot broadcast {a} to length {length}')
-        else:
-            return a
-    else:
-        return [a] * length
-
-class Shape(object):
-    # simple data class
-    def __init__(self, min_expr, max_expr):
-        self.dims = None
-        self.rank = None
-        self.min_exprs = [min_expr]
-        self.max_exprs = [max_expr]
-
-    def __repr__(self):
-        return (f'Shape: rank {self.rank}, dims {self.dims}, ' 
-                f'mins: {self.min_exprs}, maxs: {self.max_exprs}')
-
-    def initialize(self, dims):
-        self.rank = len(dims)
-        self.dims = list(dims)
-
-    # two Shapes are considered neighbors if there exists a constraint
-    # with Dims on either side.  The set of all such Dims-Dims constraints
-    # cannot produce a cycle among the induced graph of all Shapes.
-    def dims_neighbors(self): 
-        exprs = self.min_exprs + self.max_exprs
-        return { dn for ex in exprs for dn in ex.get_nodes_of_type(Dims) }
-
-    # recursively generate dimensions for this and any neighbors.
-    # neighbor connections are defined by 
-    def gen_dims(self):
-        if self.rank is None:
-            raise RuntimeError(
-                f'Cannot call Shape::gen_dims() before rank is set')
-
-        if self.has_dims():
-            return
-
-        def is_ready(expr):
-            dnodes = expr.get_nodes_of_type(Dims)
-            return all(tup.has_dims() for d in dnodes for tup in d.base_tups)
-
-        # check that all Dims-containing constraints match the rank
-        for nb in self.dims_neighbors():
-            if any(tup.rank() != self.rank for tup in nb.base_tups):
-                raise RuntimeError(
-                    f'Dims constraint {nb} contains one or more EinTups with '
-                    f'rank differing from this shape\'s rank {self.rank}')
-
-        min_expr = self.min_exprs[0]
-        for ex in self.min_exprs[1:]:
-            if is_ready(ex):
-                min_expr = ArithmeticBinOp(min_expr, ex, 'max')
-        max_expr = self.max_exprs[0]
-        for ex in self.max_exprs[1:]:
-            if is_ready(ex):
-                max_expr = ArithmeticBinOp(max_expr, ex, 'min')
-        try:
-            min_vals = min_expr.value()
-            max_vals = max_expr.value()
-        except RuntimeError as rt:
-            raise RuntimeError(
-                f'Shape::gen_dims has inconsistent ranked constraints. '
-                f'{rt.value}')
-        min_vals = maybe_broadcast(min_vals, self.rank)
-        max_vals = maybe_broadcast(max_vals, self.rank)
-
-        if any(lo >= hi for lo, hi in zip(min_vals, max_vals)):
-            raise RuntimeError(
-                f'Shape constraints resolve to empty range '
-                f'{min_vals} to {max_vals}')
-
-        z = zip(min_vals, max_vals)
-        dims = [ np.random.randint(lo, hi) for lo, hi in z ]
-        self.dims = dims
-
-        assert len(self.dims) == self.rank, (
-                f'gen_dims {self.dims} does not match rank {self.rank}')
-
-        for nbor in self.dims_neighbors():
-            for tup in nbor.base_tups:
-                tup.gen_dims()
-
-    def set_rank(self, rank):
-        self.dims = None
-        self.rank = rank
-
-    def get_rank(self):
-        if self.rank is None:
-            raise RuntimeError(
-                f'Cannot call Shape::get_rank() before rank is set')
-        return self.rank
-
-    def _add_limit_expr(self, expr, is_max):
-        for dn in expr.get_nodes_of_type(Dims):
-            if len(dn.base_tups) != 1:
-                raise RuntimeError(
-                    f'Only single-EinTup Dims expressions allowed '
-                    f'in constraints. Got {dn}')
-        if is_max:
-            self.max_exprs.append(expr)
-        else:
-            self.min_exprs.append(expr)
-
-    def add_max_expr(self, max_expr):
-        return self._add_limit_expr(max_expr, True)
-
-    def add_min_expr(self, min_expr):
-        return self._add_limit_expr(min_expr, False)
-
-    def has_dims(self):
-        return self.dims is not None
-
-    def get_dims(self):
-        if self.dims is None:
-            raise RuntimeError('Cannot call get_dims() on uninitialized Shape')
-        return self.dims
-
-class EinTup(object):
-    def __init__(self, name, min_expr, max_expr, shadow_of=None):
-        self.name = name
-        self.shadow_of = shadow_of
-        if shadow_of is None:
-            self.shape = Shape(min_expr, max_expr) 
-        else:
-            self.shape = shadow_of.shape
-
-    def __repr__(self):
-        try:
-            dimstring = ','.join([str(d) for d in self.dims()])
-        except RuntimeError:
-            dimstring = '?'
-        try:
-            rankstring = self.rank()
-        except RuntimeError:
-            rankstring = '?'
-        # shadow = ''
-        # if not self.primary():
-            # shadow = f'(shadowing {self.shadow_of.name})'
-        return f'EinTup \'{self.name}\' |{rankstring}| [{dimstring}]'
-
-    def __len__(self):
-        return len(self.dims())
-
-    def initialize(self, dims):
-        self.shape.initialize(dims)
-    
-    def primary(self):
-        return self.shadow_of is None
-
-    def same_shape_as(self, other):
-        return self.shape is other.shape 
-
-    def set_rank(self, rank):
-        self.shape.set_rank(rank)
-
-    def maybe_add_max_expr(self, max_expr):
-        if self.primary():
-            self.shape.add_max_expr(max_expr)
-
-    def maybe_add_min_expr(self, min_expr):
-        if self.primary():
-            self.shape.add_min_expr(min_expr)
-
-    def gen_dims(self):
-        if self.shadow_of is not None:
-            raise RuntimeError(f'cannot call set_dims on shadowing EinTup')
-        try:
-            self.shape.gen_dims()
-        except RuntimeError as rt:
-            raise RuntimeError(
-                f'Eintup {self} cannot generate any dims: '
-                f'{rt.args[0]}')
-
-    def has_dims(self):
-        return self.shape.has_dims()
-
-    def dims(self):
-        return self.shape.get_dims()
-
-    def rank(self):
-        return self.shape.get_rank()
-
-    def nelem(self):
-        return np.prod(self.dims(), dtype=np.int32)
+from ast_nodes import EinTup, IntExpr, Dims, ArithmeticBinOp
 
 class Runtime(object):
     def __init__(self, min_dim=1, max_dim=100):
@@ -240,6 +42,10 @@ class Runtime(object):
 
         statements = 'Statements: \n'
         statements += '\n'.join(repr(st) for st in self.statements)
+
+        constraints = 'Constraints: \n'
+        constraints += '\n'.join(repr(c) for c in self.dims_constraints)
+        constraints += '\n'.join(repr(c) for c in self.rank_constraints)
 
         tfcall = 'TF Call: \n'
         tfcall += repr(self.tf_call)
@@ -382,7 +188,7 @@ class Runtime(object):
             st.evaluate()
         tf_outputs = self.tf_call.value()
         z = zip(self.out_args, tf_outputs)
-        valid = [ equal_tens(et.value(), tf_out, 1e-6) for et, tf_out in z ]
+        valid = [ util.equal_tens(et.value(), tf_out, 1e-6) for et, tf_out in z ]
         return valid
 
     def set_ranks(self, rank_map):
