@@ -4,10 +4,11 @@ import itertools
 import re
 import util
 from parse import BCParser
+from collections import defaultdict
 from ast_nodes import EinTup, IntExpr, Dims, ArithmeticBinOp, StaticExpr
 
 class Runtime(object):
-    def __init__(self, min_dim=1, max_dim=100):
+    def __init__(self, reps, min_dim, max_dim):
         # tf.config.list_physical_devices('GPU')
         self.parser = BCParser() 
         # map of eintup names to EinTup instances
@@ -26,6 +27,7 @@ class Runtime(object):
         # Ast nodes representing rank and dim comstraints
         self.constraints = None
 
+        self.reps = reps
         self.min_dim = IntExpr(self, min_dim)
         self.max_dim = IntExpr(self, max_dim) 
         self.parser.set_runtime(self)
@@ -113,16 +115,20 @@ class Runtime(object):
                 continue
             tup.gen_dims()
 
-    def validate_all(self):
-        te = { t: t.rank_expr for t in self.tups.values() }
+    def init_all_shapes(self, shape_map):
+        for tup_name, shape in shape_map.items():
+            self.tup(tup_name).initialize(shape)
+
+    # generate shapes according to ordered tups
+    def gen_shapes(self, tups, reps=30):
+        te = { t: t.rank_expr for t in tups }
         rng = { k: v for k, v in te.items() if isinstance(v, tuple) }
         expr_tups = [ k for k, v in te.items() if isinstance(v, StaticExpr) ]
         range_list = [range(r[0], r[1]+1) for r in rng.values()]
         combos = itertools.product(*range_list)
-        print(''.join(f'{t.name:>15}' for t in te.keys()), f'       Valid')
 
         for ranks in combos:
-            for i in range(30):
+            for i in range(reps):
                 self.clear_shapes()
                 for t, r in zip(rng.keys(), ranks):
                     t.set_rank(r)
@@ -131,9 +137,29 @@ class Runtime(object):
                 # now, ranks are completely set
                 for tup in te.keys():
                     tup.gen_dims()
-                valid = self.validate()
-                shapes = ''.join(f'{str(t.dims()):>15}' for t in te.keys())
-                print(f'{shapes}\t{valid}')
+                shapes = [ t.dims() for t in tups ]
+                yield shapes
+
+    def validate_all(self):
+        tup_order = list(self.tups.values())
+        tup_names = [ t.name for t in tup_order ]
+        n = len(tup_order)
+        all_shapes = list(self.gen_shapes(tup_order, self.reps))
+        # compute padding
+        w = [ len(n) for n in tup_names ]
+        for shapes in all_shapes:
+            for i in range(n):
+                name = tup_order[i].name
+                w[i] = max(w[i], len(str(shapes[i])))
+
+        print(''.join(f'{tup_names[i]:<{w[i]+3}s}' for i in range(n)), '   Valid')
+        for shapes in all_shapes:
+            dmap = dict(zip(tup_names, shapes))
+            self.init_all_shapes(dmap)
+            valid = self.validate()
+
+            line = ''.join(f'{str(shapes[i]):<{w[i]+3}s}' for i in range(n))
+            print(f'{line}   {valid}')
 
     # validate the current rank + dims setting
     def validate(self):
@@ -143,10 +169,6 @@ class Runtime(object):
         z = zip(self.out_args, tf_outputs)
         valid = [ util.equal_tens(et.value(), tf_out, 1e-6) for et, tf_out in z ]
         return valid
-
-    def set_dims(self, dims_map):
-        for name, dims in dims_map.items():
-            self.tups[name].set_dims(dims)
 
     def set_one_dim(self, tup, ind, val):
         self.tup(tup).set_dim(ind, val)
