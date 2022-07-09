@@ -8,6 +8,7 @@ from ast_nodes import EinTup, IntExpr, Dims, ArithmeticBinOp, StaticExpr
 
 class Runtime(object):
     def __init__(self, min_dim=1, max_dim=100):
+        # tf.config.list_physical_devices('GPU')
         self.parser = BCParser() 
         # map of eintup names to EinTup instances
         self.tups = {}
@@ -118,20 +119,21 @@ class Runtime(object):
         expr_tups = [ k for k, v in te.items() if isinstance(v, StaticExpr) ]
         range_list = [range(r[0], r[1]+1) for r in rng.values()]
         combos = itertools.product(*range_list)
-        print('\t'.join(t.name for t in te.keys()))
+        print(''.join(f'{t.name:>15}' for t in te.keys()), f'       Valid')
 
         for ranks in combos:
-            self.clear_shapes()
-            for t, r in zip(rng.keys(), ranks):
-                t.set_rank(r)
-            for tup in expr_tups:
-                tup.calc_rank()
-            # now, ranks are completely set
-            for tup in te.keys():
-                tup.gen_dims()
-            valid = self.validate()
-            shapes = '\t'.join(str(t.dims()) for t in te.keys())
-            print(f'{shapes}\t{valid}')
+            for i in range(30):
+                self.clear_shapes()
+                for t, r in zip(rng.keys(), ranks):
+                    t.set_rank(r)
+                for tup in expr_tups:
+                    tup.calc_rank()
+                # now, ranks are completely set
+                for tup in te.keys():
+                    tup.gen_dims()
+                valid = self.validate()
+                shapes = ''.join(f'{str(t.dims()):>15}' for t in te.keys())
+                print(f'{shapes}\t{valid}')
 
     # validate the current rank + dims setting
     def validate(self):

@@ -4,7 +4,7 @@ from ast_nodes import *
 
 class BCLexer(Lexer):
     # Set of token names.   This is always required
-    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, UFLOAT, UINT, COMP,
+    tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, UFLOAT, UINT,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
             TRUEDIV, TRUNCDIV, CEILDIV, DIMS, IN, RANGE, RANK, RANDOM, TENSOR,
             L, DTYPE }
@@ -29,7 +29,7 @@ class BCLexer(Lexer):
     DQSTR   = r'"(?:\\"|[^"])*"' 
     UFLOAT  = r'[0-9]+(\.[0-9]+)'
     UINT    = r'[0-9]+' 
-    COMP    = r'(>=|>|<=|<|==)'
+    # COMP    = r'(>=|>|<=|<|==)'
     ASSIGN  = r'='
     ACCUM   = r'\+='
     LPAREN  = r'\('
@@ -475,53 +475,4 @@ class BCParser(Parser):
 
     def parse(self, arg_string):
         return super().parse(self.lexer.tokenize(arg_string))
-
-if __name__ == '__main__':
-    import runtime
-    import sys
-    import json
-
-    rt = runtime.Runtime()
-    parser = BCParser()
-    parser.set_runtime(rt)
-    with open('ops/tests.json', 'r') as fp:
-        all_tests = json.load(fp)
-
-    test_string = sys.argv[1]
-    tests = all_tests[test_string]
-
-    print('Parsing statements')
-    asts = []
-    parser.set_statement_mode()
-    for st in tests['statements']:
-        ast = parser.parse(st)
-        print(f'Statement: {st}\nParsed as: {ast}\n')
-        asts.append(ast)
-
-    if 'rank' in tests:
-        rt.set_ranks(tests['rank'])
-
-    if 'dims' in tests:
-        rt.set_dims(tests['dims'])
-
-    # specific requirement for the gather test
-    # rt.set_one_dim('coord', 0, rt.tup('elem').rank())
-
-    for ast in asts:
-        ast.post_parse_init()
-
-    print(rt)
-
-    for ast in asts:
-        print(f'Evaluating {ast}')
-        ast.evaluate()
-
-
-    """
-    print('Parsing constraints')
-    parser.set_constraint_mode()
-    for con in tests['constraints']:
-        ast = parser.parse(con)
-        print(f'Constraint: {con}\nParsed as:  {ast}\n')
-    """
 

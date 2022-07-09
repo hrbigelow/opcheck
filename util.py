@@ -61,7 +61,6 @@ def pack(ten, sig):
             f'{ten.shape.as_list()} vs {flat_dims(sig)}')
     return tf.reshape(ten, packed_dims(sig))
 
-
 # used to construct a slightly order-preserving signature for
 # the result of a binary op
 def merge_tup_lists(a, b):
@@ -127,6 +126,8 @@ def to_sig(ten, src_sig, trg_sig, in_packed=False, out_packed=False):
 def equal_tens(a, b, eps):
     if not a.dtype.is_floating:
         eps = 0
+    if a.shape != b.shape:
+        print(f'equal_tens: {a.shape} != {b.shape}')
     return (
             a.shape == b.shape and
             tf.reduce_all(tf.less_equal(tf.abs(a - b), eps)).numpy()

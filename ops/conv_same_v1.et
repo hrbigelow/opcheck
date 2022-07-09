@@ -1,23 +1,25 @@
 input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
 filters[fpos,ichan,ochan] = RANDOM(0, 1, FLOAT)
-output[batch,opos,ochan] = filters[ipos+(DIMS(fpos)-1)//2 - DIMS(stride)*opos,ichan,ochan] * input[batch,ipos,ichan]
+output[batch,opos,ochan] = filters[ipos + DIMS(lpad) - DIMS(stride)*opos,ichan,ochan] * input[batch,ipos,ichan]
 
 tf.nn.convolution(input=input, filters=filters, strides=DIMS(stride), padding=L('SAME'))
 
 output
 
 DIMS(batch) IN [1,2]
-RANK(ipos) IN [1,3]
+RANK(ipos) IN [1,1]
 RANK(fpos) = RANK(ipos)
 RANK(opos) = RANK(ipos)
 RANK(stride) = RANK(ipos)
-DIMS(stride) IN [1,3]
+RANK(lpad) = RANK(ipos)
+DIMS(stride) IN [3,3]
 RANK(batch) = 1
 RANK(ichan) = 1
 RANK(ochan) = 1
 DIMS(opos) = DIMS(ipos) //^ DIMS(stride)
-DIMS(fpos) IN [3,7]
-DIMS(ipos) IN [15,25]
-DIMS(ichan) IN [1,3]
-DIMS(ochan) IN [1,3]
+DIMS(lpad) = (DIMS(fpos)-1) // 2
+DIMS(fpos) IN [3,3]
+DIMS(ipos) IN [8,50]
+DIMS(ichan) IN [1,1]
+DIMS(ochan) IN [1,1]
 
