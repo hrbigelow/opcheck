@@ -8,11 +8,12 @@ result
 
 RANK(batch,slice,other) < 8
 RANK(batch,elem,other) < 8
-RANK(coord) == 1
-DIMS(coord) == RANK(elem) >= 1
-DIMS(batch) < 5
-DIMS(slice) < 20
-0 < DIMS(elem) < 20
-0 < DIMS(other) < 20
+RANK(coord) = 1
+DIMS(coord) = RANK(elem)
+RANK(elem) IN [1,8]
+DIMS(batch) IN [0,4]
+DIMS(slice) IN [0,20]
+DIMS(elem) IN [1,20]
+DIMS(other) IN [1,20]
 
 

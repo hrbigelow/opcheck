@@ -92,39 +92,6 @@ class Runtime(object):
         for node in all_nodes: 
             node.post_parse_init()
 
-        # self.register_dims_limits()
-
-    def register_dims_limits(self):
-        # add Dims constraints to appropriate EinTups
-        def plus1(expr):
-            return ArithmeticBinOp(expr, IntExpr(self, 1), '+')
-
-        all_ops = ['<','<=','==','>=','>']
-        for con in self.dims_constraints:
-            flipped_op = dict(zip(all_ops, reversed(all_ops)))[con.op_string]
-            g1 = (con.op_string, con.arg1, con.arg2)
-            g2 = (flipped_op, con.arg2, con.arg1)
-            for op, lhs, rhs in g1, g2:
-                min_expr = max_expr = None
-                if isinstance(lhs, Dims):
-                    if op == '<':
-                        max_expr = rhs
-                    elif op == '<=':
-                        max_expr = plus1(rhs)
-                    elif op == '==':
-                        min_expr = rhs 
-                        max_expr = plus1(rhs) 
-                    elif op == '>=':
-                        min_expr = rhs 
-                    elif op == '>':
-                        min_expr = plus1(rhs) 
-                if min_expr is not None:
-                    for tup in lhs.base_tups:
-                        tup.maybe_add_min_expr(min_expr)
-                if max_expr is not None:
-                    for tup in lhs.base_tups:
-                        tup.maybe_add_max_expr(max_expr)
-        
     def clear_shapes(self):
         for tup in self.tups.values():
             tup.clear()
@@ -144,24 +111,6 @@ class Runtime(object):
             if not tup.primary() or tup.has_dims():
                 continue
             tup.gen_dims()
-
-    # cycle through all combinations of ranks < 10 satisfying constraints
-    """
-    def cycle(self, k):
-        cons = self.rank_constraints
-        if k == -1:
-            yield 
-            return
-        pre_tups = set(tup.name for con in cons[:k] for tup in con.get_tups())
-        cur_tups = set(tup.name for tup in cons[k].get_tups())
-        extra = list(cur_tups.difference(pre_tups))
-        for _ in self.cycle(k-1):
-            for cur_ranks in np.ndindex((10,) * len(extra)):
-                update = dict(zip(extra, cur_ranks))
-                self.set_ranks(update)
-                if cons[k].value():
-                    yield
-    """
 
     def validate_all(self):
         te = { t: t.rank_expr for t in self.tups.values() }
@@ -192,15 +141,6 @@ class Runtime(object):
         z = zip(self.out_args, tf_outputs)
         valid = [ util.equal_tens(et.value(), tf_out, 1e-6) for et, tf_out in z ]
         return valid
-
-    def set_ranks(self, rank_map):
-        for tup, rank in rank_map.items():
-            if tup not in self.tups:
-                raise RuntimeError('Cannot set dims for unknown EinTup {tup}')
-            if not self.tup(tup).primary():
-                raise RuntimeError(
-                    f'Cannot set rank for non-primary EinTup {tup}')
-            self.tup(tup).set_rank(rank)
 
     def set_dims(self, dims_map):
         for name, dims in dims_map.items():

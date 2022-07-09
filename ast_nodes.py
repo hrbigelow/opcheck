@@ -76,7 +76,9 @@ class EinTup(ShapeExpr):
             self.shape = Shape(min_expr, max_expr) 
         else:
             self.shape = shadow_of.shape
+        # TODO: parameterize these
         self.rank_expr = (0, 10)
+        self.gen_expr = RangeConstraint(0, 100, self)
 
     def __repr__(self):
         try:
@@ -165,68 +167,6 @@ class Shape(object):
         self.rank = None
         self.dims = None
 
-    # two Shapes are considered neighbors if there exists a constraint
-    # with Dims on either side.  The set of all such Dims-Dims constraints
-    # cannot produce a cycle among the induced graph of all Shapes.
-    def dims_neighbors(self): 
-        exprs = self.min_exprs + self.max_exprs
-        return { dn for ex in exprs for dn in ex.get_nodes_of_type(Dims) }
-
-    # recursively generate dimensions for this and any neighbors.
-    # neighbor connections are defined by 
-    def gen_dims(self):
-        if self.rank is None:
-            raise RuntimeError(
-                f'Cannot call Shape::gen_dims() before rank is set')
-
-        if self.has_dims():
-            return
-
-        def is_ready(expr):
-            dnodes = expr.get_nodes_of_type(Dims)
-            return all(tup.has_dims() for d in dnodes for tup in d.base_tups)
-
-        # check that all Dims-containing constraints match the rank
-        for nb in self.dims_neighbors():
-            if any(tup.rank() != self.rank for tup in nb.base_tups):
-                raise RuntimeError(
-                    f'Dims constraint {nb} contains one or more EinTups with '
-                    f'rank differing from this shape\'s rank {self.rank}')
-
-        min_expr = self.min_exprs[0]
-        for ex in self.min_exprs[1:]:
-            if is_ready(ex):
-                min_expr = ArithmeticBinOp(min_expr, ex, 'max')
-        max_expr = self.max_exprs[0]
-        for ex in self.max_exprs[1:]:
-            if is_ready(ex):
-                max_expr = ArithmeticBinOp(max_expr, ex, 'min')
-        try:
-            min_vals = min_expr.value()
-            max_vals = max_expr.value()
-        except RuntimeError as rt:
-            raise RuntimeError(
-                f'Shape::gen_dims has inconsistent ranked constraints. '
-                f'{rt.value}')
-        min_vals = util.maybe_broadcast(min_vals, self.rank)
-        max_vals = util.maybe_broadcast(max_vals, self.rank)
-
-        if any(lo >= hi for lo, hi in zip(min_vals, max_vals)):
-            raise RuntimeError(
-                f'Shape constraints resolve to empty range '
-                f'{min_vals} to {max_vals}')
-
-        z = zip(min_vals, max_vals)
-        dims = [ np.random.randint(lo, hi) for lo, hi in z ]
-        self.dims = dims
-
-        assert len(self.dims) == self.rank, (
-                f'gen_dims {self.dims} does not match rank {self.rank}')
-
-        for nbor in self.dims_neighbors():
-            for tup in nbor.base_tups:
-                tup.gen_dims()
-
     def set_rank(self, rank):
         self.dims = None
         self.rank = rank
@@ -236,23 +176,6 @@ class Shape(object):
             raise RuntimeError(
                 f'Cannot call Shape::get_rank() before rank is set')
         return self.rank
-
-    def _add_limit_expr(self, expr, is_max):
-        for dn in expr.get_nodes_of_type(Dims):
-            if len(dn.base_tups) != 1:
-                raise RuntimeError(
-                    f'Only single-EinTup Dims expressions allowed '
-                    f'in constraints. Got {dn}')
-        if is_max:
-            self.max_exprs.append(expr)
-        else:
-            self.min_exprs.append(expr)
-
-    def add_max_expr(self, max_expr):
-        return self._add_limit_expr(max_expr, True)
-
-    def add_min_expr(self, min_expr):
-        return self._add_limit_expr(min_expr, False)
 
     def has_dims(self):
         return self.dims is not None
@@ -273,7 +196,6 @@ class Shape(object):
             raise RuntimeError(
                 f'set_dims received {dims} but rank is {self.rank()}')
         self.dims = list(dims)
-
 
 class AST(object):
     def __init__(self, *children):
@@ -302,14 +224,6 @@ class AST(object):
         for l in tuplists[1:]:
             merged = util.merge_tup_lists(merged, l)
         return merged
-
-    def get_nodes_of_type(self, typ):
-        nodes = []
-        if isinstance(self, typ):
-            nodes.append(self)
-        for ch in self.children:
-            nodes.extend(ch.get_nodes_of_type(typ))
-        return nodes
 
 class Slice(AST):
     def __init__(self, *args):
@@ -1058,17 +972,8 @@ class DimsConstraint(AST, StaticExpr):
         return self.tup.dims()
 
 class RangeConstraint(AST, StaticExpr):
-    def __init__(self, runtime, lo, hi, eintup_name=None):
-        if eintup_name is None:
-            self.tup = None
-
-        elif eintup_name not in runtime.tups:
-            raise RuntimeError(
-                f'DimsConstraint must be initialized with known EinTup. '
-                f'Got {eintup_name}.  Known EinTups:\n'
-                f'{runtime.tups.keys()}')
-        else:
-            self.tup = runtime.tups[eintup_name]
+    def __init__(self, lo, hi, tup=None):
+        self.tup = tup
         self.min = lo
         self.max = hi
 
@@ -1186,19 +1091,6 @@ class LogicalOp(StaticBinOpBase):
         else:
             return op_vals
 
-"""
-class RangeConstraint(AST):
-    def __init__(self, eintup_binop, kind, value_expr):
-        super().__init__(value_expr)
-        self.signature_string = eintup_binop.signature()
-        self.kind = kind
-        self.value_expr = value_expr
-        self.value_expr.set_name(eintup_binop.lhs.signature())
-
-    def value(self):
-        return self.value_expr.value()
-"""
-
 class TensorArg(AST):
     def __init__(self, runtime, name):
         super().__init__()
@@ -1275,18 +1167,4 @@ if __name__ == '__main__':
     rt.maybe_add_tup('batch')
     rt.maybe_add_tup('slice')
     rt.maybe_add_tup('coord')
-    rt.set_dims({'batch': 3, 'slice': 3, 'coord': 1})
-    rt.tups['coord'].set_dim(0, 3)
-    # rng = RangeExpr(rt, 'batch', 'coord')
-    # ten = rng.evaluate(['slice', 'batch', 'coord'])
-    
-    # d1 = Dims(rt, 'batch', DimKind.Index, 'coord')
-    # d2 = Dims(rt, 'slice', DimKind.Index, 'coord')
-    # rk = Rank(rt, 'batch')
-    # rnd = RandomCall(rt, IntExpr(rt, 0), rk, 'INT')
-    # ten = rnd.evaluate(['slice', 'batch', 'coord'])
-
-    print(ten)
-    print(ten.shape)
-    print(rt.tups)
 

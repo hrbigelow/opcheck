@@ -18,9 +18,9 @@ class BCLexer(Lexer):
     RANK    = 'RANK'
     RANDOM  = 'RANDOM'
     TENSOR  = 'TENSOR'
+    DTYPE   = r'(FLOAT|INT)'
     IN      = 'IN'
     L       = 'L'
-    DTYPE   = r'(FLOAT|INT)'
     QUAL_NM = r'[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+'
     IDENT   = r'[a-zA-Z_][a-zA-Z0-9_]*' 
     COMMA   = r','
@@ -132,7 +132,8 @@ class BCParser(Parser):
     @_('DIMS LPAREN tup_name RPAREN IN closed_interval')
     def dims_range(self, p):
         lo, hi = p.closed_interval
-        rc = RangeConstraint(self.runtime, lo, hi, p.tup_name)
+        tup = self.runtime.tup(p.tup_name)
+        rc = RangeConstraint(lo, hi, tup)
         rc.tup.add_gen_expr(rc)
         return None
 
@@ -277,41 +278,6 @@ class BCParser(Parser):
     def bare_tf_call_arg(self, p):
         return p[0]
 
-    @_('shape_expr COMP shape_expr',
-       'shape_tests COMP shape_expr')
-    def shape_tests(self, p):
-        if hasattr(p, 'shape_tests'):
-            prev_test = p.shape_tests[-1]
-            test = LogicalOp(prev_test.arg2, p.shape_expr, p.COMP)
-            p.shape_tests.append(test)
-            return p.shape_tests
-        else:
-            return [LogicalOp(p.shape_expr0, p.shape_expr1, p.COMP)]
-
-    @_('shape_term',
-       'shape_expr expr_op shape_term')
-    def shape_expr(self, p):
-        if hasattr(p, 'shape_expr'):
-            return ArithmeticBinOp(p.shape_expr, p.shape_term, p.expr_op)
-        else:
-            return p.shape_term
-    
-    @_('shape_factor',
-       'shape_term int_term_op shape_factor')
-    def shape_term(self, p):
-        if hasattr(p, 'int_term_op'):
-            return ArithmeticBinOp(p.shape_term, p.shape_factor, p.int_term_op)
-        else:
-            return p.shape_factor
-
-    @_('shape',
-       'LPAREN shape_expr RPAREN')
-    def shape_factor(self, p):
-        if hasattr(p, 'shape_expr'):
-            return p.shape_expr
-        else:
-            return p.shape
-
     @_('PLUS', 'MINUS')
     def expr_op(self, p):
         return p[0]
@@ -322,10 +288,6 @@ class BCParser(Parser):
 
     @_('TIMES', 'TRUNCDIV', 'CEILDIV', 'TRUEDIV')
     def term_op(self, p):
-        return p[0]
-
-    @_('integer_node', 'rank', 'dims_star', 'static_array_slice')
-    def shape(self, p):
         return p[0]
 
     @_('number_node')
@@ -410,10 +372,6 @@ class BCParser(Parser):
             return p.rval_expr
         else:
             return p.rval_unit
-
-    @_('array_name LBRACK COLON RBRACK')
-    def static_array_slice(self, p):
-        return StaticArraySlice(self.runtime, p.array_name)
 
     @_('array_name LBRACK sub_index_list RBRACK')
     def array_slice(self, p):
