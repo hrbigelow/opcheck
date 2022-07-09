@@ -6,14 +6,18 @@ tf.nn.convolution(input=input, filters=filters, strides=DIMS(stride), padding=L(
 
 output
 
-0 < RANK(ipos) <= 3
-RANK(fpos) == RANK(ipos) == RANK(opos) == RANK(stride) 
-RANK(batch) == RANK(ichan) == RANK(ochan) == 1
-0 < DIMS(stride) < 4
-2 < DIMS(fpos) < 6
-15 < DIMS(ipos) < 25 
-DIMS(opos) == (DIMS(ipos) - DIMS(fpos) + DIMS(stride)) // DIMS(stride)
-1 < DIMS(batch) < 5
-1 < DIMS(ichan) < 4
-1 < DIMS(ochan) < 4
+RANK(ipos) IN [1,3]
+RANK(fpos) = RANK(ipos)
+RANK(opos) = RANK(ipos)
+RANK(stride) = RANK(ipos)
+DIMS(stride) IN [1,3]
+DIMS(fpos) IN [2,5]
+DIMS(ipos) IN [15,24]
+DIMS(opos) = (DIMS(ipos) - DIMS(fpos) + DIMS(stride)) // DIMS(stride)
+RANK(batch) = 1
+RANK(ichan) = 1
+RANK(ochan) = 1
+DIMS(batch) IN [1,4]
+DIMS(ichan) IN [1,3]
+DIMS(ochan) IN [1,3]
 

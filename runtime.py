@@ -4,7 +4,7 @@ import itertools
 import re
 import util
 from parse import BCParser
-from ast_nodes import EinTup, IntExpr, Dims, ArithmeticBinOp
+from ast_nodes import EinTup, IntExpr, Dims, ArithmeticBinOp, StaticExpr
 
 class Runtime(object):
     def __init__(self, min_dim=1, max_dim=100):
@@ -56,12 +56,6 @@ class Runtime(object):
         return (f'{tups}\n\n{sigs}\n\n{shapes}\n\n{statements}\n\n'
                 f'{tfcall}\n\n{out_args}\n')
 
-    @staticmethod
-    def get_index_eintup(rank):
-        ind_tup = EinTup('anon_index', None, None)
-        ind_tup.initialize([rank])
-        return ind_tup
-
     def parse_et_file(self, et_file):
         with open(et_file, 'r') as fh:
             content = fh.read()
@@ -89,22 +83,16 @@ class Runtime(object):
         self.out_args = self.parser.parse(tf_output)
         
         self.parser.set_constraint_mode()
-        cons = [ con for s in constraints for con in self.parser.parse(s) ]
-        def dims_con(con):
-            return isinstance(con.arg1, Dims) or isinstance(con.arg2, Dims) 
-
-        self.rank_constraints = [ con for con in cons if not dims_con(con) ]
-        self.dims_constraints = [ con for con in cons if dims_con(con) ]
+        for con in constraints:
+            self.parser.parse(con)
 
         # post-init all AST nodes
-        all_nodes = (
-                self.statements + self.rank_constraints +
-                self.dims_constraints  + [self.tf_call])
+        all_nodes = self.statements + [self.tf_call]
 
         for node in all_nodes: 
             node.post_parse_init()
 
-        self.register_dims_limits()
+        # self.register_dims_limits()
 
     def register_dims_limits(self):
         # add Dims constraints to appropriate EinTups
@@ -137,6 +125,10 @@ class Runtime(object):
                     for tup in lhs.base_tups:
                         tup.maybe_add_max_expr(max_expr)
         
+    def clear_shapes(self):
+        for tup in self.tups.values():
+            tup.clear()
+
     # run the full program and produce the set of output tensors in the
     # preconfigured order
     def run(self):
@@ -154,6 +146,7 @@ class Runtime(object):
             tup.gen_dims()
 
     # cycle through all combinations of ranks < 10 satisfying constraints
+    """
     def cycle(self, k):
         cons = self.rank_constraints
         if k == -1:
@@ -168,19 +161,28 @@ class Runtime(object):
                 self.set_ranks(update)
                 if cons[k].value():
                     yield
-        
+    """
+
     def validate_all(self):
-        k = len(self.rank_constraints) - 1
-        keys = list(self.tups.keys())
-        key_header = '\t'.join(keys)
-        print(f'{key_header}\tValidated')
-        for _ in self.cycle(k):
-            # config = [ tup.rank() for tup in self.tups.values() ]
-            self.gen_dims()
-            config = '\t'.join([ repr(self.tups[k].dims()) for k in keys ])
-            # print(f'preview: {config}')
+        te = { t: t.rank_expr for t in self.tups.values() }
+        rng = { k: v for k, v in te.items() if isinstance(v, tuple) }
+        expr_tups = [ k for k, v in te.items() if isinstance(v, StaticExpr) ]
+        range_list = [range(r[0], r[1]+1) for r in rng.values()]
+        combos = itertools.product(*range_list)
+        print('\t'.join(t.name for t in te.keys()))
+
+        for ranks in combos:
+            self.clear_shapes()
+            for t, r in zip(rng.keys(), ranks):
+                t.set_rank(r)
+            for tup in expr_tups:
+                tup.calc_rank()
+            # now, ranks are completely set
+            for tup in te.keys():
+                tup.gen_dims()
             valid = self.validate()
-            print(f'{config}\t{valid}')
+            shapes = '\t'.join(str(t.dims()) for t in te.keys())
+            print(f'{shapes}\t{valid}')
 
     # validate the current rank + dims setting
     def validate(self):

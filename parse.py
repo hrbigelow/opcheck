@@ -6,7 +6,7 @@ class BCLexer(Lexer):
     # Set of token names.   This is always required
     tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, UFLOAT, UINT, COMP,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
-            TRUEDIV, TRUNCDIV, DIMS, RANGE, RANK, RANDOM, TENSOR, L, DTYPE }
+            TRUEDIV, TRUNCDIV, DIMS, IN, RANGE, RANK, RANDOM, TENSOR, L, DTYPE }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -17,6 +17,7 @@ class BCLexer(Lexer):
     RANK    = 'RANK'
     RANDOM  = 'RANDOM'
     TENSOR  = 'TENSOR'
+    IN      = 'IN'
     L       = 'L'
     DTYPE   = r'(FLOAT|INT)'
     QUAL_NM = r'[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+'
@@ -101,10 +102,102 @@ class BCParser(Parser):
     @_('IDENT')
     def tensor_arg(self, p):
         return TensorArg(self.runtime, p.IDENT)
-    
-    @_('shape_tests')
+
+    @_('rank_constraint', 'dims_constraint')
     def constraint(self, p):
         return p[0]
+    
+    @_('rank_range', 'rank_equals')
+    def rank_constraint(self, p):
+        return p[0]
+
+    @_('dims_range', 'dims_equals')
+    def dims_constraint(self, p):
+        return p[0]
+
+    @_('RANK LPAREN tup_name RPAREN IN closed_interval')
+    def rank_range(self, p):
+        tup = self.runtime.tup(p.tup_name)
+        tup.add_rank_expr(p.closed_interval)
+        return None
+
+    @_('RANK LPAREN tup_name RPAREN ASSIGN rcons_expr')
+    def rank_equals(self, p):
+        tup = self.runtime.tup(p.tup_name)
+        tup.add_rank_expr(p.rcons_expr)
+        return None
+
+    @_('DIMS LPAREN tup_name RPAREN IN closed_interval')
+    def dims_range(self, p):
+        lo, hi = p.closed_interval
+        rc = RangeConstraint(self.runtime, lo, hi, p.tup_name)
+        rc.tup.add_gen_expr(rc)
+        return None
+
+    @_('DIMS LPAREN tup_name RPAREN ASSIGN dcons_expr')
+    def dims_equals(self, p):
+        tup = self.runtime.tup(p.tup_name)
+        tup.add_gen_expr(p.dcons_expr)
+        return None
+
+    @_('LBRACK unsigned_int COMMA unsigned_int RBRACK')
+    def closed_interval(self, p):
+        return p.unsigned_int0, p.unsigned_int1
+
+    @_('rcons_term',
+       'rcons_expr expr_op rcons_term')
+    def rcons_expr(self, p):
+        if hasattr(p, 'rcons_expr'):
+            return ArithmeticBinOp(p.rcons_expr, p.rcons_term, p.expr_op)
+        else:
+            return p.rcons_term
+    
+    @_('rcons_factor',
+       'rcons_term int_term_op rcons_factor')
+    def rcons_term(self, p):
+        if hasattr(p, 'int_term_op'):
+            return ArithmeticBinOp(p.rcons_term, p.rcons_factor, p.int_term_op)
+        else:
+            return p.rcons_factor
+
+    @_('integer_node',
+       'rank',
+       'LPAREN rcons_expr RPAREN')
+    def rcons_factor(self, p):
+        if hasattr(p, 'rcons_expr'):
+            return p.rcons_expr
+        else:
+            return p[0]
+
+    @_('dcons_term',
+       'dcons_expr expr_op dcons_term')
+    def dcons_expr(self, p):
+        if hasattr(p, 'dcons_expr'):
+            return ArithmeticBinOp(p.dcons_expr, p.dcons_term, p.expr_op)
+        else:
+            return p.dcons_term
+    
+    @_('dcons_factor',
+       'dcons_term int_term_op dcons_factor')
+    def dcons_term(self, p):
+        if hasattr(p, 'int_term_op'):
+            return ArithmeticBinOp(p.dcons_term, p.dcons_factor, p.int_term_op)
+        else:
+            return p.dcons_factor
+
+    @_('integer_node',
+       'rank',
+       'dims_cons',
+       'LPAREN dcons_expr RPAREN')
+    def dcons_factor(self, p):
+        if hasattr(p, 'dcons_expr'):
+            return p.dcons_expr
+        else:
+            return p[0] 
+
+    @_('DIMS LPAREN tup_name RPAREN')
+    def dims_cons(self, p):
+        return DimsConstraint(self.runtime, p.tup_name)
 
     @_('lval_array ASSIGN rval_expr',
        'lval_array ACCUM rval_expr')

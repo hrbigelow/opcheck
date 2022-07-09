@@ -76,6 +76,7 @@ class EinTup(ShapeExpr):
             self.shape = Shape(min_expr, max_expr) 
         else:
             self.shape = shadow_of.shape
+        self.rank_expr = (0, 10)
 
     def __repr__(self):
         try:
@@ -96,7 +97,10 @@ class EinTup(ShapeExpr):
 
     def initialize(self, dims):
         self.shape.initialize(dims)
-    
+
+    def clear(self):
+        self.shape.clear()
+
     def primary(self):
         return self.shadow_of is None
 
@@ -106,26 +110,34 @@ class EinTup(ShapeExpr):
     def set_rank(self, rank):
         self.shape.set_rank(rank)
 
-    def maybe_add_max_expr(self, max_expr):
-        if self.primary():
-            self.shape.add_max_expr(max_expr)
+    def set_dims(self, dims):
+        self.shape.set_dims(dims)
 
-    def maybe_add_min_expr(self, min_expr):
-        if self.primary():
-            self.shape.add_min_expr(min_expr)
+    # calculate the rank from the rank_expr
+    def calc_rank(self):
+        if not self.has_rank():
+            self.set_rank(self.rank_expr.value())
+        return self.rank()
+
+    def add_gen_expr(self, gen_expr):
+        self.gen_expr = gen_expr
+
+    def add_rank_expr(self, rank_expr):
+        self.rank_expr = rank_expr
 
     def gen_dims(self):
-        if self.shadow_of is not None:
-            raise RuntimeError(f'cannot call set_dims on shadowing EinTup')
-        try:
-            self.shape.gen_dims()
-        except RuntimeError as rt:
-            raise RuntimeError(
-                f'Eintup {self} cannot generate any dims: '
-                f'{rt.args[0]}')
+        if not self.has_dims():
+            dims = self.gen_expr.value()
+            if isinstance(dims, int):
+                dims = [dims] * self.rank()
+            self.set_dims(dims)
+        return self.dims()
 
     def has_dims(self):
         return self.shape.has_dims()
+
+    def has_rank(self):
+        return self.shape.has_rank()
 
     def dims(self):
         return self.shape.get_dims()
@@ -148,6 +160,10 @@ class Shape(object):
     def initialize(self, dims):
         self.rank = len(dims)
         self.dims = list(dims)
+
+    def clear(self):
+        self.rank = None
+        self.dims = None
 
     # two Shapes are considered neighbors if there exists a constraint
     # with Dims on either side.  The set of all such Dims-Dims constraints
@@ -241,10 +257,23 @@ class Shape(object):
     def has_dims(self):
         return self.dims is not None
 
+    def has_rank(self):
+        return self.rank is not None
+
     def get_dims(self):
         if self.dims is None:
             raise RuntimeError('Cannot call get_dims() on uninitialized Shape')
         return self.dims
+
+    def set_dims(self, dims):
+        if not self.has_rank():
+            raise RuntimeError(
+                f'Cannot call set_dims when rank is not set')
+        if len(dims) != self.get_rank():
+            raise RuntimeError(
+                f'set_dims received {dims} but rank is {self.rank()}')
+        self.dims = list(dims)
+
 
 class AST(object):
     def __init__(self, *children):
@@ -467,19 +496,6 @@ class ArraySlice(SliceExpr):
         # of the EinTup which it replaces.
         return self.ind_tup.dims()[0]
 
-    # returns the materialized array and its signature.  
-    def get_array(self):
-        rank = self.ind_tup.rank() 
-        if rank != 1:
-            raise RuntimeError(
-                f'ArraySlice wildcard index must be rank 1.  Got {rank}')
-        if self.name not in self.runtime.arrays:
-            raise RuntimeError(
-                f'ArraySlice is not materialized yet.  Cannot call evaluate()')
-        z = zip(self.runtime.array_sig[self.name], self.index_list)
-        use_sig = [ sig if use == STAR else use for sig, use in z]
-        return (self.runtime.arrays[self.name], use_sig)
-
 class SliceBinOp(SliceExpr):
     def __init__(self, runtime, lhs, rhs, op_string):
         if not isinstance(lhs, SliceExpr) or not isinstance(rhs, SliceExpr):
@@ -557,17 +573,6 @@ class Array(AST):
                 f'Array {self.name} does not have a registered signature')
         return self.runtime.array_sig[self.name]
 
-    """
-    def get_array(self):
-        if self.name not in self.runtime.arrays:
-            raise RuntimeError(
-                f'Array {self.name} called evaluate() but not materialized')
-        # replace the SliceExpr with the tup if it exists
-        z = zip(self.runtime.array_sig[self.name], self.index_list)
-        use_sig = [ sig if isinstance(use, SliceExpr) else use for sig, use in z]
-        return (self.runtime.arrays[self.name], use_sig)
-    """
-
     def nonslice_tups(self):
         return [ use for use in self.index_list if not isinstance(use,
             SliceExpr) ]
@@ -598,16 +603,6 @@ class Array(AST):
                 f'Array contains ArraySlice of rank {slice_node.rank()} '
                 f'for target {target_sig_tup} of rank {target_sig_tup.rank()}.'
                 f'ranks must match')
-
-    def get_array_and_slice(self):
-        if not self.has_slice():
-            raise RuntimeError(
-                f'Cannot call Array:get_array_and_slice() on non-slice array')
-        self._rank_check()
-        array = self._get_array()
-        slice_node = self.maybe_get_slice_node()
-        slice_array = slice_node.get_array()
-        return (array, slice_array) 
 
 class LValueArray(Array):
     def __init__(self, runtime, array_name, index_list):
@@ -888,6 +883,11 @@ class Assign(AST):
         else:
             self.lhs.assign(self.rhs)
 
+class StaticExpr(object):
+    # An interface supporting the value() call, for use in StaticBinOpBase
+    def value():
+        raise NotImplementedError
+
 class ScalarExpr(AST):
     def __init__(self, *children):
         super().__init__(*children)
@@ -906,7 +906,7 @@ class ScalarExpr(AST):
         ten = util.to_sig(ten, src_sig, trg_sig)
         return ten
 
-class IntExpr(ScalarExpr, ShapeExpr):
+class IntExpr(ScalarExpr, ShapeExpr, StaticExpr):
     def __init__(self, runtime, val):
         super().__init__()
         self.runtime = runtime
@@ -927,7 +927,7 @@ class FloatExpr(ScalarExpr):
     def value(self):
         return self.val
 
-class Rank(ScalarExpr, ShapeExpr):
+class Rank(ScalarExpr, ShapeExpr, StaticExpr):
     def __init__(self, runtime, tup_name_list):
         super().__init__()
         for name in tup_name_list:
@@ -957,7 +957,7 @@ class DimKind(enum.Enum):
     Star = 'Star'
     Index = 'Index'
 
-class Dims(AST):
+class Dims(AST, StaticExpr):
     """
     Dims can exist in three sub-types.  
     Expression             Type       Usage
@@ -1042,7 +1042,47 @@ class Dims(AST):
     def get_tups(self):
         return [self.ind_tup]
 
-class StaticArraySlice(AST):
+class DimsConstraint(AST, StaticExpr):
+    def __init__(self, runtime, eintup_name):
+        super().__init__()
+        if eintup_name not in runtime.tups:
+            raise RuntimeError(
+                f'DimsConstraint must be initialized with known EinTup. '
+                f'Got {eintup_name}.  Known EinTups:\n'
+                f'{runtime.tups.keys()}')
+        self.tup = runtime.tups[eintup_name]
+
+    def value(self):
+        if not self.tup.has_dims():
+            self.tup.gen_dims()
+        return self.tup.dims()
+
+class RangeConstraint(AST, StaticExpr):
+    def __init__(self, runtime, lo, hi, eintup_name=None):
+        if eintup_name is None:
+            self.tup = None
+
+        elif eintup_name not in runtime.tups:
+            raise RuntimeError(
+                f'DimsConstraint must be initialized with known EinTup. '
+                f'Got {eintup_name}.  Known EinTups:\n'
+                f'{runtime.tups.keys()}')
+        else:
+            self.tup = runtime.tups[eintup_name]
+        self.min = lo
+        self.max = hi
+
+    def __repr__(self):
+        return f'RangeConstraint({self.min, self.max}) for {self.tup.name}'
+
+    def value(self):
+        if self.tup is None:
+            return np.random.randint(self.min, self.max+1)
+        else:
+            vals = np.random.randint(self.min, self.max+1, self.tup.rank()) 
+            return vals.tolist()
+
+class StaticArraySlice(AST, StaticExpr):
     def __init__(self, runtime, array_name):
         super().__init__()
         if array_name not in runtime.array_sig:
@@ -1067,7 +1107,7 @@ class StaticArraySlice(AST):
         ten = self.runtime.arrays[self.name]
         return ten.numpy().tolist()
 
-class StaticBinOpBase(AST):
+class StaticBinOpBase(AST, StaticExpr):
     """
     A Binary operator for use only in constraints.
     Accepts IntExpr, Rank, Dims Star types.
@@ -1076,10 +1116,9 @@ class StaticBinOpBase(AST):
     """
     # Dims types   
     def __init__(self, arg1, arg2):
-        accepted_classes = (IntExpr, Rank, Dims, StaticArraySlice, StaticBinOpBase)
         cls_name = super().__class__.__name__
-        if not (isinstance(arg1, accepted_classes) and
-                isinstance(arg2, accepted_classes)):
+        if not (isinstance(arg1, StaticExpr) and
+                isinstance(arg2, StaticExpr)):
             raise RuntimeError(
                 f'{cls_name} only IntExpr, Rank, Dims and StaticBinOpBase '
                 'accepted')
@@ -1146,6 +1185,7 @@ class LogicalOp(StaticBinOpBase):
         else:
             return op_vals
 
+"""
 class RangeConstraint(AST):
     def __init__(self, eintup_binop, kind, value_expr):
         super().__init__(value_expr)
@@ -1156,6 +1196,7 @@ class RangeConstraint(AST):
 
     def value(self):
         return self.value_expr.value()
+"""
 
 class TensorArg(AST):
     def __init__(self, runtime, name):
