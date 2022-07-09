@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 from itertools import accumulate
 import operator
+import math
 
 # Assume inds[...,i] = c[i], compute flat[...] = WRAP(c, digits)
 def flatten(inds, digit_sizes):
@@ -140,4 +141,7 @@ def maybe_broadcast(a, length):
             return a
     else:
         return [a] * length
+
+def ceildiv(a, b):
+    return math.ceil(a / b)
 

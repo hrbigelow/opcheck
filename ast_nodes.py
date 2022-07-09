@@ -369,7 +369,7 @@ class IntSlice(SliceExpr, ShapeExpr):
 
     def evaluate(self, trg_basis): 
         ten = tf.constant(self.val, dtype=tf.int32)
-        ten = util.to_sig(ten, [], trg_basis + [1])
+        ten = util.to_sig(ten, [], trg_basis + [self.rank_sig()])
         return ten
 
 class RankSlice(SliceExpr, ShapeExpr):
@@ -1155,10 +1155,11 @@ class StaticBinOpBase(AST, StaticExpr):
 class ArithmeticBinOp(StaticBinOpBase):
     def __init__(self, arg1, arg2, op):
         super().__init__(arg1, arg2)
+
         opfuncs = [ operator.add, operator.sub, operator.mul, operator.truediv,
-                operator.floordiv, min, max ]
+                operator.floordiv, util.ceildiv, min, max ]
         self.op_string = op
-        self.op = dict(zip(['+', '-', '*', '/', '//', 'min', 'max'], opfuncs))[op]
+        self.op = dict(zip(['+', '-', '*', '/', '//', '//^', 'min', 'max'], opfuncs))[op]
 
     def __repr__(self):
         return f'ArithmeticBinOp {self.arg1} {self.op_string} {self.arg2}'

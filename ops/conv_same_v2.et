@@ -7,13 +7,16 @@ tf.nn.convolution(input=input, filters=filters, padding=L('SAME'))
 
 output
 
-DIMS(batch) < 5
-RANK(fpos) == RANK(ipos) == RANK(field)
-RANK(batch) == RANK(ichan) == RANK(ochan) == 1
-DIMS(field) == DIMS(ipos) 
-0 < RANK(ipos) <= 3
-2 < DIMS(fpos) < 10
-15 < DIMS(ipos) < 30
-0 < DIMS(ichan) < 5
-0 < DIMS(ochan) < 5
+DIMS(batch) IN [0,4]
+RANK(fpos) = RANK(ipos)
+RANK(field) = RANK(ipos)
+RANK(ipos) IN [1,3]
+DIMS(fpos) IN [3,9]
+DIMS(ipos) IN [15,30]
+DIMS(ichan) IN [1,4]
+DIMS(ochan) IN [1,4]
+RANK(batch) = 1
+RANK(ichan) = 1
+RANK(ochan) = 1
+DIMS(field) = DIMS(ipos)
 

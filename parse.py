@@ -6,7 +6,8 @@ class BCLexer(Lexer):
     # Set of token names.   This is always required
     tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, UFLOAT, UINT, COMP,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
-            TRUEDIV, TRUNCDIV, DIMS, IN, RANGE, RANK, RANDOM, TENSOR, L, DTYPE }
+            TRUEDIV, TRUNCDIV, CEILDIV, DIMS, IN, RANGE, RANK, RANDOM, TENSOR,
+            L, DTYPE }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -38,7 +39,8 @@ class BCLexer(Lexer):
     PLUS    = r'\+'
     MINUS   = r'\-'
     TIMES   = r'\*'
-    TRUNCDIV  = r'\/\/'
+    CEILDIV = r'\/\/\^'
+    TRUNCDIV= r'\/\/'
     TRUEDIV = r'\/'
 
     def error(self, t):
@@ -55,7 +57,7 @@ class BCParser(Parser):
     tokens = BCLexer.tokens
     precedence = (
        ('left', PLUS, MINUS),
-       ('left', TIMES, TRUNCDIV, TRUEDIV),
+       ('left', TIMES, TRUNCDIV, TRUEDIV, CEILDIV),
        ('right', UMINUS)
     )
 
@@ -314,11 +316,11 @@ class BCParser(Parser):
     def expr_op(self, p):
         return p[0]
 
-    @_('TIMES', 'TRUNCDIV')
+    @_('TIMES', 'TRUNCDIV', 'CEILDIV')
     def int_term_op(self, p):
         return p[0]
 
-    @_('TIMES', 'TRUNCDIV', 'TRUEDIV')
+    @_('TIMES', 'TRUNCDIV', 'CEILDIV', 'TRUEDIV')
     def term_op(self, p):
         return p[0]
 
@@ -497,7 +499,7 @@ class BCParser(Parser):
         if hasattr(p, 'LPAREN'):
             return p.tup_expr
         elif hasattr(p, 'unsigned_int'):
-            return IntSlice(p.unsigned_int)
+            return IntSlice(self.runtime, p.unsigned_int)
         elif hasattr(p, 'dims_slice'):
             return p.dims_slice
         elif hasattr(p, 'rank'):

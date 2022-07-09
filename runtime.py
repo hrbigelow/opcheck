@@ -43,9 +43,9 @@ class Runtime(object):
         statements = 'Statements: \n'
         statements += '\n'.join(repr(st) for st in self.statements)
 
-        constraints = 'Constraints: \n'
-        constraints += '\n'.join(repr(c) for c in self.dims_constraints)
-        constraints += '\n'.join(repr(c) for c in self.rank_constraints)
+        # constraints = 'Constraints: \n'
+        # constraints += '\n'.join(repr(c) for c in self.dims_constraints)
+        # constraints += '\n'.join(repr(c) for c in self.rank_constraints)
 
         tfcall = 'TF Call: \n'
         tfcall += repr(self.tf_call)
