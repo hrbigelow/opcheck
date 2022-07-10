@@ -46,10 +46,6 @@ class Runtime(object):
         statements = 'Statements: \n'
         statements += '\n'.join(repr(st) for st in self.statements)
 
-        # constraints = 'Constraints: \n'
-        # constraints += '\n'.join(repr(c) for c in self.dims_constraints)
-        # constraints += '\n'.join(repr(c) for c in self.rank_constraints)
-
         tfcall = 'TF Call: \n'
         tfcall += repr(self.tf_call)
 
@@ -98,16 +94,6 @@ class Runtime(object):
     def clear_shapes(self):
         for tup in self.tups.values():
             tup.clear()
-
-    # run the full program and produce the set of output tensors in the
-    # preconfigured order
-    def run(self):
-        if not all(con.value() for con in self.constraints):
-            return None
-        for st in self.statements:
-            st.evaluate()
-        outs = { (arg.name, arg.value()) for arg in self.outputs }
-        return outs
 
     def gen_dims(self):
         for tup in self.tups.values():
@@ -170,24 +156,10 @@ class Runtime(object):
         valid = [ util.equal_tens(et.value(), tf_out, 1e-6) for et, tf_out in z ]
         return valid
 
-    def set_one_dim(self, tup, ind, val):
-        self.tup(tup).set_dim(ind, val)
-
-    def maybe_add_tup(self, name, shadow_of=None):
-        if name in self.tups:
-            pass
-        elif shadow_of is None:
-            self.tups[name] = EinTup(name, self.min_dim, self.max_dim, None)
-        elif shadow_of.name in self.tups:
-            self.tups[name] = EinTup(name, self.min_dim, self.max_dim, shadow_of)
-        else:
-            raise RuntimeError(
-                f'Runtime::maybe_add_tup - shadow_of \'{shadow_of}\' '
-                f'provided but does not exist')
+    def maybe_add_tup(self, name):
+        if name not in self.tups:
+            self.tups[name] = EinTup(name)
         return self.tups[name]
-
-    def get_primary_tups(self):
-        return [ tup for tup in self.tups.values() if tup.primary() ]
 
     def tup(self, eintup):
         if eintup not in self.tups:

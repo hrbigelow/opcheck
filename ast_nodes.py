@@ -17,6 +17,7 @@ def check_sig(runtime, sig_list, use_list):
         raise RuntimeError(
             f'check_sig expected 0 or 1 non-EinTup arguments.  Found {nslices}')
 
+    """
     for sig_tup, use in zip(sig_list, use_list):
         if isinstance(use, str):
             use_tup = runtime.maybe_add_tup(use, sig_tup)
@@ -30,6 +31,7 @@ def check_sig(runtime, sig_list, use_list):
             raise RuntimeError(
                 f'check_sig expected string or SliceExpr argument.  '
                 f'Found {type(use)}')
+    """
 
 def define_sig(runtime, use_list):
     allowed_types = (str, ShapeExpr)
@@ -68,14 +70,10 @@ class ShapeExpr(object):
         return len(self.dims())
 
 class EinTup(ShapeExpr):
-    def __init__(self, name, min_expr, max_expr, shadow_of=None):
+    def __init__(self, name):
         super().__init__()
         self.name = name
-        self.shadow_of = shadow_of
-        if shadow_of is None:
-            self.shape = Shape(min_expr, max_expr) 
-        else:
-            self.shape = shadow_of.shape
+        self.shape = Shape() 
         # TODO: parameterize these
         self.rank_expr = (0, 10)
         self.gen_expr = RangeConstraint(0, 100, self)
@@ -89,9 +87,6 @@ class EinTup(ShapeExpr):
             rankstring = self.rank()
         except RuntimeError:
             rankstring = '?'
-        # shadow = ''
-        # if not self.primary():
-            # shadow = f'(shadowing {self.shadow_of.name})'
         return f'EinTup \'{self.name}\' |{rankstring}| [{dimstring}]'
 
     def __len__(self):
@@ -102,12 +97,6 @@ class EinTup(ShapeExpr):
 
     def clear(self):
         self.shape.clear()
-
-    def primary(self):
-        return self.shadow_of is None
-
-    def same_shape_as(self, other):
-        return self.shape is other.shape 
 
     def set_rank(self, rank):
         self.shape.set_rank(rank)
@@ -149,15 +138,12 @@ class EinTup(ShapeExpr):
 
 class Shape(object):
     # simple data class
-    def __init__(self, min_expr, max_expr):
+    def __init__(self):
         self.dims = None
         self.rank = None
-        self.min_exprs = [min_expr]
-        self.max_exprs = [max_expr]
 
     def __repr__(self):
-        return (f'Shape: rank {self.rank}, dims {self.dims}, ' 
-                f'mins: {self.min_exprs}, maxs: {self.max_exprs}')
+        return (f'Shape: rank {self.rank}, dims {self.dims}')
 
     def initialize(self, dims):
         self.rank = len(dims)
@@ -370,11 +356,10 @@ class ArraySlice(SliceExpr):
                 raise RuntimeError(
                     f'ArraySlice object only accepts simple tup names or \':\' as '
                     f'indices.  Got \'{call}\'')
-            call_tup = runtime.maybe_add_tup(call, shadow_of=sig_tup)
-            if not sig_tup.same_shape_as(call_tup):
+            elif call != sig_tup.name:
                 raise RuntimeError(
-                    f'ArraySlice called with incompatible shape. '
-                    f'{call_tup} called in slot of {sig_tup}')
+                    f'ArraySlice called with wrong EinTup. '
+                    f'{call_tup} used instead of {sig_tup}')
 
         if not found_star:
             raise RuntimeError(

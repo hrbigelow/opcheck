@@ -1,6 +1,6 @@
 # Einsum Tuple Mini-language 
 
-A language for expressing Tensorflow operations in a rank-agnostic way
+A language for defining Tensorflow operations in a rank-agnostic way
 
 ## Synopsis
 
@@ -8,11 +8,60 @@ A language for expressing Tensorflow operations in a rank-agnostic way
 # Run an op defined in Einsum Tuple language (.et) on all allowed sub-rank
 # combinations of inputs.  Check for validity against the Tensorflow op output.
 
-python run.py ops/gather_nd.et
-python run.py ops/scatter_nd.et
-python run.py ops/matmul.et
+python eintup.py ops/gather_nd.et
+python eintup.py ops/scatter_nd.et
+python eintup.py ops/conv_valid_v1.et
+python eintup.py ops/tconv_valid_v1.et
+python eintup.py ops/matmul.et
 ...
 ```
+
+## Examples
+
+```
+# Strided Convolution (Valid) 
+# Expression shows linearity with respect to input
+input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
+filters[fpos,ichan,ochan] = RANDOM(0, 1, FLOAT)
+output[batch,opos,ochan] = filters[ipos-DIMS(stride)*opos,ichan,ochan] * input[batch,ipos,ichan]
+
+# Alternate form shows linearity with respect to filters 
+output[batch,opos,ochan] = filters[fpos,ichan,ochan] * input[batch,fpos+DIMS(stride)*opos,ichan]
+
+# Transpose convolution, showing linearity with respect to input
+input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
+filters[fpos,ochan,ichan] = RANDOM(0, 1, FLOAT)
+output[batch,opos,ochan] = filters[opos-DIMS(stride)*ipos,ochan,ichan] * input[batch,ipos,ichan]
+
+# Alternate form showing linearity with respect to filters
+input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
+filters[fpos,ochan,ichan] = RANDOM(0, 1, FLOAT)
+input_aug[batch,apos,ichan] = 0.0
+input_aug[batch,DIMS(stride)*ipos,ichan] += input[batch,ipos,ichan]
+output[batch,opos,ochan] = filters[fpos,ochan,ichan] * input_aug[batch,opos-fpos,ichan]
+
+# gather_nd
+params[batch,elem,other] = RANDOM(0, 10, FLOAT)
+indices[batch,slice,coord] = RANDOM(0, DIMS(elem)[coord], INT)
+result[batch,slice,other] = params[batch,indices[batch,slice,:],other]
+
+# scatter_nd
+indices[slice,coord] = RANDOM(0, DIMS(dest)[coord], INT)
+updates[slice,elem] = RANDOM(0, 10, FLOAT)
+output[dest,elem] = 0.0 
+output[indices[slice,:],elem] = updates[slice,elem]
+
+# meshgrid
+in1[a] = RANDOM(0, 10, INT)
+in2[b] = RANDOM(0, 10, INT)
+in3[c] = RANDOM(0, 10, INT)
+in4[d] = RANDOM(0, 20, INT)
+out1[a,b,c,d] = in1[a]
+out2[a,b,c,d] = in2[b]
+out3[a,b,c,d] = in3[c]
+out4[a,b,c,d] = in4[d]
+```
+
 
 ## Motivation
 
@@ -55,7 +104,10 @@ tf.meshgrid(in1, in2, in3, in4, indexing=L('ij'))
 
 out1, out2, out3, out4
 
-RANK(a) == RANK(b) == RANK(c) == RANK(d) == 1
+RANK(a) = 1
+RANK(b) = 1
+RANK(c) = 1
+RANK(d) = 1
 ```
 
 The `.et` file has four sections, separated by a blank line.  The first is the
@@ -74,7 +126,7 @@ only on the left.
 The above file can be run as:
 
 ```bash
-python run.py ops/meshgrid.et
+python eintup.py ops/meshgrid.et
 a     b     c     d     Validated
 [50]  [93]  [26]  [90]  [True, True, True, True]
 ```
