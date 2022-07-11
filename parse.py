@@ -6,8 +6,8 @@ class BCLexer(Lexer):
     # Set of token names.   This is always required
     tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, UFLOAT, UINT,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
-            TRUEDIV, TRUNCDIV, CEILDIV, DIMS, IN, RANGE, RANK, RANDOM, TENSOR,
-            L, DTYPE }
+            MODULO, TRUEDIV, TRUNCDIV, CEILDIV, DIMS, IN, RANGE, RANK, RANDOM,
+            TENSOR, FLAT, L, DTYPE }
 
     # String containing ignored characters between tokens
     ignore = ' \t'
@@ -18,6 +18,7 @@ class BCLexer(Lexer):
     RANK    = 'RANK'
     RANDOM  = 'RANDOM'
     TENSOR  = 'TENSOR'
+    FLAT    = 'FLAT'
     DTYPE   = r'(FLOAT|INT)'
     IN      = 'IN'
     L       = 'L'
@@ -39,6 +40,7 @@ class BCLexer(Lexer):
     PLUS    = r'\+'
     MINUS   = r'\-'
     TIMES   = r'\*'
+    MODULO  = r'%'
     CEILDIV = r'\/\/\^'
     TRUNCDIV= r'\/\/'
     TRUEDIV = r'\/'
@@ -282,7 +284,7 @@ class BCParser(Parser):
     def expr_op(self, p):
         return p[0]
 
-    @_('TIMES', 'TRUNCDIV', 'CEILDIV')
+    @_('TIMES', 'TRUNCDIV', 'CEILDIV', 'MODULO')
     def int_term_op(self, p):
         return p[0]
 
@@ -421,9 +423,9 @@ class BCParser(Parser):
     def array_name(self, p):
         return p.IDENT
 
-    def maybe_get_etslice(self, item):
-        if isinstance(item, str):
-            return EinTupSlice(self.runtime, item)
+    def maybe_convert_eintup(self, item):
+        if isinstance(item, EinTup):
+            return EinTupSlice(self.runtime, item.name)
         else:
             return item
 
@@ -431,8 +433,8 @@ class BCParser(Parser):
        'tup_expr expr_op tup_term')
     def tup_expr(self, p):
         if hasattr(p, 'expr_op'):
-            tup_expr = self.maybe_get_etslice(p.tup_expr)
-            tup_term = self.maybe_get_etslice(p.tup_term)
+            tup_expr = self.maybe_convert_eintup(p.tup_expr)
+            tup_term = self.maybe_convert_eintup(p.tup_term)
             return SliceBinOp(self.runtime, tup_expr, tup_term, p.expr_op)
         else:
             return p.tup_term
@@ -441,8 +443,8 @@ class BCParser(Parser):
        'tup_term int_term_op tup_factor')
     def tup_term(self, p):
         if hasattr(p, 'int_term_op'):
-            tup_term = self.maybe_get_etslice(p.tup_term)
-            tup_factor = self.maybe_get_etslice(p.tup_factor)
+            tup_term = self.maybe_convert_eintup(p.tup_term)
+            tup_factor = self.maybe_convert_eintup(p.tup_factor)
             return SliceBinOp(self.runtime, tup_term, tup_factor, p.int_term_op)
         else:
             return p.tup_factor
@@ -452,6 +454,7 @@ class BCParser(Parser):
        'dims_slice',
        'rank',
        'array_slice',
+       'flatten_slice',
        'LPAREN tup_expr RPAREN')
     def tup_factor(self, p):
         if hasattr(p, 'LPAREN'):
@@ -465,9 +468,17 @@ class BCParser(Parser):
         elif hasattr(p, 'array_slice'):
             return p.array_slice
         elif hasattr(p, 'tup_name'):
-            return p.tup_name
+            return self.runtime.maybe_add_tup(p.tup_name)
+        elif hasattr(p, 'flatten_slice'):
+            return p.flatten_slice
         else:
             raise RuntimeError(f'Parsing Error for rule tup_factor')
+
+    @_('FLAT LPAREN top_index_list RPAREN')
+    def flatten_slice(self, p):
+        slice_list = [ self.maybe_convert_eintup(item) 
+                for item in p.top_index_list ]
+        return FlattenSlices(slice_list)
 
     @_('IDENT')
     def tup_name(self, p):

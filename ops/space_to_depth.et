@@ -1,0 +1,13 @@
+input[batch,ipos,ichan] = RANDOM(0, 1, FLOAT)
+output[batch,ipos//DIMS(bsz),FLAT(ipos % DIMS(bsz),ichan)] = input[batch,ipos,ichan]
+
+tf.nn.space_to_depth(input, block_size=DIMS(bsz), data_format=L('NHWC'))
+
+output
+
+RANK(batch) IN [0,3]
+RANK(ichan) IN [1,3]
+RANK(ipos) = 2
+RANK(bsz) = RANK(ipos)
+DIMS(bsz) IN [2,10]
+

@@ -44,6 +44,7 @@ result[batch,row,col] = mat1[batch,row,inner] * mat2[inner,col,batch]
 result[batch,row,col] = mat1[inner,batch,row] * mat2[col,inner,batch]
 ```
 
+
 Eintups and underlying tensors are transposed as necessary by the system, but
 the user need not worry about that.
 

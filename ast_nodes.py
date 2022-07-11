@@ -12,31 +12,9 @@ def check_sig(runtime, sig_list, use_list):
             f'check_sig expected {len(sig_list)} indices but found '
             f'{len(use_list)}')
 
-    nslices = len([u for u in use_list if isinstance(u, SliceExpr)])
-    if nslices > 1:
-        raise RuntimeError(
-            f'check_sig expected 0 or 1 non-EinTup arguments.  Found {nslices}')
-
-    """
-    for sig_tup, use in zip(sig_list, use_list):
-        if isinstance(use, str):
-            use_tup = runtime.maybe_add_tup(use, sig_tup)
-            if not sig_tup.same_shape_as(use_tup):
-                raise RuntimeError(
-                    f'check_sig found incompatible shapes.  Expecting '
-                    f'{sig_tup} but found {use_tup}')
-        elif isinstance(use, SliceExpr):
-            pass # nothing to check during instantiation
-        else:
-            raise RuntimeError(
-                f'check_sig expected string or SliceExpr argument.  '
-                f'Found {type(use)}')
-    """
-
 def define_sig(runtime, use_list):
-    allowed_types = (str, ShapeExpr)
     not_str = next((use for use in use_list if 
-        not isinstance(use, allowed_types)), None)
+        not isinstance(use, ShapeExpr)), None)
     if not_str is not None:
         raise RuntimeError(
             f'define_sig can take only string indices (EinTup names) '
@@ -47,8 +25,30 @@ def define_sig(runtime, use_list):
         raise RuntimeError(
             f'define_sig must have all distinct indices.  Found duplicate '
             f'\'{dup}\'')
+    return use_list
 
-    return [ runtime.maybe_add_tup(use) for use in use_list ]
+def merge_bases(slice_list):
+    bases = [ s.get_basis() for s in slice_list ]
+    merged_basis = bases[0]
+    for basis in bases[1:]: 
+        merged_basis = util.merge_tup_lists(merged_basis, basis)
+    return merged_basis
+
+def combine_slices(slice_list):
+    n = len(slice_list)
+    elem_shapes = [ s.elem_shape for s in slice_list ]
+
+    merged_basis = merge_bases(slice_list)
+    merged_rank = ElemShape(slice_list)
+
+    tens = [None] * n
+    for i in range(n):
+        ten = slice_list[i].evaluate(merged_basis)
+        shape = util.flat_dims(merged_basis + [elem_shapes[i]])
+        tens[i] = tf.broadcast_to(ten, shape)
+    ten = tf.concat(tens, -1)
+    util.check_shape(ten, merged_basis + [merged_rank], False)
+    return ten, merged_basis, merged_rank
 
 STAR = ':'
 
@@ -60,6 +60,9 @@ class ShapeExpr(object):
     def __init__(self):
         pass
 
+    # see notes.txt for SliceExpr (which derives from ShapeExpr).  This returns
+    # the exclusive upper bound for each component in the elements of this
+    # SliceExpr.  It is used for calculating backing tensor shapes
     def dims(self):
         raise NotImplementedError
 
@@ -230,100 +233,112 @@ class Slice(AST):
     def ind_pos(self):
         raise NotImplementedError
 
-class SliceExpr(AST):
-    def __init__(self, runtime, basis, *children):
+class ElemShape(ShapeExpr):
+    def __init__(self, shape_list):
+        self.shape_list = shape_list
+
+    def dims(self):
+        return [sum(len(ex.dims()) for ex in self.shape_list)]
+
+class GroupShape(ShapeExpr):
+    def __init__(self, shape_list):
+        self.shape_list = shape_list
+
+    def dims(self):
+        return [ dim for sh in self.shape_list for dim in sh.dims() ]
+
+class FlatShape(ShapeExpr):
+    def __init__(self, shape_list):
+        self.shape_list = shape_list
+
+    def dims(self):
+        return [ np.prod([sh.nelem() for sh in self.shape_list]) ]
+
+class SliceExpr(AST, ShapeExpr):
+    # Each entry in an Array index_list is either a naked EinTup or a SliceExpr
+    def __init__(self, basis, *children):
         super().__init__(*children)
-        self.runtime = runtime
         self.basis = basis
+        self.elem_shape = ElemShape([self])
 
     def __repr__(self):
         return f'{self.__class__.__name__}({self.basis})'
 
-    # The full signature is basis + [rank_sig]
+    # The full signature is basis + [self.elem_shape] 
     def get_basis(self):
         return self.basis
-
-    def rank_sig(self):
-        raise NotImplementedError
-
-    def rank(self):
-        return self.rank_sig().dims()[0]
 
     def evaluate(self, trg_basis):
         # return a tensor whose shape is broadcastable to 
         # trg_basis + [self.rank_sig()]
         raise NotImplementedError
 
-class IntSlice(SliceExpr, ShapeExpr):
+class IntSlice(SliceExpr):
     def __init__(self, runtime, val):
-        super().__init__(runtime, basis=list())
+        super().__init__(basis=list())
         self.val = val
 
-    # to satisfy ShapeExpr (not sure why we want to use IntSlice as a ShapeExpr
-    # though
     def dims(self):
-        return [self.val]
-
-    def rank_sig(self):
-        return Rank(self.runtime, [])
+        return [self.val+1]
 
     def evaluate(self, trg_basis): 
         ten = tf.constant(self.val, dtype=tf.int32)
-        ten = util.to_sig(ten, [], trg_basis + [self.rank_sig()])
+        ten = util.to_sig(ten, [], trg_basis + [self.elem_shape])
         return ten
 
-class RankSlice(SliceExpr, ShapeExpr):
+class RankSlice(SliceExpr):
     def __init__(self, runtime, rank):
-        super().__init__(runtime, basis=list())
+        super().__init__(basis=list())
         self.rank = rank
 
     # Using RankSlice as a shape
     def dims(self):
-        return [self.rank.value()]
-
-    def rank_sig(self):
-        return Rank(self.runtime, [])
+        return [self.rank.value()+1]
 
     def evaluate(self, trg_basis):
         ten = tf.constant(self.rank.value(), dtype=tf.int32)
-        ten = util.to_sig(ten, [], trg_basis + [1])
+        ten = util.to_sig(ten, [], trg_basis + [self.elem_shape])
         return ten
 
 class DimsSlice(SliceExpr):
     def __init__(self, runtime, tup_names):
-        super().__init__(runtime, basis=list())
+        super().__init__(basis=list())
         self.tup_names = tup_names
         self.base_tups = [ runtime.maybe_add_tup(n) for n in tup_names ]
 
-    def rank_sig(self):
-        return Rank(self.runtime, self.tup_names)
+    def __repr__(self):
+        return f'DimsSlice({self.tup_names})'
+
+    def dims(self):
+        return [ v+1 for v in self.value() ]
 
     def value(self):
         return util.flat_dims(self.base_tups)
 
     def evaluate(self, trg_basis):
         src_basis = self.get_basis()
-        rank_sig = self.rank_sig()
         ten = tf.constant(self.value(), dtype=tf.int32)
-        ten = util.to_sig(ten, src_basis + [rank_sig], trg_basis + [rank_sig])
+        ten = util.to_sig(
+                ten, src_basis + [self.elem_shape], 
+                trg_basis + [self.elem_shape])
         return ten
 
 class EinTupSlice(SliceExpr):
     def __init__(self, runtime, eintup_name):
         self.tup = runtime.maybe_add_tup(eintup_name)
-        super().__init__(runtime, [self.tup])
+        super().__init__([self.tup])
+
+    def dims(self):
+        return self.tup.dims()
 
     def __repr__(self):
         return f'EinTupSlice({self.basis})'
 
-    def rank_sig(self):
-        return Rank(self.runtime, [self.tup.name])
-
     def evaluate(self, trg_basis):
         src_basis = self.get_basis()
-        rank_sig = self.rank_sig()
         ten = util.ndrange(self.tup.dims()) 
-        ten = util.to_sig(ten, src_basis + [rank_sig], trg_basis + [rank_sig])
+        ten = util.to_sig(ten, src_basis + [self.elem_shape], 
+                trg_basis + [self.elem_shape])
         return ten
 
 class ArraySlice(SliceExpr):
@@ -341,8 +356,8 @@ class ArraySlice(SliceExpr):
                 f'Expecting {len(sig)} but got {len(index_list)}')
 
         found_star = False
-        z = zip(range(len(sig)), sig, index_list)
-        for pos, sig_tup, call in z:
+        z = zip(sig, index_list)
+        for sig_tup, call in z:
             if call == STAR: 
                 if found_star:
                     raise RuntimeError(
@@ -350,7 +365,6 @@ class ArraySlice(SliceExpr):
                         f'allowed in a ArraySlice instance')
                 found_star = True
                 self.ind_tup = sig_tup
-                self._ind_pos = pos
                 continue
             elif not isinstance(call, str):
                 raise RuntimeError(
@@ -372,28 +386,23 @@ class ArraySlice(SliceExpr):
                 for name in index_list ]
 
         basis = [ t for t in self.index_list if isinstance(t, EinTup) ]
-        super().__init__(runtime, basis=basis)
+        super().__init__(basis=basis)
 
     def __repr__(self):
         ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
                 for ind in self.index_list)
         return f'ArraySlice({self.name})[{ind_list}]'
 
-    def rank_sig(self):
-        sig = self.runtime.array_sig[self.name]
-        return sig[self._ind_pos]
+    def dims(self):
+        return self.ind_tup.dims()
 
     def evaluate(self, trg_basis):
         src_basis = self.get_basis()
-        rank_sig = self.rank_sig()
         ten = self.runtime.arrays[self.name]
-        ten = util.to_sig(ten, src_basis + [rank_sig], trg_basis + [rank_sig])
+        ten = util.to_sig(
+                ten, src_basis + [self.elem_shape], 
+                trg_basis + [self.elem_shape])
         return ten
-
-    def rank(self):
-        # a little odd, but the 'rank' of a slice is thought of as the rank
-        # of the EinTup which it replaces.
-        return self.ind_tup.dims()[0]
 
 class SliceBinOp(SliceExpr):
     def __init__(self, runtime, lhs, rhs, op_string):
@@ -401,39 +410,83 @@ class SliceBinOp(SliceExpr):
             raise RuntimeError(
                 f'SliceBinOp can only operate on two SliceExpr instances. '
                 f'Got {type(lhs)} and {type(rhs)}')
-        super().__init__(runtime, basis=list())
+        super().__init__(basis=list())
         self.lhs = lhs
         self.rhs = rhs
-        ops = [ tf.add, tf.subtract, tf.multiply, tf.math.floordiv ]
-        self.op = dict(zip(['+', '-', '*', '//'], ops))[op_string]
+        allowed_ops = ('+', '-', '*', '//', '//^', '%')
+        if op_string not in allowed_ops:
+            raise RuntimeError(
+                f'SliceBinOp received op {op_string}.  Only allowed ops are '
+                f'{allowed_ops}')
+
+        self.op = util.ops[op_string] 
+        self.scalar_op = util.scalar_ops[op_string]
         self.op_string = op_string
+
+        cannot_divide_by = (EinTupSlice, ArraySlice)
+        if op_string in ('//', '//^') and isinstance(rhs, cannot_divide_by):
+            raise RuntimeError(
+                f'Cannot divide by EinTupSlice or ArraySlice in a SliceExpr')
 
     def __repr__(self):
         return f'SliceBinOp({self.lhs} {self.op_string} {self.rhs})' 
+
+    def dims(self):
+        scalar_types = (IntSlice, RankSlice)
+        if self.op_string == '-' and not isinstance(self.rhs, scalar_types):
+            return self.lhs.dims()
+        else:
+            ldims = self.lhs.dims()
+            rdims = self.rhs.dims()
+
+            # Broadcast as necessary
+            if isinstance(self.lhs, scalar_types):
+                ldims = ldims[0:1] * len(rdims)
+            if isinstance(self.rhs, scalar_types):
+                rdims = rdims[0:1] * len(ldims)
+
+            # This takes the maximum index values for each side,
+            # and computes the result, then converts back to an exclusive
+            # limit.  See notes.txt SliceExpr 
+            z = zip(ldims, rdims)
+            dims = [ self.scalar_op(l-1,r-1) + 1 for l,r in z ]
+            return dims
 
     def get_basis(self):
         lbasis = self.lhs.get_basis()
         rbasis = self.rhs.get_basis()
         return util.merge_tup_lists(lbasis, rbasis)
 
-    def rank_sig(self):
-        lrank_sig = self.lhs.rank_sig()
-        rrank_sig = self.rhs.rank_sig()
-        lrank = lrank_sig.dims()
-        rrank = rrank_sig.dims()
-        if lrank != [0] and rrank != [0] and lrank != rrank:
-            raise RuntimeError(
-                f'SliceBinOp has incompatible ranks for lhs and rhs: '
-                f'Got {lrank} and {rrank}.  Should be equal or broadcastable')
-        return lrank_sig if lrank != [0] else rrank_sig 
-
     def evaluate(self, trg_basis):
         src_basis = self.get_basis()
         lten = self.lhs.evaluate(src_basis)
         rten = self.rhs.evaluate(src_basis)
+        src_sig = src_basis + [self.elem_shape]
+        trg_sig = trg_basis + [self.elem_shape]
+        lten = tf.broadcast_to(lten, util.flat_dims(src_sig))
+        rten = tf.broadcast_to(rten, util.flat_dims(src_sig))
         ten = self.op(lten, rten)
-        rank_sig = self.rank_sig()
-        ten = util.to_sig(ten, src_basis + [rank_sig], trg_basis + [rank_sig])
+        ten = util.to_sig(ten, src_sig, trg_sig)
+        return ten
+
+class FlattenSlices(SliceExpr):
+    def __init__(self, slice_list):
+        super().__init__(basis=list())
+        self.slice_list = slice_list
+        self.elem_shape = ElemShape([FlatShape(slice_list)]) 
+        
+    def get_basis(self):
+        return merge_bases(self.slice_list)
+
+    def dims(self):
+        merged_basis = self.get_basis()
+        return [ dim for sh in merged_basis for dim in sh.dims() ]
+
+    def evaluate(self, trg_basis):
+        ten, merged_basis, merged_rank = combine_slices(self.slice_list)
+        ten = util.flatten(ten, util.flat_dims(merged_basis))
+        ten = util.to_sig(ten, merged_basis + [self.elem_shape], 
+                trg_basis + [self.elem_shape])
         return ten
 
 class Array(AST):
@@ -444,8 +497,7 @@ class Array(AST):
             sig_list = runtime.array_sig[array_name]
             check_sig(runtime, sig_list, index_list)
         else:
-            sig = define_sig(runtime, index_list)
-            runtime.array_sig[array_name] = sig
+            runtime.array_sig[array_name] = index_list
 
         self.runtime = runtime
         self.name = array_name
@@ -458,13 +510,16 @@ class Array(AST):
                 for ind in self.index_list)
         return f'{cls_name}({self.name})[{ind_list}]'
 
-    def _get_slice_pos(self):
-        en = enumerate(self.index_list)
-        return next((p for p, i in en if isinstance(i, SliceExpr)), None)
+    def has_slices(self):
+        return any(isinstance(sl, SliceExpr) for sl in self.index_list)
 
-    def get_slice(self):
-        pos = self._get_slice_pos()
-        return None if pos is None else self.index_list[pos]
+    def get_slices(self):
+        return [ sl for sl in self.index_list if isinstance(sl, SliceExpr) ]
+
+    def get_slice_subsig(self):
+        sig = self.runtime.array_sig[self.name]
+        z = zip(sig, self.index_list)
+        return [ tup for tup, use in z if isinstance(use, SliceExpr) ]
 
     def get_sig(self):
         if self.name not in self.runtime.array_sig:
@@ -476,7 +531,7 @@ class Array(AST):
         return [ use for use in self.index_list if not isinstance(use,
             SliceExpr) ]
 
-    def slice_tup(self):
+    def get_slice_tup(self):
         sig = self.get_sig()
         pos = self._get_slice_pos()
         return sig[pos]
@@ -492,6 +547,7 @@ class Array(AST):
         ten = util.to_sig(ten, use_sig, trg_sig)
         return ten
 
+    """
     def _rank_check(self):
         # check that the rank of the slice matches the expected rank
         sig = self.runtime.array_sig[self.name]
@@ -502,6 +558,7 @@ class Array(AST):
                 f'Array contains ArraySlice of rank {slice_node.rank()} '
                 f'for target {target_sig_tup} of rank {target_sig_tup.rank()}.'
                 f'ranks must match')
+    """
 
 class LValueArray(Array):
     def __init__(self, runtime, array_name, index_list):
@@ -512,7 +569,7 @@ class LValueArray(Array):
                 for ind in self.index_list)
         return f'LValueArray({self.name})[{ind_list}]'
 
-    def _evaluate_sliced(self, trg_sig, slice_node, rhs):
+    def _evaluate_sliced(self, trg_sig, rhs):
         # see ops/scatter_nd.et
         """
         Approach:
@@ -522,43 +579,48 @@ class LValueArray(Array):
         """
         # defines output signature in the top-level array where the slice resides
         out_sig = self.nonslice_tups()
-        slice_tup = self.slice_tup()
-        idx_sig = slice_node.get_basis()
-        idx_rank = slice_node.rank_sig()
-        idx_ten = slice_node.evaluate(idx_sig)
+        slices = self.get_slices()
+        idx_ten, idx_sig, idx_rank = combine_slices(slices)
         idx_ten = util.pack(idx_ten, idx_sig + [idx_rank])
+
+        # equivalent to slice_tup
+        # need to transform this to a ShapeExpr
+        slice_sig = self.get_slice_subsig()
 
         ixn_union = util.union_ixn(idx_sig, out_sig)
         fetch_sig, batch_sig, other_sig = ixn_union
         if len(batch_sig) > 0:
             raise RuntimeError(f'cannot support batched scatter')
 
-        target_idx = fetch_sig + [idx_rank] 
+        # target_idx = fetch_sig + [idx_rank] 
         target_upd = fetch_sig + other_sig
-        target_out = [slice_tup] + other_sig
+        target_out = slice_sig + other_sig
+        target_out_grouped = [GroupShape(slice_sig)] + other_sig
 
         upd_ten  = rhs.evaluate(target_upd)
-        upd_ten = tf.reshape(upd_ten, util.packed_dims(target_upd))
+        upd_ten = util.pack(upd_ten, target_upd)
 
-        in_bounds = util.range_check(idx_ten, slice_tup.dims())
-        idx_ten = util.flatten(idx_ten, slice_tup.dims())
+        in_bounds = util.range_check(idx_ten, util.flat_dims(slice_sig))
+        idx_ten = util.flatten(idx_ten, util.flat_dims(slice_sig))
         idx_ten = tf.where(in_bounds, idx_ten, -1)
 
-        shape_ten = tf.constant(util.packed_dims(target_out))
+        shape_ten = tf.constant(util.packed_dims(target_out_grouped))
         with tf.device('/GPU:0'):
             out_ten = tf.scatter_nd(idx_ten, upd_ten, shape_ten)
 
-        out_ten = util.to_sig(out_ten, target_out, trg_sig, in_packed=True,
-                out_packed=False)
+        # now, want to un-group the grouped dimensions
+        out_ten = tf.reshape(out_ten, util.packed_dims(target_out))
+
+        out_ten = util.to_sig(out_ten, target_out, trg_sig, 
+                in_packed=True, out_packed=False)
         return out_ten
 
     def assign(self, rhs):
         trg_sig = self.get_sig()
-        slice_expr = self.get_slice()
-        if slice_expr is None:
-            val = rhs.evaluate(trg_sig)
+        if self.has_slices():
+            val = self._evaluate_sliced(trg_sig, rhs)
         else:
-            val = self._evaluate_sliced(trg_sig, slice_expr, rhs)
+            val = rhs.evaluate(trg_sig)
 
         trg_dims = util.flat_dims(trg_sig)
         val_dims = val.shape.as_list()
@@ -574,11 +636,10 @@ class LValueArray(Array):
                 f'Cannot do += on first mention of array \'{self.name}\'')
 
         trg_sig = self.get_sig()
-        slice_expr = self.get_slice()
-        if slice_expr is None:
-            val = rhs.evaluate(trg_sig)
+        if self.has_slices():
+            val = self._evaluate_sliced(trg_sig, rhs)
         else:
-            val = self._evaluate_sliced(trg_sig, slice_expr, rhs)
+            val = rhs.evaluate(trg_sig)
 
         prev = self.runtime.arrays[self.name]
         self.runtime.arrays[self.name] = tf.add(prev, val)
@@ -602,7 +663,7 @@ class RValueArray(Array):
                 tups.append(item)
         return tups
 
-    def _evaluate_sliced(self, trg_sig, slice_node):
+    def _evaluate_sliced(self, trg_sig):
         # see 'gather' test in ops/gather_nd.et
         """
         Overall approach:
@@ -620,10 +681,11 @@ class RValueArray(Array):
 
         """
         # TODO: perform the rank check here
-        slice_tup = self.slice_tup()
         par_sig = self.nonslice_tups()
-        idx_sig = slice_node.get_basis()
-        idx_rank = slice_node.rank_sig()
+        slices = self.get_slices()
+        idx_ten, idx_sig, idx_rank = combine_slices(slices)
+        idx_ten = util.pack(idx_ten, idx_sig + [idx_rank]) 
+        slice_sig = self.get_slice_subsig()
 
         # See ops/gather_nd.et
         ixn_union_triplet = util.union_ixn(idx_sig, par_sig)
@@ -631,17 +693,18 @@ class RValueArray(Array):
 
         # target shapes
         target_idx = batch_sig + fetch_sig
-        target_par = batch_sig + [slice_tup] + other_sig
+        target_par = batch_sig + slice_sig + other_sig
+        target_par_grouped = batch_sig + [GroupShape(slice_sig)] + other_sig
         target_res = batch_sig + fetch_sig + other_sig
 
         par_ten = self.get_array(target_par)
-        par_ten = util.pack(par_ten, target_par)
+        par_ten = util.pack(par_ten, target_par_grouped)
 
-        idx_ten = slice_node.evaluate(target_idx)
-        idx_ten = util.pack(idx_ten, target_idx + [idx_rank]) 
+        idx_ten = util.to_sig(idx_ten, idx_sig + [idx_rank], target_idx +
+                [idx_rank], in_packed=True, out_packed=True)
 
-        in_bounds = util.range_check(idx_ten, slice_tup.dims())
-        idx_ten = util.flatten(idx_ten, slice_tup.dims())
+        in_bounds = util.range_check(idx_ten, util.flat_dims(slice_sig))
+        idx_ten = util.flatten(idx_ten, util.flat_dims(slice_sig))
         idx_ten = tf.where(in_bounds, idx_ten, -1)
 
         # all tensors are packed, so one dim per EinTup in batch_sig
@@ -658,12 +721,10 @@ class RValueArray(Array):
         return result
 
     def evaluate(self, trg_sig):
-        slice_expr = self.get_slice()
-        if slice_expr is None:
-            ten = self.get_array(trg_sig)
-            return ten
+        if self.has_slices():
+            return self._evaluate_sliced(trg_sig)
         else:
-            return self._evaluate_sliced(trg_sig, slice_expr)
+            return self.get_array(trg_sig)
 
 class RandomCall(AST):
     # apply a function pointwise to the materialized arguments
@@ -723,7 +784,7 @@ class RangeExpr(AST):
                     f'{ind_dims} but must be equal to key EinTup '
                     f'\'{self.key_tup}\' rank {key_rank}')
         src_sig = self.get_tups() 
-        ten = ndrange(self.key_tup.dims())
+        ten = util.ndrange(self.key_tup.dims())
         ten = util.to_sig(ten, src_sig, trg_sig)
         return ten
 

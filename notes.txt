@@ -41,6 +41,50 @@ layout_to_sig all take / return lists of EinTups.
 
 SliceExpr
 
+An expression to be used as an element in an Array index list.  The slice
+expression represents a hyperrectangular set, whose shape is defined by the
+'basis'.  The elements in the set are tuples which take on values in a certain
+range.  The upper limits (exclusive) of the range are given by
+SliceExpr::dims().
+
+elements of subtractive SliceExpr's like 'ipos - opos' can take on negative
+values.  Any such element is ignored.
+
+The calculation of an Array (either LValue or RValueArray) using either naked
+EinTups or SliceExpr's can be thought of as follows:
+
+First of all, the naked EinTup can be thought of as a trivial SliceExpr in
+which each tuple element value is equal to its location in the hyperrectangular
+set:  that is, if 'se' is the SliceExpr, then se[a,b,c] = [a,b,c] for example.
+
+Then, the sets are broadcasted according to the union of all EinTups appearing
+in all SliceExprs.  The hyperrectangular set induced by this union of EinTups
+then defines the shape of the final output.  Each element of the union set
+identifies an element of each SliceExpr set.  All such elements are then
+concatenated to produce a tuple whose rank is the same as the outer Array index
+list.  This is then used to retrieve the value from the outer array and it then
+populates the return array with that scalar value.
+
+The elements of a ShapeExpr have a predictable upper bound (exclusive) for each
+component.  For simple EinTups, upper bounds are given directly by the dims()
+function.  For other expressions, the upper bounds can be calculated (for
+various combinations) as:
+
+(a.dims() - 1) + (b.dims() - 1) + 1
+(a.dims() - 1) * (b.dims() - 1) + 1
+(a.dims() - 1) // Int + 1
+(a.dims() - 1) * Int + 1
+(a.dims() - 1) //^ Int + 1
+
+
+
+An ordinary Array is also a hyperrectangular set, whose shape is defined by the
+array signature.  But, the elements are individual scalars (int or float).
+
+The individual elements of the slice expression are meant to supply the value
+for a particular index.  
+
+
 ShapeExpr
 
 A ShapeExpr is the base class for anything that can be used to define a

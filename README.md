@@ -18,6 +18,11 @@ python eintup.py ops/matmul.et
 
 ## Examples
 
+The following are complete Einsum Tuple programs for various operations.  In
+all examples, the first two lines define the shapes of inputs, and the last
+line defines the operation.  The definitions are valid for multiple
+combinations of ranks, such as for batch, ipos, ichan, etc.
+
 ```
 # Strided Convolution (Valid) 
 # Expression shows linearity with respect to input
@@ -139,8 +144,4 @@ False if equal.
 
 For other examples, see the [ops](ops) directory.  A full description of Einsum
 Tuple language is in [eintup.md](eintup.md).
-
-
-
-
 

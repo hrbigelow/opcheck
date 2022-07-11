@@ -55,10 +55,7 @@ def packed_dims(tups):
     return [ tup.nelem() for tup in tups ]
 
 def pack(ten, sig):
-    if flat_dims(sig) != ten.shape.as_list():
-        raise RuntimeError(
-            f'pack expects tensor shape to match signature. Got '
-            f'{ten.shape.as_list()} vs {flat_dims(sig)}')
+    check_shape(ten, sig, is_packed=False)
     return tf.reshape(ten, packed_dims(sig))
 
 # used to construct a slightly order-preserving signature for
@@ -78,16 +75,23 @@ def merge_tup_lists(a, b):
             ae = next(ait, None)
     return out
 
+
+# check tensor shape against sig
+def check_shape(ten, sig, is_packed):
+    expect_dims = packed_dims(sig) if is_packed else flat_dims(sig)
+    if ten.shape.as_list() != expect_dims:
+        desc = 'packed' if is_packed else 'flat'
+        raise RuntimeError(
+            f'Tensor shape {ten.shape.as_list()} not consistent with '
+            f'signature {desc} shape {expect_dims}')
+    
+
 # reshape / transpose ten, with starting shape src_sig, to be broadcastable to
 # trg_sig.  if in_packed, expect ten shape to be in the packed form of src_sig.
 # produce a tensor with either packed or flat (broadcastable) form of trg_sig
 def to_sig(ten, src_sig, trg_sig, in_packed=False, out_packed=False):
-    expect_dims = packed_dims(src_sig) if in_packed else flat_dims(src_sig)
-    if ten.shape != expect_dims:
-        desc = 'packed' if in_packed else 'flat'
-        raise RuntimeError(
-            f'Tensor shape {ten.shape} not consistent with '
-            f'signature {desc} shape {expect_dims}')
+    check_shape(ten, src_sig, in_packed)
+
     if not in_packed:
         src_dims = packed_dims(src_sig)
         ten = tf.reshape(ten, src_dims)
@@ -145,4 +149,29 @@ def maybe_broadcast(a, length):
 
 def ceildiv(a, b):
     return math.ceil(a / b)
+
+
+def ceildiv_tensor(a, b):
+    return tf.math.ceil(a / b)
+
+ops = { 
+        '+': tf.add,
+        '-': tf.subtract,
+        '*': tf.multiply,
+        '//': tf.math.floordiv,
+        '//^': ceildiv_tensor,
+        '%': tf.math.floormod
+        }
+
+scalar_ops = {
+        '+': operator.add,
+        '-': operator.sub,
+        '*': operator.mul,
+        '//': operator.floordiv,
+        '//^': ceildiv,
+        '%': operator.mod
+        }
+
+
+
 
