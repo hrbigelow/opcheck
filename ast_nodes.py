@@ -76,7 +76,8 @@ class EinTup(ShapeExpr):
     def __init__(self, name):
         super().__init__()
         self.name = name
-        self.shape = Shape() 
+        self._dims = None
+        self._rank = None
         # TODO: parameterize these
         self.rank_expr = (0, 10)
         self.gen_expr = RangeConstraint(0, 100, self)
@@ -96,16 +97,24 @@ class EinTup(ShapeExpr):
         return len(self.dims())
 
     def initialize(self, dims):
-        self.shape.initialize(dims)
+        self._rank = len(dims)
+        self._dims = list(dims)
 
     def clear(self):
-        self.shape.clear()
+        self._rank = None
+        self._dims = None
 
     def set_rank(self, rank):
-        self.shape.set_rank(rank)
+        self._dims = None
+        self._rank = rank
 
     def set_dims(self, dims):
-        self.shape.set_dims(dims)
+        if not self.has_rank():
+            raise RuntimeError( f'Cannot call set_dims when rank is not set')
+        if len(dims) != self.rank(): 
+            raise RuntimeError(
+                f'dims received {dims} but rank is {self.rank()}')
+        self._dims = list(dims)
 
     # calculate the rank from the rank_expr
     def calc_rank(self):
@@ -128,63 +137,20 @@ class EinTup(ShapeExpr):
         return self.dims()
 
     def has_dims(self):
-        return self.shape.has_dims()
+        return self._dims is not None
 
     def has_rank(self):
-        return self.shape.has_rank()
+        return self._rank is not None
 
     def dims(self):
-        return self.shape.get_dims()
+        if not self.has_dims(): 
+            raise RuntimeError('Cannot call dims() on uninitialized EinTup')
+        return self._dims
 
     def rank(self):
-        return self.shape.get_rank()
-
-class Shape(object):
-    # simple data class
-    def __init__(self):
-        self.dims = None
-        self.rank = None
-
-    def __repr__(self):
-        return (f'Shape: rank {self.rank}, dims {self.dims}')
-
-    def initialize(self, dims):
-        self.rank = len(dims)
-        self.dims = list(dims)
-
-    def clear(self):
-        self.rank = None
-        self.dims = None
-
-    def set_rank(self, rank):
-        self.dims = None
-        self.rank = rank
-
-    def get_rank(self):
-        if self.rank is None:
-            raise RuntimeError(
-                f'Cannot call Shape::get_rank() before rank is set')
-        return self.rank
-
-    def has_dims(self):
-        return self.dims is not None
-
-    def has_rank(self):
-        return self.rank is not None
-
-    def get_dims(self):
-        if self.dims is None:
-            raise RuntimeError('Cannot call get_dims() on uninitialized Shape')
-        return self.dims
-
-    def set_dims(self, dims):
         if not self.has_rank():
-            raise RuntimeError(
-                f'Cannot call set_dims when rank is not set')
-        if len(dims) != self.get_rank():
-            raise RuntimeError(
-                f'set_dims received {dims} but rank is {self.rank()}')
-        self.dims = list(dims)
+            raise RuntimeError(f'Cannot call rank() before rank is set')
+        return self._rank
 
 class AST(object):
     def __init__(self, *children):
@@ -290,7 +256,7 @@ class IntSlice(SliceExpr, StaticExpr):
         return self.val
 
     def evaluate(self, trg_basis): 
-        ten = tf.constant(self.val, dtype=tf.int32)
+        ten = tf.constant(self.val, dtype=util.tf_int)
         ten = util.to_sig(ten, [], trg_basis + [self.elem_shape])
         return ten
 
@@ -307,7 +273,7 @@ class RankSlice(SliceExpr, StaticExpr):
         return self.rank.value()
 
     def evaluate(self, trg_basis):
-        ten = tf.constant(self.rank.value(), dtype=tf.int32)
+        ten = tf.constant(self.rank.value(), dtype=util.tf_int)
         ten = util.to_sig(ten, [], trg_basis + [self.elem_shape])
         return ten
 
@@ -328,7 +294,7 @@ class DimsSlice(SliceExpr, StaticExpr):
 
     def evaluate(self, trg_basis):
         src_basis = self.get_basis()
-        ten = tf.constant(self.value(), dtype=tf.int32)
+        ten = tf.constant(self.value(), dtype=util.tf_int)
         ten = util.to_sig(
                 ten, src_basis + [self.elem_shape], 
                 trg_basis + [self.elem_shape])
@@ -669,9 +635,8 @@ class LValueArray(Array):
         idx_ten = util.flatten(idx_ten, util.flat_dims(slice_sig))
         idx_ten = tf.where(in_bounds, idx_ten, -1)
 
-        # shape_ten = tf.constant(util.packed_dims(target_out_grouped), dtype=tf.int64)
         shape_ten = tf.constant(util.packed_dims(target_out_grouped),
-                dtype=tf.int32)
+                dtype=util.tf_int)
         with tf.device('/GPU:0'):
             # see https://github.com/tensorflow/tensorflow/issues/56567
             # will execute on CPU (which borks on out of bounds)
@@ -928,7 +893,7 @@ class ScalarExpr(AST):
     def evaluate(self, trg_sig):
         src_sig = []
         val = self.value()
-        dtype = tf.int32 if isinstance(val, int) else tf.float64
+        dtype = util.tf_int if isinstance(val, int) else tf.float64
         ten = tf.constant(val, dtype=dtype)
         ten = util.to_sig(ten, src_sig, trg_sig)
         return ten
@@ -1034,7 +999,7 @@ class Dims(AST, StaticExpr):
                 raise RuntimeError(
                     f'Only single-tup Star Dims can call evaluate()')
             src_sig = self.get_tups()
-            ten = tf.constant(self.value(), dtype=tf.int32)
+            ten = tf.constant(self.value(), dtype=util.tf_int)
             ten = util.to_sig(ten, src_sig, trg_sig)
             return ten
 
@@ -1237,7 +1202,7 @@ class TensorWrap(AST):
         self.node = node
 
     def value(self):
-        return tf.constant(self.node.value(), dtype=tf.int32)
+        return tf.constant(self.node.value(), dtype=util.tf_int)
 
 class TFCall(AST):
     """

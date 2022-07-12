@@ -13,14 +13,14 @@ def flatten(inds, digit_sizes):
             f'digit sizes {digit_sizes}')
     accu = accumulate(digit_sizes, operator.mul)
     prod = np.prod(digit_sizes)
-    mult = tf.constant([prod // r for r in accu], dtype=tf.int32)
+    mult = tf.constant([prod // r for r in accu], dtype=tf_int)
     inds = tf.multiply(inds, mult)
     inds = tf.reduce_sum(inds, -1, keepdims=True)
     return inds
 
 # return True if 0 <= inds[...,i] < last_dim_bounds[i] 
 def range_check(inds, last_dim_bounds):
-    lim = tf.constant(last_dim_bounds, dtype=tf.int32)
+    lim = tf.constant(last_dim_bounds, dtype=tf_int)
     below = tf.less(inds, lim)
     above = tf.greater_equal(inds, 0)
     below = tf.reduce_all(below, axis=-1, keepdims=True)
@@ -40,7 +40,7 @@ def broadcastable(array_dims, sig_dims):
     return all(ad in (1, sd) for ad, sd in zip(array_dims, sig_dims))
 
 def ndrange(dims):
-    ten = [tf.range(e) for e in dims]
+    ten = [tf.range(e, dtype=tf_int) for e in dims]
     ten = tf.meshgrid(*ten, indexing='ij')
     ten = tf.stack(ten, axis=len(dims))
     return ten
@@ -171,4 +171,7 @@ scalar_ops = {
         '//^': ceildiv,
         '%': operator.mod
         }
+
+# tf_int = tf.int64
+tf_int = tf.int32
 
