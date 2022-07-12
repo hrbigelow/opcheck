@@ -88,7 +88,7 @@ test generation, and facilitation of new proposed ops are three possibilities.
 
 Einsum Tuple notation is inspired by Einstein summation notation, and consists
 of tensor assignment statements.  While Einstein summation uses subscripts like
-$result_{brc} = mat1_{bri} * mat2_{bic}$, Einsum Tuple notation uses bracketed
+$\text{result}_{brc} = mat1_{bri} * mat2_{bic}$, Einsum Tuple notation uses bracketed
 indices, like $result[b,r,c] = mat1[b,r,i] * mat2[b,i,c]$.  
 Einsum indices denote tuples of Einstein indices in a fixed
 order.  In the assignment, indices which appear on the right hand side but
@@ -96,29 +96,16 @@ not the left are marginalized out.  Indices which appear on the left but not
 the right cause broadcasting of the right-hand-side expression.  
 
 
-
-For an example of broadcasting behavior, here is the definition of
-`tf.meshgrid` for `N = 4`:
+For example, here is the definition of `tf.nn.space_to_depth`.  
 
 ```python
-in1[a] = RANDOM(0, 10, INT)
-in2[b] = RANDOM(0, 10, INT)
-in3[c] = RANDOM(0, 10, INT)
-in4[d] = RANDOM(0, 20, INT)
-out1[a,b,c,d] = in1[a]
-out2[a,b,c,d] = in2[b]
-out3[a,b,c,d] = in3[c]
-out4[a,b,c,d] = in4[d]
-
-tf.meshgrid(in1, in2, in3, in4, indexing=L('ij'))
-
-out1, out2, out3, out4
-
-RANK(a) = 1
-RANK(b) = 1
-RANK(c) = 1
-RANK(d) = 1
+input[batch,ipos,ichan] = RANDOM(0, 100, INT)
+output[batch,ipos//DIMS(bsz),FLAT(ipos % DIMS(bsz),ichan)] = input[batch,ipos,ichan]
 ```
+
+See the original documentation here:
+[tf.nn.space_to_depth](https://www.tensorflow.org/api_docs/python/tf/nn/space_to_depth)
+
 
 The `.et` file has four sections, separated by a blank line.  The first is the
 program.  The second is a python-like function call of some TensorFlow op,
