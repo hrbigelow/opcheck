@@ -99,15 +99,36 @@ in a rank-4 location (that is, an array index entry of rank 4.  That's why it
 is called the rank_sig.
 
 
+Constraint Grammar and Logic
 
+See parse.py:110-201.  Here are some examples
 
-Constraint Logic
+RANK(tup) = 3
+RANK(tup) IN [3,5]
+RANK(tup) = RANK(batch) + RANK(chan)
+RANK(tup) = RANK(batch) + 2
+
+DIMS(tup) IN [2,10]
+DIMS(tup) = 4
+DIMS(tup) = DIMS(batch)
+
+Besides the 'IN [a,b]' form, there is the '= expr' form, which allows any
+arithmetic binary operation involving +,-,*,//,//^,% and parentheses, and
+follows the usual precedence rules.  (This is likely overkill, but whatever)
+For the RANK constraints, the terminal values may be integers or other RANK
+terms (see parse.py:168 rcons_factor).  For DIMS, they may be integer, rank, or
+DIMS, (see parse.py:197 dcons_factor).
+
+When these constraints are parsed, nothing is returned.  Rather, the parser
+calls either tup.add_gen_expr() with the dims constraint, or
+tup.add_rank_expr() with the rank constraint.  This means the order of the
+constraints in the .et file don't matter.  
 
 The constraints can be divided into two groups.  Rank-only constraints, in
 which the rank of one or more EinTups are constrained.  And, Dims-containing
 constraints.  The runtime automatically generates all possible combinations of
-ranks in [0, 10) x N, with N being the number of primary EinTups.  It retains
-only those combinations which satisfy the Rank-only constraints.
+ranks in [0, 10) x N, with N being the number of EinTups.  It retains only
+those combinations which satisfy the Rank-only constraints.
 
 Then, it generates Dims for each, using the Dims-containing constraints.  These
 constraints can be Dims-IntExpr, Dims-Rank, or Dims-Dims.  The Dims-Dims
@@ -119,19 +140,6 @@ generated via gen_dims(), and thus it returns True for has_dims().
 Dims-Dims constraints must have matching rank.  However, there currently is no
 clean way to determine that two such Dims have matching rank until the ranks
 have been set by Runtime::cycle iterations.
-
-Primary vs Non-primary Eintups (this may become obsolete)
-
-If an Eintup identifier first appears on the left of an assignment, it is
-Primary, and owns the containing shape.  If it first appears on the right,
-however, then, it will be used in a previously mentioned tensor, since all
-tensors are first mentioned on the left.  In this case, it takes on the same
-shape as the Primary Eintup in that role.  For example, the statements:
-
-in[a] = RANDOM(0, 10, INT)
-
-cart[a,b] = in[a] * in[b]
-
 
 Nested Expression
 

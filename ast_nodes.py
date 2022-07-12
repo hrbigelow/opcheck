@@ -37,18 +37,16 @@ def merge_bases(slice_list):
 def combine_slices(slice_list):
     n = len(slice_list)
     elem_shapes = [ s.elem_shape for s in slice_list ]
-
-    merged_basis = merge_bases(slice_list)
-    merged_rank = ElemShape(slice_list)
-
+    basis = merge_bases(slice_list)
+    elem_shape = ElemShape(slice_list)
     tens = [None] * n
     for i in range(n):
-        ten = slice_list[i].evaluate(merged_basis)
-        shape = util.flat_dims(merged_basis + [elem_shapes[i]])
+        ten = slice_list[i].evaluate(basis)
+        shape = util.flat_dims(basis + [elem_shapes[i]])
         tens[i] = tf.broadcast_to(ten, shape)
     ten = tf.concat(tens, -1)
-    util.check_shape(ten, merged_basis + [merged_rank], False)
-    return ten, merged_basis, merged_rank
+    util.check_shape(ten, basis + [elem_shape], False)
+    return ten, basis, elem_shape
 
 STAR = ':'
 
@@ -119,7 +117,7 @@ class EinTup(ShapeExpr):
     # calculate the rank from the rank_expr
     def calc_rank(self):
         if not self.has_rank():
-            self.set_rank(self.rank_expr.value())
+            self.set_rank(self.rank_expr.calc_value())
         return self.rank()
 
     def add_gen_expr(self, gen_expr):
@@ -129,8 +127,10 @@ class EinTup(ShapeExpr):
         self.rank_expr = rank_expr
 
     def gen_dims(self):
+        if not self.has_rank():
+            raise RuntimeError(f'Cannot call gen_dims before rank is set')
         if not self.has_dims():
-            dims = self.gen_expr.value()
+            dims = self.gen_expr.calc_value()
             if isinstance(dims, int):
                 dims = [dims] * self.rank()
             self.set_dims(dims)
@@ -201,8 +201,12 @@ class Slice(AST):
 
 class StaticExpr(object):
     # An interface supporting the value() call, for use in StaticBinOpBase
-    def value():
+    def value(self):
         raise NotImplementedError
+
+    # Call during constraint resolution phase.
+    def calc_value(self):
+        return self.value()
 
 class ElemShape(ShapeExpr):
     def __init__(self, shape_list):
@@ -386,6 +390,8 @@ class ArraySlice(SliceExpr):
         return maxs.numpy().tolist()
 
     def evaluate(self, trg_basis):
+        # TODO: fix this bug.  Not all ArraySlice's will have the STAR at the
+        # end
         src_basis = self.get_basis()
         ten = self.runtime.arrays[self.name]
         ten = util.to_sig(
@@ -410,7 +416,7 @@ class FlattenSlice(SliceExpr):
 
     def evaluate(self, trg_basis):
         ten, merged_basis, merged_rank = combine_slices(self.slice_list)
-        ten = util.flatten(ten, util.flat_dims(self.slice_list))
+        ten = util._flatten(ten, util.flat_dims(self.slice_list))
         ten = util.to_sig(ten, merged_basis + [self.elem_shape], 
                 trg_basis + [self.elem_shape])
         return ten
@@ -602,54 +608,33 @@ class LValueArray(Array):
 
     def _evaluate_sliced(self, trg_sig, rhs):
         # see ops/scatter_nd.et
-        """
-        Approach:
-        1. pack indices (ind), updates (upd) and output (out) sigs
-        2. calculate target sigs for idx, upd and out using util.union_ixn
-        3. construct target 
-        """
-        # defines output signature in the top-level array where the slice resides
         out_sig = self.nonslice_tups()
-        slices = self.get_slices()
-        idx_ten, idx_sig, idx_rank = combine_slices(slices)
-        idx_ten = util.pack(idx_ten, idx_sig + [idx_rank])
+        dest = self.get_slice_subsig()
+        idx_ten, idx_sig, idx_rank = combine_slices(self.get_slices())
+        idx_ten = util.flatten_with_bounds(idx_ten, dest)
+        idx_rank = ElemShape([idx_rank])
+        slice_, batch, elem = util.union_ixn(idx_sig, out_sig)
+        if len(batch) > 0:
+            raise RuntimeError(f'batched scatter unsupported')
 
-        # equivalent to slice_tup
-        # need to transform this to a ShapeExpr
-        slice_sig = self.get_slice_subsig()
-
-        ixn_union = util.union_ixn(idx_sig, out_sig)
-        fetch_sig, batch_sig, other_sig = ixn_union
-        if len(batch_sig) > 0:
-            raise RuntimeError(f'cannot support batched scatter')
-
-        # target_idx = fetch_sig + [idx_rank] 
-        target_upd = fetch_sig + other_sig
-        target_out = slice_sig + other_sig
-        target_out_grouped = [GroupShape(slice_sig)] + other_sig
-
-        upd_ten  = rhs.evaluate(target_upd)
-        upd_ten = util.pack(upd_ten, target_upd)
-
-        in_bounds = util.range_check(idx_ten, util.flat_dims(slice_sig))
-        idx_ten = util.flatten(idx_ten, util.flat_dims(slice_sig))
-        idx_ten = tf.where(in_bounds, idx_ten, -1)
-
-        shape_ten = tf.constant(util.packed_dims(target_out_grouped),
-                dtype=util.tf_int)
+        upd_ten = rhs.evaluate(slice_ + elem)
+        upd_ten = util.pack_nested(upd_ten, [slice_, elem]) # 2D Tensor
+        idx_ten = util.pack_nested(idx_ten, [slice_, [idx_rank]]) # 2D Tensor
+        out = dest + elem
+        out_dims = util.packed_dims_nested([dest, elem])
+        shape_ten = tf.constant(out_dims, util.tf_int)
         with tf.device('/GPU:0'):
             # see https://github.com/tensorflow/tensorflow/issues/56567
             # will execute on CPU (which borks on out of bounds)
             # if upd_ten is int32
-            if upd_ten.dtype == tf.int32:
+            upd_dtype = upd_ten.dtype
+            if upd_dtype == tf.int32:
                 upd_ten = tf.cast(upd_ten, tf.int64)
             out_ten = tf.scatter_nd(idx_ten, upd_ten, shape_ten)
-
-        # now, want to un-group the grouped dimensions
-        out_ten = tf.reshape(out_ten, util.packed_dims(target_out))
-
-        out_ten = util.to_sig(out_ten, target_out, trg_sig, 
-                in_packed=True, out_packed=False)
+            out_ten = tf.cast(out_ten, upd_dtype)
+        out_ten = tf.reshape(out_ten, util.packed_dims(out))
+        out_ten = util.to_sig(out_ten, out, trg_sig, in_packed=True, 
+            out_packed=False)
         return out_ten
 
     def assign(self, rhs):
@@ -726,13 +711,13 @@ class RValueArray(Array):
 
         # See ops/gather_nd.et
         ixn_union_triplet = util.union_ixn(idx_sig, par_sig)
-        fetch_sig, batch_sig, other_sig = ixn_union_triplet 
+        fetch_sig, batch_sig, elem_sig = ixn_union_triplet 
 
         # target shapes
         target_idx = batch_sig + fetch_sig
-        target_par = batch_sig + slice_sig + other_sig
-        target_par_grouped = batch_sig + [GroupShape(slice_sig)] + other_sig
-        target_res = batch_sig + fetch_sig + other_sig
+        target_par = batch_sig + slice_sig + elem_sig
+        target_par_grouped = batch_sig + [GroupShape(slice_sig)] + elem_sig
+        target_res = batch_sig + fetch_sig + elem_sig
 
         par_ten = self.get_array(target_par)
         par_ten = util.pack(par_ten, target_par_grouped)
@@ -740,9 +725,7 @@ class RValueArray(Array):
         idx_ten = util.to_sig(idx_ten, idx_sig + [idx_rank], target_idx +
                 [idx_rank], in_packed=True, out_packed=True)
 
-        in_bounds = util.range_check(idx_ten, util.flat_dims(slice_sig))
-        idx_ten = util.flatten(idx_ten, util.flat_dims(slice_sig))
-        idx_ten = tf.where(in_bounds, idx_ten, -1)
+        idx_ten = util.flatten_with_bounds(idx_ten, slice_sig)
 
         # all tensors are packed, so one dim per EinTup in batch_sig
         num_batch_dims = len(batch_sig)
@@ -771,7 +754,7 @@ class RandomCall(AST):
         self.runtime = runtime
         self.dtype_string = dtype_string
         if dtype_string == 'INT':
-            self.dtype = tf.int64
+            self.dtype = util.tf_int 
         elif dtype_string == 'FLOAT':
             self.dtype = tf.float64
         else:
@@ -828,7 +811,7 @@ class RangeExpr(AST):
 class ArrayBinOp(AST):
     def __init__(self, runtime, lhs, rhs, op_string):
         super().__init__(lhs, rhs)
-        # TODO: expand to include Rank, IntExpr, and add evaluate()
+        # TODO: expand to include RankExpr, IntExpr, and add evaluate()
         # methods to those classes
         allowed_types = (RangeExpr, RandomCall, RValueArray, Dims, IntExpr,
                 ArrayBinOp)
@@ -919,13 +902,13 @@ class FloatExpr(ScalarExpr):
     def value(self):
         return self.val
 
-class Rank(ScalarExpr, ShapeExpr, StaticExpr):
+class RankExpr(ScalarExpr, ShapeExpr, StaticExpr):
     def __init__(self, runtime, tup_name_list):
         super().__init__()
         for name in tup_name_list:
             if name not in runtime.tups:
                 raise RuntimeError(
-                    f'Rank tup {name} not a known EinTup.  Only EinTups '
+                    f'RankExpr tup {name} not a known EinTup.  Only EinTups '
                     f'instantiated in the program may be used as constraints. '
                     f'Known EinTups are: {runtime.tups.keys()}')
 
@@ -933,7 +916,7 @@ class Rank(ScalarExpr, ShapeExpr, StaticExpr):
         self.tups = [ self.runtime.tup(name) for name in tup_name_list ]
 
     def __repr__(self):
-        return f'Rank({repr(self.tups)})'
+        return f'RankExpr({repr(self.tups)})'
 
     # needed to support ShapeExpr
     def dims(self):
@@ -941,6 +924,12 @@ class Rank(ScalarExpr, ShapeExpr, StaticExpr):
 
     def value(self):
         return sum(tup.rank() for tup in self.tups)
+
+    # to be used during the constraint resolution phase.
+    # the tups's ranks may not be ready net, so this call
+    # will trigger the calculation of their dependent expressions
+    def calc_value(self):
+        return sum(tup.calc_rank() for tup in self.tups)
 
     def get_tups(self):
         return self.tups
@@ -951,7 +940,7 @@ class DimKind(enum.Enum):
 
 class Dims(AST, StaticExpr):
     """
-    Dims can exist in three sub-types.  
+    Dims can exist in two sub-types.  
     Expression             Type       Usage
     Dims(tupname)[ind_tup] Index      statement
     Dims(tupname)          Star       constraint or tup expression
@@ -969,12 +958,6 @@ class Dims(AST, StaticExpr):
 
     def __repr__(self):
         return f'{self.kind} Dims({self.base_tups})[{self.ind_tup}]'
-
-    def set_index_tup(self, ind_tup):
-        if self.kind != DimKind.Star:
-            raise RuntimeError(
-                f'Can only call set_index_tup on Star Dims')
-        self.ind_tup = ind_tup
 
     def post_parse_init(self):
         for name in self.tup_names:
@@ -1015,7 +998,7 @@ class Dims(AST, StaticExpr):
                 f'base tup list {tup_list} ({self.rank()})')
 
         src_sig = self.get_tups()
-        ten = tf.constant(util.flat_dims(self.base_tups))
+        ten = tf.constant(util.flat_dims(self.base_tups), dtype=util.tf_int)
         ten = util.to_sig(ten, src_sig, trg_sig)
         return ten
 
@@ -1026,11 +1009,10 @@ class Dims(AST, StaticExpr):
         if self.kind == DimKind.Index:
             raise RuntimeError(
                 f'Cannot call value() on a {DimKind.Index.value} Dims')
-
         dims = util.flat_dims(self.base_tups)
         if self.kind == DimKind.Star:
             return dims
-    
+
     def get_tups(self):
         return [self.ind_tup]
 
@@ -1045,9 +1027,30 @@ class DimsConstraint(AST, StaticExpr):
         self.tup = runtime.tups[eintup_name]
 
     def value(self):
+        return self.tup.dims()
+
+    def calc_value(self):
         if not self.tup.has_dims():
             self.tup.gen_dims()
-        return self.tup.dims()
+        return self.value()
+
+class RankConstraint(AST, StaticExpr):
+    def __init__(self, runtime, eintup_name):
+        super().__init__()
+        if eintup_name not in runtime.tups:
+            raise RuntimeError(
+                f'RankConstraint must be initialized with known EinTup. '
+                f'Got {eintup_name}.  Known EinTups:\n'
+                f'{runtime.tups.keys()}')
+        self.tup = runtime.tups[eintup_name]
+
+    def value(self):
+        return self.tup.rank()
+
+    def calc_value(self):
+        if not self.tup.has_rank():
+            self.tup.calc_rank()
+        return self.value()
 
 class RangeConstraint(AST, StaticExpr):
     def __init__(self, lo, hi, tup=None):
@@ -1093,7 +1096,7 @@ class StaticArraySlice(AST, StaticExpr):
 class StaticBinOpBase(AST, StaticExpr):
     """
     A Binary operator for use only in constraints.
-    Accepts IntExpr, Rank, Dims Star types.
+    Accepts IntExpr, RankExpr, Dims Star types.
     If both arguments are scalar, returns a scalar.  Otherwise, returns
     a list, broadcasting one argument if necessary
     """
@@ -1103,7 +1106,7 @@ class StaticBinOpBase(AST, StaticExpr):
         if not (isinstance(arg1, StaticExpr) and
                 isinstance(arg2, StaticExpr)):
             raise RuntimeError(
-                f'{cls_name} only IntExpr, Rank, Dims and StaticBinOpBase '
+                f'{cls_name} only IntExpr, RankExpr, Dims and StaticBinOpBase '
                 'accepted')
         if ((isinstance(arg1, Dims) and arg1.kind == DimKind.Index) or
                 (isinstance(arg2, Dims) and arg2.kind == DimKind.Index)):
@@ -1115,9 +1118,7 @@ class StaticBinOpBase(AST, StaticExpr):
         self.arg2 = arg2
 
     # map the op to broadcasted values
-    def _map_op(self):
-        vals1 = self.arg1.value()
-        vals2 = self.arg2.value()
+    def _map_op(self, vals1, vals2):
         is_list1 = isinstance(vals1, (list, tuple))
         is_list2 = isinstance(vals2, (list, tuple))
         if is_list1 and not is_list2:
@@ -1133,7 +1134,14 @@ class StaticBinOpBase(AST, StaticExpr):
             return self.op(vals1, vals2)
 
     def value(self):
-        return self.reduce(self._map_op())
+        vals1 = self.arg1.value()
+        vals2 = self.arg2.value()
+        return self.reduce(self._map_op(vals1, vals2))
+
+    def calc_value(self):
+        vals1 = self.arg1.calc_value()
+        vals2 = self.arg2.calc_value()
+        return self.reduce(self._map_op(vals1, vals2))
 
 class ArithmeticBinOp(StaticBinOpBase):
     def __init__(self, arg1, arg2, op):
@@ -1195,9 +1203,9 @@ class TensorWrap(AST):
     Wraps a static value and produces a constant tensor
     """
     def __init__(self, runtime, node):
-        if not isinstance(node, (Dims, Rank)):
+        if not isinstance(node, (Dims, RankExpr)):
             raise RuntimeError(
-                f'TensorWrap can only wrap a Dims or Rank instance')
+                f'TensorWrap can only wrap a Dims or RankExpr instance')
         super().__init__(node)
         self.node = node
 
@@ -1207,7 +1215,7 @@ class TensorWrap(AST):
 class TFCall(AST):
     """
     Represents a python function call of a TensorFlow function.
-    Arguments can be TensorArg, Dims, Rank, or python literals.
+    Arguments can be TensorArg, Dims, RankExpr, or python literals.
     Python literals are wrapped with 'L(...)'
     """
     def __init__(self, func_name, call_list):

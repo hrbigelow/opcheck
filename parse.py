@@ -166,7 +166,7 @@ class BCParser(Parser):
             return p.rcons_factor
 
     @_('integer_node',
-       'rank',
+       'rank_cons',
        'LPAREN rcons_expr RPAREN')
     def rcons_factor(self, p):
         if hasattr(p, 'rcons_expr'):
@@ -191,7 +191,7 @@ class BCParser(Parser):
             return p.dcons_factor
 
     @_('integer_node',
-       'rank',
+       'rank_cons',
        'dims_cons',
        'LPAREN dcons_expr RPAREN')
     def dcons_factor(self, p):
@@ -203,6 +203,10 @@ class BCParser(Parser):
     @_('DIMS LPAREN tup_name RPAREN')
     def dims_cons(self, p):
         return DimsConstraint(self.runtime, p.tup_name)
+
+    @_('RANK LPAREN tup_name RPAREN')
+    def rank_cons(self, p):
+        return RankConstraint(self.runtime, p.tup_name)
 
     @_('lval_array ASSIGN rval_expr',
        'lval_array ACCUM rval_expr')
@@ -307,7 +311,7 @@ class BCParser(Parser):
 
     @_('RANK LPAREN tup_name_list RPAREN')
     def rank(self, p):
-        return Rank(self.runtime, p.tup_name_list)
+        return RankExpr(self.runtime, p.tup_name_list)
 
     @_('DIMS LPAREN tup_name_list RPAREN LBRACK tup_name RBRACK')
     def dims_index(self, p):

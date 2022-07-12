@@ -33,6 +33,7 @@ class Runtime(object):
         self.parser.set_runtime(self)
 
     def __repr__(self):
+        name_pad = max(len(name) for name in self.arrays.keys())
         tups = 'Tups: \n' + '\n'.join(repr(tup) for tup in self.tups.values())
 
         sigs = 'Array Signatures: \n' 
@@ -40,8 +41,10 @@ class Runtime(object):
                 self.array_sig.items())
 
         shapes = 'Array Shapes: \n'
-        shapes += '\n'.join(name + ': ' + repr(ary.shape) 
-                for name, ary in self.arrays.items())
+        for name, sig in self.array_sig.items():
+            shapes += f'{name:{name_pad+3}s}:'
+            shapes += ', '.join(repr(elem.dims()) for elem in sig)
+            shapes += '\n'
 
         statements = 'Statements: \n'
         statements += '\n'.join(repr(st) for st in self.statements)

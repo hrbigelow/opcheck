@@ -1,4 +1,5 @@
 input[a] = RANDOM(0, 50, INT)
+pfilt[0,0,a] = input[a]
 output[a//DIMS(b),FLAT(a%DIMS(b))] = input[a]
 
 tf.add(output, L(0))

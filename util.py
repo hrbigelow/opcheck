@@ -5,28 +5,37 @@ import operator
 import math
 
 # Assume inds[...,i] = c[i], compute flat[...] = WRAP(c, digits)
-def flatten(inds, digit_sizes):
-    if inds.shape[-1] != len(digit_sizes):
+def _flatten(inds, dest_dims):
+    if inds.shape[-1] != len(dest_dims):
         raise RuntimeError(
-            f'flatten: last dimension size must equal number of digit_sizes. '
+            f'flatten: last dimension size must equal number of dest_dims. '
             f'Got inds.shape[-1] = {inds.shape[-1]} and '
-            f'digit sizes {digit_sizes}')
-    accu = accumulate(digit_sizes, operator.mul)
-    prod = np.prod(digit_sizes)
+            f'digit sizes {dest_dims}')
+    accu = accumulate(dest_dims, operator.mul)
+    prod = np.prod(dest_dims, dtype=np.int32)
     mult = tf.constant([prod // r for r in accu], dtype=tf_int)
     inds = tf.multiply(inds, mult)
     inds = tf.reduce_sum(inds, -1, keepdims=True)
     return inds
 
-# return True if 0 <= inds[...,i] < last_dim_bounds[i] 
-def range_check(inds, last_dim_bounds):
-    lim = tf.constant(last_dim_bounds, dtype=tf_int)
+# return True if 0 <= inds[...,i] < dest_dims[i] 
+def _range_check(inds, dest_dims):
+    lim = tf.constant(dest_dims, dtype=tf_int)
     below = tf.less(inds, lim)
     above = tf.greater_equal(inds, 0)
     below = tf.reduce_all(below, axis=-1, keepdims=True)
     above = tf.reduce_all(above, axis=-1, keepdims=True)
     in_bounds = tf.logical_and(above, below)
     return in_bounds
+
+# flatten an index tensor's inner dimension, assuming it is
+# used in the destination signature
+def flatten_with_bounds(index_ten, dest_sig):
+    dest_dims = flat_dims(dest_sig)
+    in_bounds = _range_check(index_ten, dest_dims)
+    index_ten = _flatten(index_ten, dest_dims)
+    index_ten = tf.where(in_bounds, index_ten, -1)
+    return index_ten 
 
 def union_ixn(a, b):
     a_extra = [ el for el in a if el not in b ]
@@ -45,18 +54,31 @@ def ndrange(dims):
     ten = tf.stack(ten, axis=len(dims))
     return ten
 
-def flat_dims(tups):
-    # tup.dims() may be empty, but this still works correctly
-    return [ dim for tup in tups for dim in tup.dims()]
+def flat_dims(shapes):
+    # shape.dims() may be empty, but this still works correctly
+    return [ dim for shape in shapes for dim in shape.dims()]
 
-def packed_dims(tups):
-    # tup.nelem() returns 1 for a zero-rank tup.  this
+def packed_dims(shapes):
+    # shape.nelem() returns 1 for a zero-rank shape.  this
     # seems to work correctly.
-    return [ tup.nelem() for tup in tups ]
+    return [ shape.nelem() for shape in shapes ]
+
+# Expect a list of lists of ShapeExpr
+def packed_dims_nested(shapes_nested):
+    return [ np.prod(packed_dims(sl), dtype=np.int32) for sl in shapes_nested ]
 
 def pack(ten, sig):
     check_shape(ten, sig, is_packed=False)
     return tf.reshape(ten, packed_dims(sig))
+
+# nested_sig is a list of lists of ShapeExprs.
+# the individual sigs must appear in the same order as
+# the original shape
+def pack_nested(ten, nested_sig):
+    flat_sig = [ sig for sl in nested_sig for sig in sl ]
+    check_shape(ten, flat_sig, is_packed=False)
+    dims = packed_dims_nested(nested_sig)
+    return tf.reshape(ten, dims)
 
 # used to construct a slightly order-preserving signature for
 # the result of a binary op
@@ -149,7 +171,6 @@ def maybe_broadcast(a, length):
 
 def ceildiv(a, b):
     return math.ceil(a / b)
-
 
 def ceildiv_tensor(a, b):
     return tf.math.ceil(a / b)

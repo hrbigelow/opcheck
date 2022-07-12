@@ -1,0 +1,27 @@
+input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
+dfilt[dpos,ichan,dchan] = RANDOM(-1, 1, FLOAT)
+pfilt[0,0,dchan,ochan] = RANDOM(-1, 1, FLOAT)
+depth[batch,opos,dchan] = dfilt[ipos-DIMS(stride)*opos,ichan,dchan] * input[batch,ipos,ichan]
+out[batch,opos,ochan] = depth[batch,opos,dchan] * pfilt[0,0,dchan,ochan]
+
+tf.nn.separable_conv2d(input, dfilt, pfilt, DIMS(stride), padding=L('VALID'), data_format=L('NHWC'))
+
+out
+
+RANK(batch) = 1
+RANK(ipos) = 2
+RANK(dpos) = RANK(ipos)
+RANK(opos) = RANK(ipos)
+RANK(stride) = RANK(ipos)
+RANK(ichan) = 1
+RANK(dchan) = 1
+RANK(ochan) = 1
+DIMS(batch) IN [1,3]
+DIMS(ipos) IN [15,24]
+DIMS(dpos) IN [2,5]
+DIMS(ichan) IN [3,5]
+DIMS(dchan) IN [3,5]
+DIMS(ochan) IN [3,5]
+DIMS(stride) IN [2,2]
+DIMS(opos) = (DIMS(ipos) - DIMS(dpos) + 1) //^ DIMS(stride)
+
