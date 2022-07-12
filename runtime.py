@@ -138,7 +138,7 @@ class Runtime(object):
                 name = tup_order[i].name
                 w[i] = max(w[i], len(str(shapes[i])))
 
-        print(''.join(f'{tup_names[i]:<{w[i]+3}s}' for i in range(n)), '   Valid')
+        print(''.join(f'{tup_names[i]:<{w[i]+3}s}' for i in range(n)), '  Valid')
         for shapes in all_shapes:
             dmap = dict(zip(tup_names, shapes))
             self.init_all_shapes(dmap)

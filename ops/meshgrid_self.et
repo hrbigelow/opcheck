@@ -1,8 +1,9 @@
 in[a] = RANDOM(0, 10, INT)
+
 out1[a,b,c,d] = in[a]
-out2[a,b,c,d] = in[b]
-out3[a,b,c,d] = in[c]
-out4[a,b,c,d] = in[d]
+out2[a,a,a,a] = in[a]
+out3[a,a,a,a] = in[a]
+out4[a,a,a,a] = in[a]
 
 tf.meshgrid(in, in, in, in, indexing=L('ij'))
 

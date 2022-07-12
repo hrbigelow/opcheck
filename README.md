@@ -87,12 +87,17 @@ test generation, and facilitation of new proposed ops are three possibilities.
 ## Definition of Tuple Einstein notation
 
 Einsum Tuple notation is inspired by Einstein summation notation, and consists
-of tensor assignment statements.  While Einstein summation uses subscripts,
-Einsum Tuple notation uses bracketed indices.  Einsum indices denote tuples of
-Einstein indices in a fixed order.  In the assignment, indices which appear on
-the right hand side but not the left are marginalized out.  Indices which
-appear on the left but not the right cause broadcasting of the right-hand-side
-expression.  For an example of broadcasting behavior, here is the definition of
+of tensor assignment statements.  While Einstein summation uses subscripts like
+$result_{brc} = mat1_{bri} * mat2_{bic}$, Einsum Tuple notation uses bracketed
+indices, like $result[b,r,c] = mat1[b,r,i] * mat2[b,i,c]$.  
+Einsum indices denote tuples of Einstein indices in a fixed
+order.  In the assignment, indices which appear on the right hand side but
+not the left are marginalized out.  Indices which appear on the left but not
+the right cause broadcasting of the right-hand-side expression.  
+
+
+
+For an example of broadcasting behavior, here is the definition of
 `tf.meshgrid` for `N = 4`:
 
 ```python

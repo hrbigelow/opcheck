@@ -233,6 +233,11 @@ class Slice(AST):
     def ind_pos(self):
         raise NotImplementedError
 
+class StaticExpr(object):
+    # An interface supporting the value() call, for use in StaticBinOpBase
+    def value():
+        raise NotImplementedError
+
 class ElemShape(ShapeExpr):
     def __init__(self, shape_list):
         self.shape_list = shape_list
@@ -273,34 +278,40 @@ class SliceExpr(AST, ShapeExpr):
         # trg_basis + [self.rank_sig()]
         raise NotImplementedError
 
-class IntSlice(SliceExpr):
+class IntSlice(SliceExpr, StaticExpr):
     def __init__(self, runtime, val):
         super().__init__(basis=list())
         self.val = val
 
     def dims(self):
-        return [self.val+1]
+        return [self.value()+1]
+
+    def value(self):
+        return self.val
 
     def evaluate(self, trg_basis): 
         ten = tf.constant(self.val, dtype=tf.int32)
         ten = util.to_sig(ten, [], trg_basis + [self.elem_shape])
         return ten
 
-class RankSlice(SliceExpr):
+class RankSlice(SliceExpr, StaticExpr):
     def __init__(self, runtime, rank):
         super().__init__(basis=list())
         self.rank = rank
 
     # Using RankSlice as a shape
     def dims(self):
-        return [self.rank.value()+1]
+        return [self.value()+1]
+
+    def value(self):
+        return self.rank.value()
 
     def evaluate(self, trg_basis):
         ten = tf.constant(self.rank.value(), dtype=tf.int32)
         ten = util.to_sig(ten, [], trg_basis + [self.elem_shape])
         return ten
 
-class DimsSlice(SliceExpr):
+class DimsSlice(SliceExpr, StaticExpr):
     def __init__(self, runtime, tup_names):
         super().__init__(basis=list())
         self.tup_names = tup_names
@@ -345,6 +356,8 @@ class ArraySlice(SliceExpr):
     # Represents an expression ary[a,b,c,:,e,...] with exactly one ':' and
     # the rest of the indices simple eintup names.  
     def __init__(self, runtime, array_name, index_list):
+        # ArraySlice needs this to access the backing tensor
+        self.runtime = runtime
         if array_name not in runtime.array_sig:
             raise RuntimeError(
                 f'Cannot instantiate ArraySlice as first appearance of array '
@@ -394,13 +407,45 @@ class ArraySlice(SliceExpr):
         return f'ArraySlice({self.name})[{ind_list}]'
 
     def dims(self):
-        return self.ind_tup.dims()
+        def mask(use):
+            if use == STAR:
+                return [False] * self.ind_tup.rank()
+            else:
+                return [True] * use.rank()
+
+        mask_items = [ m for use in self.index_list for m in mask(use) ]
+        marg_dims = [ i for i, m in enumerate(mask_items) if m ]
+        ten = self.runtime.arrays[self.name]
+        maxs = tf.reduce_max(ten, axis=marg_dims)
+        return maxs.numpy().tolist()
 
     def evaluate(self, trg_basis):
         src_basis = self.get_basis()
         ten = self.runtime.arrays[self.name]
         ten = util.to_sig(
                 ten, src_basis + [self.elem_shape], 
+                trg_basis + [self.elem_shape])
+        return ten
+
+class FlattenSlice(SliceExpr):
+    def __init__(self, slice_list):
+        super().__init__(basis=list())
+        self.slice_list = slice_list
+
+    def __repr__(self):
+        return f'FlattenSlice({self.slice_list})'
+        
+    def get_basis(self):
+        return merge_bases(self.slice_list)
+
+    def dims(self):
+        ub = np.prod([sh.nelem() for sh in self.slice_list], dtype=np.int32)
+        return [ub]
+
+    def evaluate(self, trg_basis):
+        ten, merged_basis, merged_rank = combine_slices(self.slice_list)
+        ten = util.flatten(ten, util.flat_dims(self.slice_list))
+        ten = util.to_sig(ten, merged_basis + [self.elem_shape], 
                 trg_basis + [self.elem_shape])
         return ten
 
@@ -423,34 +468,74 @@ class SliceBinOp(SliceExpr):
         self.scalar_op = util.scalar_ops[op_string]
         self.op_string = op_string
 
-        cannot_divide_by = (EinTupSlice, ArraySlice)
-        if op_string in ('//', '//^') and isinstance(rhs, cannot_divide_by):
+        if op_string in ('//', '//^', '%') and not isinstance(rhs, StaticExpr):
             raise RuntimeError(
-                f'Cannot divide by EinTupSlice or ArraySlice in a SliceExpr')
+                f'Can only divide by StaticExpr.  Got {type(rhs)}')
 
     def __repr__(self):
         return f'SliceBinOp({self.lhs} {self.op_string} {self.rhs})' 
 
     def dims(self):
+        # Broadcast as necessary
         scalar_types = (IntSlice, RankSlice)
-        if self.op_string == '-' and not isinstance(self.rhs, scalar_types):
-            return self.lhs.dims()
-        else:
-            ldims = self.lhs.dims()
-            rdims = self.rhs.dims()
+        ldims = self.lhs.dims()
+        rdims = self.rhs.dims()
+        lvals = None
+        rvals = None
+        if isinstance(self.lhs, StaticExpr):
+            lvals = self.lhs.value()
+        if isinstance(self.rhs, StaticExpr):
+            rvals = self.rhs.value()
 
-            # Broadcast as necessary
-            if isinstance(self.lhs, scalar_types):
-                ldims = ldims[0:1] * len(rdims)
-            if isinstance(self.rhs, scalar_types):
-                rdims = rdims[0:1] * len(ldims)
+        if isinstance(self.lhs, scalar_types):
+            ldims = ldims[0:1] * len(rdims)
+            if lvals is not None:
+                lvals = [lvals] * len(rdims)
 
-            # This takes the maximum index values for each side,
-            # and computes the result, then converts back to an exclusive
-            # limit.  See notes.txt SliceExpr 
-            z = zip(ldims, rdims)
-            dims = [ self.scalar_op(l-1,r-1) + 1 for l,r in z ]
-            return dims
+        if isinstance(self.rhs, scalar_types):
+            rdims = rdims[0:1] * len(ldims)
+            if rvals is not None:
+                rvals = [rvals] * len(ldims)
+        
+        l_static = isinstance(self.lhs, StaticExpr)
+        r_static = isinstance(self.rhs, StaticExpr)
+
+        def err():
+            raise RuntimeError(
+                    f'SliceBinOp does not support this combination: '
+                    f'{self.lhs} {self.op_string} {self.rhs}')
+
+        if not l_static and r_static:
+            if self.op_string in ('+','-'):
+                return [ self.scalar_op(l,r) for l,r in zip(ldims, rvals) ]
+            elif self.op_string in ('*','//','//^'):
+                return [ self.scalar_op(l-1,r) + 1 for l,r in zip(ldims, rvals) ]
+            elif self.op_string == '%':
+                return [ min(l,r) for l,r in zip(ldims, rvals) ]
+            else:
+                err()
+        elif not l_static and not r_static:
+            if self.op_string == '+':
+                return [ self.scalar_op(l,r)-1 for l,r in zip(ldims, rdims) ]
+            elif self.op_string == '-':
+                return ldims
+            else:
+                err()
+        elif l_static and not r_static:
+            if self.op_string == '+':
+                return [ self.scalar_op(l,r) for l,r in zip(lvals, rdims) ]
+            elif self.op_string == '-':
+                return lvals
+            elif self.op_string == '*':
+                return [ self.scalar_op(l,r-1)+1 for l,r in zip(lvals, rdims) ]
+            else:
+                err()
+        else: # l_static and r_static 
+            if self.op_string == '-':
+                return [ self.scalar_op(l,r) for l,r in zip(lvals, rvals) ]
+            else:
+                err()
+
 
     def get_basis(self):
         lbasis = self.lhs.get_basis()
@@ -467,26 +552,6 @@ class SliceBinOp(SliceExpr):
         rten = tf.broadcast_to(rten, util.flat_dims(src_sig))
         ten = self.op(lten, rten)
         ten = util.to_sig(ten, src_sig, trg_sig)
-        return ten
-
-class FlattenSlices(SliceExpr):
-    def __init__(self, slice_list):
-        super().__init__(basis=list())
-        self.slice_list = slice_list
-        self.elem_shape = ElemShape([FlatShape(slice_list)]) 
-        
-    def get_basis(self):
-        return merge_bases(self.slice_list)
-
-    def dims(self):
-        merged_basis = self.get_basis()
-        return [ dim for sh in merged_basis for dim in sh.dims() ]
-
-    def evaluate(self, trg_basis):
-        ten, merged_basis, merged_rank = combine_slices(self.slice_list)
-        ten = util.flatten(ten, util.flat_dims(merged_basis))
-        ten = util.to_sig(ten, merged_basis + [self.elem_shape], 
-                trg_basis + [self.elem_shape])
         return ten
 
 class Array(AST):
@@ -604,8 +669,15 @@ class LValueArray(Array):
         idx_ten = util.flatten(idx_ten, util.flat_dims(slice_sig))
         idx_ten = tf.where(in_bounds, idx_ten, -1)
 
-        shape_ten = tf.constant(util.packed_dims(target_out_grouped))
+        # shape_ten = tf.constant(util.packed_dims(target_out_grouped), dtype=tf.int64)
+        shape_ten = tf.constant(util.packed_dims(target_out_grouped),
+                dtype=tf.int32)
         with tf.device('/GPU:0'):
+            # see https://github.com/tensorflow/tensorflow/issues/56567
+            # will execute on CPU (which borks on out of bounds)
+            # if upd_ten is int32
+            if upd_ten.dtype == tf.int32:
+                upd_ten = tf.cast(upd_ten, tf.int64)
             out_ten = tf.scatter_nd(idx_ten, upd_ten, shape_ten)
 
         # now, want to un-group the grouped dimensions
@@ -734,7 +806,7 @@ class RandomCall(AST):
         self.runtime = runtime
         self.dtype_string = dtype_string
         if dtype_string == 'INT':
-            self.dtype = tf.int32
+            self.dtype = tf.int64
         elif dtype_string == 'FLOAT':
             self.dtype = tf.float64
         else:
@@ -842,11 +914,6 @@ class Assign(AST):
             self.lhs.add(self.rhs)
         else:
             self.lhs.assign(self.rhs)
-
-class StaticExpr(object):
-    # An interface supporting the value() call, for use in StaticBinOpBase
-    def value():
-        raise NotImplementedError
 
 class ScalarExpr(AST):
     def __init__(self, *children):

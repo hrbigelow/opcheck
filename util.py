@@ -172,6 +172,3 @@ scalar_ops = {
         '%': operator.mod
         }
 
-
-
-

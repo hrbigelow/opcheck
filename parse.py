@@ -478,7 +478,7 @@ class BCParser(Parser):
     def flatten_slice(self, p):
         slice_list = [ self.maybe_convert_eintup(item) 
                 for item in p.top_index_list ]
-        return FlattenSlices(slice_list)
+        return FlattenSlice(slice_list)
 
     @_('IDENT')
     def tup_name(self, p):

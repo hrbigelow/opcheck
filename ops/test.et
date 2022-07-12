@@ -1,0 +1,13 @@
+input[a] = RANDOM(0, 50, INT)
+output[a//DIMS(b),FLAT(a%DIMS(b))] = input[a]
+
+tf.add(output, L(0))
+
+output
+
+RANK(a) = 2
+RANK(b) = 2
+DIMS(a) IN [6,6]
+DIMS(b) IN [2,2]
+
+

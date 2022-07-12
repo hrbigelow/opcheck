@@ -76,6 +76,7 @@ various combinations) as:
 (a.dims() - 1) * Int + 1
 (a.dims() - 1) //^ Int + 1
 
+min(a.dims(), rhs)
 
 
 An ordinary Array is also a hyperrectangular set, whose shape is defined by the
@@ -218,6 +219,45 @@ When a tensor has a dimension with zero size, I see this error:
 
 2022-07-05 14:35:35.070113: F ./tensorflow/core/util/gpu_launch_config.h:129] Check failed: work_element_count > 0 (0 vs. 0)
 
+
+
+SliceBinOp dims calculations
+
+SliceBinOp accepts ops +,-,*,//,//^,%.  It accepts any SliceExpr's as lhs and
+rhs.  However, there are some restrictions.  Here is the full table of possible
+combinations.  The possible SliceExprs, with some annotation are:
+
+IntSlice     Scalar, Static
+RankSlice    Scalar, Static
+DimsSlice    Static
+EinTupSlice  
+ArraySlice
+FlattenSlice
+SliceBinOp
+
+IntSlice and RankSlice are scalar in that dims() always returns a length-1
+array.  IntSlice, RankSlice and DimsSlice are also StaticExprs, and so they
+support the value() function as well.  In these cases, dims() always returns
+value()+1, because dims() is by definition the exclusive upper bound of any
+value which the Slice can produce.
+
+
+
+1. Only StaticExprs are allowed as the rhs of operands '//', '//^', and '%'
+(perhaps also '*')
+2. lhs {+,-} Static:      lhs.dims() op rhs.value()
+4. lhs {*,//,//^} Static: ((lhs.dims() - 1) op rhs.value()) + 1
+5. lhs % Static:          min(lhs.dims(), rhs.value()) 
+6. lhs + rhs:             lhs.dims() + rhs.dims() - 1
+7. lhs - rhs:             lhs.dims()
+8. Static + rhs:          rhs.dims() + lhs.value()
+9. Static - rhs:          lhs.value()
+10.Static * rhs:          (lhs.value() * (rhs.dims() - 1)) + 1
+9b.Static - Static:       lhs.value() - rhs.value()
+
+
+
+lhs   op   rhs
 
 
 
