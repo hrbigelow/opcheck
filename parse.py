@@ -200,13 +200,13 @@ class BCParser(Parser):
         else:
             return p[0] 
 
-    @_('DIMS LPAREN tup_name RPAREN')
+    @_('DIMS LPAREN tup RPAREN')
     def dims_cons(self, p):
-        return DimsConstraint(self.runtime, p.tup_name)
+        return DimsConstraint(p.tup)
 
-    @_('RANK LPAREN tup_name RPAREN')
+    @_('RANK LPAREN tup RPAREN')
     def rank_cons(self, p):
-        return RankConstraint(self.runtime, p.tup_name)
+        return RankConstraint(p.tup)
 
     @_('lval_array ASSIGN rval_expr',
        'lval_array ACCUM rval_expr')
@@ -263,6 +263,10 @@ class BCParser(Parser):
     def number(self, p):
         return p[0]
 
+    @_('tup_name')
+    def tup(self, p):
+        return self.runtime.maybe_add_tup(p.tup_name)
+
     @_('tf_call_arg',
        'tf_call_list COMMA tf_call_arg')
     def tf_call_list(self, p):
@@ -309,21 +313,21 @@ class BCParser(Parser):
         elif isinstance(p.number, float):
             return FloatExpr(self.runtime, p.number)
 
-    @_('RANK LPAREN tup_name_list RPAREN')
+    @_('RANK LPAREN tup_exprs RPAREN')
     def rank(self, p):
-        return RankExpr(self.runtime, p.tup_name_list)
+        return RankExpr(self.runtime, p.tup_exprs)
 
-    @_('DIMS LPAREN tup_name_list RPAREN LBRACK tup_name RBRACK')
+    @_('DIMS LPAREN tup_exprs RPAREN LBRACK tup RBRACK')
     def dims_index(self, p):
-        return Dims(self.runtime, DimKind.Index, p.tup_name_list, p.tup_name)
+        return Dims(self.runtime, DimKind.Index, p.tup_exprs, p.tup)
 
-    @_('DIMS LPAREN tup_name_list RPAREN')
+    @_('DIMS LPAREN tup_exprs RPAREN')
     def dims_slice(self, p):
-        return DimsSlice(self.runtime, p.tup_name_list)
+        return DimsSlice(p.tup_exprs)
 
-    @_('DIMS LPAREN tup_name_list RPAREN')
+    @_('DIMS LPAREN tup_exprs RPAREN')
     def dims_star(self, p):
-        return Dims(self.runtime, DimKind.Star, p.tup_name_list) 
+        return Dims(self.runtime, DimKind.Star, p.tup_exprs) 
 
     @_('TENSOR LPAREN static_node RPAREN')
     def tensor_wrap(self, p):
@@ -333,14 +337,14 @@ class BCParser(Parser):
     def static_node(self, p):
         return p[0]
 
-    @_('tup_name',
-       'tup_name_list COMMA tup_name')
-    def tup_name_list(self, p):
+    @_('tup_expr',
+       'tup_exprs COMMA tup_expr')
+    def tup_exprs(self, p):
         if hasattr(p, 'COMMA'):
-            p.tup_name_list.append(p.tup_name)
-            return p.tup_name_list
+            p.tup_exprs.append(p.tup_expr)
+            return p.tup_exprs
         else:
-            return [p.tup_name]
+            return [p.tup_expr]
 
     @_('IDENT LBRACK top_index_list RBRACK')
     def lval_array(self, p):
@@ -391,9 +395,9 @@ class BCParser(Parser):
     def rand_call(self, p):
         return RandomCall(self.runtime, p.rand_arg0, p.rand_arg1, p.DTYPE)
 
-    @_('RANGE LBRACK tup_name COMMA tup_name RBRACK')
+    @_('RANGE LBRACK tup COMMA tup RBRACK')
     def range_array(self, p):
-        return RangeExpr(self.runtime, p.tup_name0, p.tup_name1)
+        return RangeExpr(self.runtime, p.tup0, p.tup1)
 
     @_('top_index_expr', 
        'top_index_list COMMA top_index_expr')
@@ -429,7 +433,7 @@ class BCParser(Parser):
 
     def maybe_convert_eintup(self, item):
         if isinstance(item, EinTup):
-            return EinTupSlice(self.runtime, item.name)
+            return EinTupSlice(item)
         else:
             return item
 
@@ -453,7 +457,7 @@ class BCParser(Parser):
         else:
             return p.tup_factor
 
-    @_('tup_name',
+    @_('tup',
        'unsigned_int',
        'dims_slice',
        'rank',
@@ -471,8 +475,8 @@ class BCParser(Parser):
             return RankSlice(p.rank)
         elif hasattr(p, 'array_slice'):
             return p.array_slice
-        elif hasattr(p, 'tup_name'):
-            return self.runtime.maybe_add_tup(p.tup_name)
+        elif hasattr(p, 'tup'):
+            return p.tup
         elif hasattr(p, 'flatten_slice'):
             return p.flatten_slice
         else:

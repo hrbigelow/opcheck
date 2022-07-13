@@ -282,19 +282,18 @@ class RankSlice(SliceExpr, StaticExpr):
         return ten
 
 class DimsSlice(SliceExpr, StaticExpr):
-    def __init__(self, runtime, tup_names):
+    def __init__(self, tup_exprs):
         super().__init__(basis=list())
-        self.tup_names = tup_names
-        self.base_tups = [ runtime.maybe_add_tup(n) for n in tup_names ]
+        self.shapes = tup_exprs
 
     def __repr__(self):
-        return f'DimsSlice({self.tup_names})'
+        return f'DimsSlice({self.shapes})'
 
     def dims(self):
         return [ v+1 for v in self.value() ]
 
     def value(self):
-        return util.flat_dims(self.base_tups)
+        return util.flat_dims(self.shapes)
 
     def evaluate(self, trg_basis):
         src_basis = self.get_basis()
@@ -305,8 +304,8 @@ class DimsSlice(SliceExpr, StaticExpr):
         return ten
 
 class EinTupSlice(SliceExpr):
-    def __init__(self, runtime, eintup_name):
-        self.tup = runtime.maybe_add_tup(eintup_name)
+    def __init__(self, eintup):
+        self.tup = eintup 
         super().__init__([self.tup])
 
     def dims(self):
@@ -618,11 +617,11 @@ class LValueArray(Array):
             raise RuntimeError(f'batched scatter unsupported')
 
         upd_ten = rhs.evaluate(slice_ + elem)
-        upd_ten = util.pack_nested(upd_ten, [slice_, elem]) # 2D Tensor
-        idx_ten = util.pack_nested(idx_ten, [slice_, [idx_rank]]) # 2D Tensor
-        out = dest + elem
+        upd_ten = util.pack_nested(upd_ten, [slice_, elem])
+        idx_ten = util.pack_nested(idx_ten, [slice_, [idx_rank]])
         out_dims = util.packed_dims_nested([dest, elem])
         shape_ten = tf.constant(out_dims, util.tf_int)
+        out = dest + elem
         with tf.device('/GPU:0'):
             # see https://github.com/tensorflow/tensorflow/issues/56567
             # will execute on CPU (which borks on out of bounds)
@@ -940,45 +939,24 @@ class DimKind(enum.Enum):
 
 class Dims(AST, StaticExpr):
     """
-    Dims can exist in two sub-types.  
-    Expression             Type       Usage
-    Dims(tupname)[ind_tup] Index      statement
-    Dims(tupname)          Star       constraint or tup expression
+    Dims can be indexed or not.  Indexed Dims 
     """
-    def __init__(self, runtime, kind, tup_name_list, index_expr=None):
+    def __init__(self, runtime, kind, shape_list, ind_tup=None):
         super().__init__()
         self.runtime = runtime
-        self.tup_names = tup_name_list
+        self.shapes = shape_list
         self.kind = kind
-        self.base_tups = []
-        self.ind_tup = None
-
-        if self.kind == DimKind.Index:
-            self.ind_tup_name = index_expr
+        self.ind_tup = ind_tup 
 
     def __repr__(self):
-        return f'{self.kind} Dims({self.base_tups})[{self.ind_tup}]'
-
-    def post_parse_init(self):
-        for name in self.tup_names:
-            if name not in self.runtime.tups:
-                raise RuntimeError(
-                    f'Dims argument \'{name}\' not a known EinTup.  Only EinTups'
-                    f'instantiated in the program may be used as constraints. '
-                    f'Known EinTups are: {[*self.runtime.tups.keys()]}')
-            else:
-                self.base_tups.append(self.runtime.tup(name))
-
-        if self.kind == DimKind.Index:
-            if self.ind_tup_name not in self.runtime.tups:
-                raise RuntimeError(
-                    f'Dims Index name \'{self.ind_tup_name}\' not known Index')
-            else:
-                self.ind_tup = self.runtime.tup(self.ind_tup_name)
+        if self.kind == DimKind.Star:
+            return f'Dims({self.shapes})'
+        else:
+            return f'Dims({self.shapes})[{self.ind_tup}]'
 
     def evaluate(self, trg_sig):
         if self.kind == DimKind.Star:
-            if len(self.base_tups) != 1:
+            if len(self.shapes) != 1:
                 raise RuntimeError(
                     f'Only single-tup Star Dims can call evaluate()')
             src_sig = self.get_tups()
@@ -991,25 +969,25 @@ class Dims(AST, StaticExpr):
                 f'Dims Index index \'{self.ind_tup}\' must be '
                 f'rank 1, got \'{self.ind_tup.rank()}\'')
         if self.ind_tup.dims()[0] != self.rank():
-            tup_list = [tup.name for tup in self.base_tups]
+            shape_list = [sh.name for sh in self.shapes]
             raise RuntimeError(
                 f'Index Dims index {self.ind_tup} first value '
                 f'({self.ind_tup.dims()[0]}) must be equal to rank of '
-                f'base tup list {tup_list} ({self.rank()})')
+                f'shapes list {shape_list} ({self.rank()})')
 
         src_sig = self.get_tups()
-        ten = tf.constant(util.flat_dims(self.base_tups), dtype=util.tf_int)
+        ten = tf.constant(util.flat_dims(self.shapes), dtype=util.tf_int)
         ten = util.to_sig(ten, src_sig, trg_sig)
         return ten
 
     def rank(self):
-        return sum(tup.rank() for tup in self.base_tups)
+        return sum(sh.rank() for sh in self.shapes)
 
     def value(self):
         if self.kind == DimKind.Index:
             raise RuntimeError(
                 f'Cannot call value() on a {DimKind.Index.value} Dims')
-        dims = util.flat_dims(self.base_tups)
+        dims = util.flat_dims(self.shapes)
         if self.kind == DimKind.Star:
             return dims
 
@@ -1017,14 +995,9 @@ class Dims(AST, StaticExpr):
         return [self.ind_tup]
 
 class DimsConstraint(AST, StaticExpr):
-    def __init__(self, runtime, eintup_name):
+    def __init__(self, eintup):
         super().__init__()
-        if eintup_name not in runtime.tups:
-            raise RuntimeError(
-                f'DimsConstraint must be initialized with known EinTup. '
-                f'Got {eintup_name}.  Known EinTups:\n'
-                f'{runtime.tups.keys()}')
-        self.tup = runtime.tups[eintup_name]
+        self.tup = eintup 
 
     def value(self):
         return self.tup.dims()
@@ -1035,14 +1008,9 @@ class DimsConstraint(AST, StaticExpr):
         return self.value()
 
 class RankConstraint(AST, StaticExpr):
-    def __init__(self, runtime, eintup_name):
+    def __init__(self, eintup):
         super().__init__()
-        if eintup_name not in runtime.tups:
-            raise RuntimeError(
-                f'RankConstraint must be initialized with known EinTup. '
-                f'Got {eintup_name}.  Known EinTups:\n'
-                f'{runtime.tups.keys()}')
-        self.tup = runtime.tups[eintup_name]
+        self.tup = eintup 
 
     def value(self):
         return self.tup.rank()

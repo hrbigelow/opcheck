@@ -1,14 +1,18 @@
-input[a] = RANDOM(0, 50, INT)
-pfilt[0,0,a] = input[a]
-output[a//DIMS(b),FLAT(a%DIMS(b))] = input[a]
+indices[slice,coord] = RANDOM(0, DIMS(dest)[coord], INT)
+updates[batch,slice,elem] = RANDOM(0, 10, FLOAT)
+output[batch,dest,elem] = 0.0 
+output[batch,indices[slice,:],elem] = updates[batch,slice,elem]
 
-tf.add(output, L(0))
+tf.scatter_nd(indices=indices, updates=updates, shape=TENSOR(DIMS(batch,dest,elem)))
 
 output
 
-RANK(a) = 2
-RANK(b) = 2
-DIMS(a) IN [6,6]
-DIMS(b) IN [2,2]
-
-
+RANK(batch) = 1
+RANK(slice) IN [0,4]
+RANK(elem) IN [1,4]
+RANK(dest) IN [1,3]
+DIMS(elem) IN [1,15]
+DIMS(dest) IN [1,15]
+RANK(coord) = 1
+DIMS(coord) = RANK(dest)
+DIMS(slice) IN [0,15]
