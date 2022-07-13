@@ -1,6 +1,6 @@
 input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
 dfilt[dpos,ichan,cmul] = RANDOM(-1, 1, FLOAT)
-pfilt[0,0,ichan,ochan] = RANDOM(-1, 1, FLOAT)
+pfilt[0,0,ichan*DIMS(cmul)+cmul,ochan] = RANDOM(-1, 1, FLOAT)
 depth[batch,opos,ichan,cmul] = dfilt[ipos-DIMS(stride)*opos,ichan,cmul] * input[batch,ipos,ichan]
 out[batch,opos,ochan] = depth[batch,opos,ichan,cmul] * pfilt[0,0,ichan*DIMS(cmul)+cmul,ochan]
 
@@ -17,11 +17,12 @@ RANK(ichan) = 1
 RANK(ochan) = 1
 RANK(cmul) = 1
 DIMS(batch) IN [1,3]
-DIMS(ipos) IN [15,24]
+DIMS(ipos) IN [15,100]
 DIMS(dpos) IN [2,5]
-DIMS(ichan) IN [3,5]
+DIMS(ichan) = DIMS(cmul) * 3
 DIMS(cmul) IN [3,5]
 DIMS(ochan) IN [3,5]
-DIMS(stride) IN [2,2]
+DIMS(stride) IN [3,3]
 DIMS(opos) = (DIMS(ipos) - DIMS(dpos) + 1) //^ DIMS(stride)
+
 
