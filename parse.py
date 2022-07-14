@@ -119,30 +119,26 @@ class BCParser(Parser):
     def dims_constraint(self, p):
         return p[0]
 
-    @_('RANK LPAREN tup_name RPAREN IN closed_interval')
+    @_('RANK LPAREN tup RPAREN IN closed_interval')
     def rank_range(self, p):
-        tup = self.runtime.tup(p.tup_name)
-        tup.add_rank_expr(p.closed_interval)
+        p.tup.add_rank_expr(p.closed_interval)
         return None
 
-    @_('RANK LPAREN tup_name RPAREN ASSIGN rcons_expr')
+    @_('RANK LPAREN tup RPAREN ASSIGN rcons_expr')
     def rank_equals(self, p):
-        tup = self.runtime.tup(p.tup_name)
-        tup.add_rank_expr(p.rcons_expr)
+        p.tup.add_rank_expr(p.rcons_expr)
         return None
 
-    @_('DIMS LPAREN tup_name RPAREN IN closed_interval')
+    @_('DIMS LPAREN tup RPAREN IN closed_interval')
     def dims_range(self, p):
         lo, hi = p.closed_interval
-        tup = self.runtime.tup(p.tup_name)
-        rc = RangeConstraint(lo, hi, tup)
+        rc = RangeConstraint(lo, hi, p.tup)
         rc.tup.add_gen_expr(rc)
         return None
 
-    @_('DIMS LPAREN tup_name RPAREN ASSIGN dcons_expr')
+    @_('DIMS LPAREN tup RPAREN ASSIGN dcons_expr')
     def dims_equals(self, p):
-        tup = self.runtime.tup(p.tup_name)
-        tup.add_gen_expr(p.dcons_expr)
+        p.tup.add_gen_expr(p.dcons_expr)
         return None
 
     @_('LBRACK unsigned_int COMMA unsigned_int RBRACK')
@@ -150,18 +146,18 @@ class BCParser(Parser):
         return p.unsigned_int0, p.unsigned_int1
 
     @_('rcons_term',
-       'rcons_expr expr_op rcons_term')
+       'rcons_expr add_sub_op rcons_term')
     def rcons_expr(self, p):
         if hasattr(p, 'rcons_expr'):
-            return ArithmeticBinOp(p.rcons_expr, p.rcons_term, p.expr_op)
+            return ArithmeticBinOp(p.rcons_expr, p.rcons_term, p.add_sub_op)
         else:
             return p.rcons_term
     
     @_('rcons_factor',
-       'rcons_term int_term_op rcons_factor')
+       'rcons_term int_mul_div_mod_op rcons_factor')
     def rcons_term(self, p):
-        if hasattr(p, 'int_term_op'):
-            return ArithmeticBinOp(p.rcons_term, p.rcons_factor, p.int_term_op)
+        if hasattr(p, 'int_mul_div_mod_op'):
+            return ArithmeticBinOp(p.rcons_term, p.rcons_factor, p.int_mul_div_mod_op)
         else:
             return p.rcons_factor
 
@@ -175,18 +171,18 @@ class BCParser(Parser):
             return p[0]
 
     @_('dcons_term',
-       'dcons_expr expr_op dcons_term')
+       'dcons_expr add_sub_op dcons_term')
     def dcons_expr(self, p):
         if hasattr(p, 'dcons_expr'):
-            return ArithmeticBinOp(p.dcons_expr, p.dcons_term, p.expr_op)
+            return ArithmeticBinOp(p.dcons_expr, p.dcons_term, p.add_sub_op)
         else:
             return p.dcons_term
     
     @_('dcons_factor',
-       'dcons_term int_term_op dcons_factor')
+       'dcons_term int_mul_div_mod_op dcons_factor')
     def dcons_term(self, p):
-        if hasattr(p, 'int_term_op'):
-            return ArithmeticBinOp(p.dcons_term, p.dcons_factor, p.int_term_op)
+        if hasattr(p, 'int_mul_div_mod_op'):
+            return ArithmeticBinOp(p.dcons_term, p.dcons_factor, p.int_mul_div_mod_op)
         else:
             return p.dcons_factor
 
@@ -289,11 +285,11 @@ class BCParser(Parser):
         return p[0]
 
     @_('PLUS', 'MINUS')
-    def expr_op(self, p):
+    def add_sub_op(self, p):
         return p[0]
 
     @_('TIMES', 'TRUNCDIV', 'CEILDIV', 'MODULO')
-    def int_term_op(self, p):
+    def int_mul_div_mod_op(self, p):
         return p[0]
 
     @_('TIMES', 'TRUNCDIV', 'CEILDIV', 'TRUEDIV')
@@ -313,21 +309,21 @@ class BCParser(Parser):
         elif isinstance(p.number, float):
             return FloatExpr(self.runtime, p.number)
 
-    @_('RANK LPAREN tup_exprs RPAREN')
+    @_('RANK LPAREN index_exprs RPAREN')
     def rank(self, p):
-        return RankExpr(self.runtime, p.tup_exprs)
+        return RankExpr(self.runtime, p.index_exprs)
 
-    @_('DIMS LPAREN tup_exprs RPAREN LBRACK tup RBRACK')
+    @_('DIMS LPAREN index_exprs RPAREN LBRACK tup RBRACK')
     def dims_index(self, p):
-        return Dims(self.runtime, DimKind.Index, p.tup_exprs, p.tup)
+        return Dims(self.runtime, DimKind.Index, p.index_exprs, p.tup)
 
-    @_('DIMS LPAREN tup_exprs RPAREN')
+    @_('DIMS LPAREN index_exprs RPAREN')
     def dims_slice(self, p):
-        return DimsSlice(p.tup_exprs)
+        return DimsSlice(p.index_exprs)
 
-    @_('DIMS LPAREN tup_exprs RPAREN')
+    @_('DIMS LPAREN index_exprs RPAREN')
     def dims_star(self, p):
-        return Dims(self.runtime, DimKind.Star, p.tup_exprs) 
+        return Dims(self.runtime, DimKind.Star, p.index_exprs) 
 
     @_('TENSOR LPAREN static_node RPAREN')
     def tensor_wrap(self, p):
@@ -337,18 +333,18 @@ class BCParser(Parser):
     def static_node(self, p):
         return p[0]
 
-    @_('tup_expr',
-       'tup_exprs COMMA tup_expr')
-    def tup_exprs(self, p):
+    @_('index_expr',
+       'index_exprs COMMA index_expr')
+    def index_exprs(self, p):
         if hasattr(p, 'COMMA'):
-            p.tup_exprs.append(p.tup_expr)
-            return p.tup_exprs
+            p.index_exprs.append(p.index_expr)
+            return p.index_exprs
         else:
-            return [p.tup_expr]
+            return [p.index_expr]
 
-    @_('IDENT LBRACK top_index_list RBRACK')
+    @_('IDENT LBRACK index_exprs RBRACK')
     def lval_array(self, p):
-        return LValueArray(self.runtime, p.IDENT, p.top_index_list)
+        return LValueArray(self.runtime, p.IDENT, p.index_exprs)
 
     @_('rval_array', 
        'rand_call',
@@ -359,10 +355,10 @@ class BCParser(Parser):
         return p[0]
 
     @_('rval_term',
-       'rval_expr expr_op rval_term')
+       'rval_expr add_sub_op rval_term')
     def rval_expr(self, p):
-        if hasattr(p, 'expr_op'):
-            return ArrayBinOp(self.runtime, p.rval_expr, p.rval_term, p.expr_op)
+        if hasattr(p, 'add_sub_op'):
+            return ArrayBinOp(self.runtime, p.rval_expr, p.rval_term, p.add_sub_op)
         else:
             return p.rval_term
 
@@ -383,13 +379,13 @@ class BCParser(Parser):
         else:
             return p.rval_unit
 
-    @_('array_name LBRACK sub_index_list RBRACK')
+    @_('array_name LBRACK sliced_index_exprs RBRACK')
     def array_slice(self, p):
-        return ArraySlice(self.runtime, p.array_name, p.sub_index_list)
+        return ArraySlice(self.runtime, p.array_name, p.sliced_index_exprs)
 
-    @_('array_name LBRACK top_index_list RBRACK')
+    @_('array_name LBRACK index_exprs RBRACK')
     def rval_array(self, p):
-        return RValueArray(self.runtime, p.array_name, p.top_index_list)
+        return RValueArray(self.runtime, p.array_name, p.index_exprs)
 
     @_('RANDOM LPAREN rand_arg COMMA rand_arg COMMA DTYPE RPAREN')
     def rand_call(self, p):
@@ -399,33 +395,19 @@ class BCParser(Parser):
     def range_array(self, p):
         return RangeExpr(self.runtime, p.tup0, p.tup1)
 
-    @_('top_index_expr', 
-       'top_index_list COMMA top_index_expr')
-    def top_index_list(self, p):
-        if hasattr(p, 'COMMA'):
-            return p.top_index_list + [p.top_index_expr]
-        else:
-            return [p.top_index_expr]
-
-    @_('tup_expr')
-    def top_index_expr(self, p):
-        return p[0]
-
     @_('number_node', 'rank', 'dims_index', 'rval_array')
     def rand_arg(self, p):
         return p[0]
 
-    @_('sub_index_expr',
-       'sub_index_list COMMA sub_index_expr')
-    def sub_index_list(self, p):
+    @_('COLON',
+       'sliced_index_exprs COMMA index_expr',
+       'index_exprs COMMA COLON')
+    def sliced_index_exprs(self, p):
         if hasattr(p, 'COMMA'):
-            return p.sub_index_list + [p.sub_index_expr]
+            p[0].append(p[2])
+            return p[0]
         else:
-            return [p.sub_index_expr]
-
-    @_('COLON', 'tup_name')
-    def sub_index_expr(self, p):
-        return p[0]
+            return [p[0]]
 
     @_('IDENT')
     def array_name(self, p):
@@ -437,25 +419,25 @@ class BCParser(Parser):
         else:
             return item
 
-    @_('tup_term',
-       'tup_expr expr_op tup_term')
-    def tup_expr(self, p):
-        if hasattr(p, 'expr_op'):
-            tup_expr = self.maybe_convert_eintup(p.tup_expr)
-            tup_term = self.maybe_convert_eintup(p.tup_term)
-            return SliceBinOp(self.runtime, tup_expr, tup_term, p.expr_op)
+    @_('index_term',
+       'index_expr add_sub_op index_term')
+    def index_expr(self, p):
+        if hasattr(p, 'add_sub_op'):
+            index_expr = self.maybe_convert_eintup(p.index_expr)
+            index_term = self.maybe_convert_eintup(p.index_term)
+            return SliceBinOp(self.runtime, index_expr, index_term, p.add_sub_op)
         else:
-            return p.tup_term
+            return p.index_term
 
-    @_('tup_factor',
-       'tup_term int_term_op tup_factor')
-    def tup_term(self, p):
-        if hasattr(p, 'int_term_op'):
-            tup_term = self.maybe_convert_eintup(p.tup_term)
-            tup_factor = self.maybe_convert_eintup(p.tup_factor)
-            return SliceBinOp(self.runtime, tup_term, tup_factor, p.int_term_op)
+    @_('index_factor',
+       'index_term int_mul_div_mod_op index_factor')
+    def index_term(self, p):
+        if hasattr(p, 'int_mul_div_mod_op'):
+            index_term = self.maybe_convert_eintup(p.index_term)
+            index_factor = self.maybe_convert_eintup(p.index_factor)
+            return SliceBinOp(self.runtime, index_term, index_factor, p.int_mul_div_mod_op)
         else:
-            return p.tup_factor
+            return p.index_factor
 
     @_('tup',
        'unsigned_int',
@@ -463,10 +445,10 @@ class BCParser(Parser):
        'rank',
        'array_slice',
        'flatten_slice',
-       'LPAREN tup_expr RPAREN')
-    def tup_factor(self, p):
+       'LPAREN index_expr RPAREN')
+    def index_factor(self, p):
         if hasattr(p, 'LPAREN'):
-            return p.tup_expr
+            return p.index_expr
         elif hasattr(p, 'unsigned_int'):
             return IntSlice(self.runtime, p.unsigned_int)
         elif hasattr(p, 'dims_slice'):
@@ -480,12 +462,12 @@ class BCParser(Parser):
         elif hasattr(p, 'flatten_slice'):
             return p.flatten_slice
         else:
-            raise RuntimeError(f'Parsing Error for rule tup_factor')
+            raise RuntimeError(f'Parsing Error for rule index_factor')
 
-    @_('FLAT LPAREN top_index_list RPAREN')
+    @_('FLAT LPAREN index_exprs RPAREN')
     def flatten_slice(self, p):
         slice_list = [ self.maybe_convert_eintup(item) 
-                for item in p.top_index_list ]
+                for item in p.index_exprs ]
         return FlattenSlice(slice_list)
 
     @_('IDENT')

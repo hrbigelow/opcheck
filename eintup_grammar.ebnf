@@ -1,0 +1,51 @@
+scalar : array_elem 
+       | number
+       | RANK ( index_expr_list )
+
+assign : array_elem "=" scalar_expr
+
+array_elem : array_name [ index_expr_list ]
+array_slice: array_name [ sliced_index_expr_list ]
+
+index  : integer
+       | eintup
+       | DIMS ( index_expr_list )
+       | RANK ( index_expr_list )
+       | FLAT ( index_expr_list )
+       | array_slice
+       | index_expr
+
+(* This ensures there will be exactly one ':' in the list *)
+sliced_index_expr_list : ":"
+                       | index_expr_list , ":"
+                       | sliced_index_expr_list , index_expr
+
+index_expr_list : index_expr
+                | index_expr_list , index_expr
+
+(* 
+
+Arithmetic Combinator to generate scalar_expr from scalar, and index_expr
+from index.  Substitute in 'scalar' or 'index' for 'unit' below.
+
+
+Taken from https://sly.readthedocs.io/en/latest/sly.html#writing-a-parser *)
+
+expr : term
+     | expr { +,- } term
+
+term : factor
+     | term { *, //, //^, % } factor
+
+factor : unit
+       | ( expr )
+
+(*
+Notes:
+
+'//^' is truncating upwards (a //^ b == ceiling(a / b))
+
+
+*)
+       
+

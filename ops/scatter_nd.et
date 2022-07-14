@@ -7,11 +7,11 @@ tf.scatter_nd(indices=indices, updates=updates, shape=TENSOR(DIMS(dest,elem)))
 
 output
 
-RANK(slice) IN [1,4]
+RANK(slice) IN [1,3]
 RANK(elem) IN [0,4]
-RANK(dest) IN [1,3]
-DIMS(elem) IN [1,15]
-DIMS(dest) IN [1,15]
+RANK(dest) IN [2,2]
+DIMS(elem) IN [1,10]
+DIMS(dest) IN [1,10]
 RANK(coord) = 1
 DIMS(coord) = RANK(dest)
 DIMS(slice) IN [0,15]

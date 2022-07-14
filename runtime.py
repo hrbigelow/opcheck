@@ -91,9 +91,6 @@ class Runtime(object):
         # post-init all AST nodes
         all_nodes = self.statements + [self.tf_call]
 
-        for node in all_nodes: 
-            node.post_parse_init()
-
     def clear_shapes(self):
         for tup in self.tups.values():
             tup.clear()

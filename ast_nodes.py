@@ -4,29 +4,6 @@ import enum
 import operator
 import util
 
-# Call at instantiation of an Array with established sig
-# TODO: move to util (how to resolve circular dependency with ast_nodes.Slice?)
-def check_sig(runtime, sig_list, use_list):
-    if len(sig_list) != len(use_list):
-        raise RuntimeError(
-            f'check_sig expected {len(sig_list)} indices but found '
-            f'{len(use_list)}')
-
-def define_sig(runtime, use_list):
-    not_str = next((use for use in use_list if 
-        not isinstance(use, ShapeExpr)), None)
-    if not_str is not None:
-        raise RuntimeError(
-            f'define_sig can take only string indices (EinTup names) '
-            f'found {not_str}')
-    from collections import Counter
-    dup = next((use for use, ct in Counter(use_list).items() if ct > 1), None)
-    if dup is not None:
-        raise RuntimeError(
-            f'define_sig must have all distinct indices.  Found duplicate '
-            f'\'{dup}\'')
-    return use_list
-
 def merge_bases(slice_list):
     bases = [ s.get_basis() for s in slice_list ]
     merged_basis = bases[0]
@@ -168,36 +145,12 @@ class AST(object):
         child_repr = '\n'.join(indent(cr) for cr in child_reprs)
         return this + '\n' + child_repr
 
-    # Call after all parsing is finished
-    def post_parse_init(self):
-        for ch in self.children:
-            ch.post_parse_init()
-
     def get_tups(self):
         tuplists = [ ch.get_tups() for ch in self.children ]
         merged = tuplists[0] if len(tuplists) else []
         for l in tuplists[1:]:
             merged = util.merge_tup_lists(merged, l)
         return merged
-
-class Slice(AST):
-    def __init__(self, *args):
-        super().__init__(*args)
-
-    def __repr__(self):
-        raise NotImplementedError
-
-    def rank(self):
-        raise NotImplementedError
-
-    def get_array(self):
-        raise NotImplementedError
-
-    def get_tups(self):
-        raise NotImplementedError
-
-    def ind_pos(self):
-        raise NotImplementedError
 
 class StaticExpr(object):
     # An interface supporting the value() call, for use in StaticBinOpBase
@@ -321,82 +274,6 @@ class EinTupSlice(SliceExpr):
                 trg_basis + [self.elem_shape])
         return ten
 
-class ArraySlice(SliceExpr):
-    # Represents an expression ary[a,b,c,:,e,...] with exactly one ':' and
-    # the rest of the indices simple eintup names.  
-    def __init__(self, runtime, array_name, index_list):
-        # ArraySlice needs this to access the backing tensor
-        self.runtime = runtime
-        if array_name not in runtime.array_sig:
-            raise RuntimeError(
-                f'Cannot instantiate ArraySlice as first appearance of array '
-                f'\'{array_name}\'')
-        sig = runtime.array_sig[array_name]
-        if len(sig) != len(index_list):
-            raise RuntimeError(
-                f'ArraySlice instantiated with incorrect number of indices. '
-                f'Expecting {len(sig)} but got {len(index_list)}')
-
-        found_star = False
-        z = zip(sig, index_list)
-        for sig_tup, call in z:
-            if call == STAR: 
-                if found_star:
-                    raise RuntimeError(
-                        f'Found a second \':\' index.  Only one wildcard is '
-                        f'allowed in a ArraySlice instance')
-                found_star = True
-                self.ind_tup = sig_tup
-                continue
-            elif not isinstance(call, str):
-                raise RuntimeError(
-                    f'ArraySlice object only accepts simple tup names or \':\' as '
-                    f'indices.  Got \'{call}\'')
-            elif call != sig_tup.name:
-                raise RuntimeError(
-                    f'ArraySlice called with wrong EinTup. '
-                    f'{call_tup} used instead of {sig_tup}')
-
-        if not found_star:
-            raise RuntimeError(
-                f'ArraySlice must contain at least one \':\' in index_list. '
-                f'Got \'{index_list}\'') 
-
-        # passed all checks
-        self.name = array_name
-        self.index_list = [ runtime.tup(name) if name != STAR else name 
-                for name in index_list ]
-
-        basis = [ t for t in self.index_list if isinstance(t, EinTup) ]
-        super().__init__(basis=basis)
-
-    def __repr__(self):
-        ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
-                for ind in self.index_list)
-        return f'ArraySlice({self.name})[{ind_list}]'
-
-    def dims(self):
-        def mask(use):
-            if use == STAR:
-                return [False] * self.ind_tup.rank()
-            else:
-                return [True] * use.rank()
-
-        mask_items = [ m for use in self.index_list for m in mask(use) ]
-        marg_dims = [ i for i, m in enumerate(mask_items) if m ]
-        ten = self.runtime.arrays[self.name]
-        maxs = tf.reduce_max(ten, axis=marg_dims)
-        return maxs.numpy().tolist()
-
-    def evaluate(self, trg_basis):
-        # TODO: fix this bug.  Not all ArraySlice's will have the STAR at the
-        # end
-        src_basis = self.get_basis()
-        ten = self.runtime.arrays[self.name]
-        ten = util.to_sig(
-                ten, src_basis + [self.elem_shape], 
-                trg_basis + [self.elem_shape])
-        return ten
 
 class FlattenSlice(SliceExpr):
     def __init__(self, slice_list):
@@ -507,7 +384,6 @@ class SliceBinOp(SliceExpr):
             else:
                 err()
 
-
     def get_basis(self):
         lbasis = self.lhs.get_basis()
         rbasis = self.rhs.get_basis()
@@ -526,19 +402,11 @@ class SliceBinOp(SliceExpr):
         return ten
 
 class Array(AST):
-    def __init__(self, runtime, array_name, index_list):
-        super().__init__()
-        array_exists = (array_name in runtime.array_sig)
-        if array_exists:
-            sig_list = runtime.array_sig[array_name]
-            check_sig(runtime, sig_list, index_list)
-        else:
-            runtime.array_sig[array_name] = index_list
-
+    def __init__(self, runtime, array_name, index_list, **kwds):
+        super().__init__(**kwds)
         self.runtime = runtime
         self.name = array_name
-        self.index_list = [ self.runtime.tup(name) if isinstance(name, str)
-                else name for name in index_list ]
+        self.index_list = index_list
 
     def __repr__(self):
         cls_name = self.__class__.__name__
@@ -572,32 +440,44 @@ class Array(AST):
         pos = self._get_slice_pos()
         return sig[pos]
 
-    def get_array(self, trg_sig):
+    def check_array_exists(self):
         if self.name not in self.runtime.arrays:
             raise RuntimeError(
-                f'Array {self.name} called evaluate() but not materialized')
+                f'Array {self.name} values accessed before it was initialized')
+
+    def check_index_usage(self):
+        sig_list = self.runtime.array_sig[self.name]
+        use_list = self.index_list
+        if len(sig_list) != len(use_list):
+            raise RuntimeError(
+                f'Array {array_name} called with incorrect number of indices.\n'
+                f'Expected {len(sig_list)} but called with {len(use_list)}')
+
+        def match(sig, use):
+            return use == STAR or sig.rank() == use.rank()
+
+        if not all(match(sig, use) for sig, use in zip(sig_list, use_list)):
+            raise RuntimeError(
+                f'Array {array_name} called with incorrect ranks.\n'
+                f'Signature is: {[sig.rank() for sig in sig_list]}\n'
+                f'Usage is    : {[use.rank() for use in use_list]}\n')
+
+    def get_array(self, trg_sig):
+        self.check_array_exists()
+        self.check_index_usage()
         ten = self.runtime.arrays[self.name]
         sig = self.runtime.array_sig[self.name]
         z = zip(sig, self.index_list)
-        use_sig = [ sig if isinstance(use, SliceExpr) else use for sig, use in z]
+        def subst_sig(use):
+            return use == STAR or isinstance(use, SliceExpr)
+        use_sig = [ sig if subst_sig(use) else use for sig, use in z]
         ten = util.to_sig(ten, use_sig, trg_sig)
         return ten
 
-    """
-    def _rank_check(self):
-        # check that the rank of the slice matches the expected rank
-        sig = self.runtime.array_sig[self.name]
-        slice_node = self.maybe_get_slice_node()
-        target_sig_tup = sig[self.slice_pos]
-        if target_sig_tup.rank() != slice_node.rank():
-            raise RuntimeError(
-                f'Array contains ArraySlice of rank {slice_node.rank()} '
-                f'for target {target_sig_tup} of rank {target_sig_tup.rank()}.'
-                f'ranks must match')
-    """
-
 class LValueArray(Array):
     def __init__(self, runtime, array_name, index_list):
+        if array_name not in runtime.array_sig:
+            runtime.array_sig[array_name] = index_list
         super().__init__(runtime, array_name, index_list)
 
     def __repr__(self):
@@ -637,6 +517,7 @@ class LValueArray(Array):
         return out_ten
 
     def assign(self, rhs):
+        self.check_index_usage()
         trg_sig = self.get_sig()
         if self.has_slices():
             val = self._evaluate_sliced(trg_sig, rhs)
@@ -652,9 +533,8 @@ class LValueArray(Array):
         self.runtime.arrays[self.name] = val
 
     def add(self, rhs):
-        if self.name not in self.runtime.arrays:
-            raise RuntimeError(
-                f'Cannot do += on first mention of array \'{self.name}\'')
+        self.check_array_exists()
+        self.check_index_usage()
 
         trg_sig = self.get_sig()
         if self.has_slices():
@@ -666,13 +546,15 @@ class LValueArray(Array):
         self.runtime.arrays[self.name] = tf.add(prev, val)
     
 class RValueArray(Array):
-    def __init__(self, runtime, array_name, index_list):
-        super().__init__(runtime, array_name, index_list)
+    def __init__(self, runtime, array_name, index_list, **kwds):
+        if array_name not in runtime.array_sig:
+            raise RuntimeError(
+                f'All arrays must first appear on the left hand side.'
+                f'Array {array_name} first appears on the right.')
+        super().__init__(runtime, array_name, index_list, **kwds)
 
     def __repr__(self):
-        ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
-                for ind in self.index_list)
-        return f'RValueArray({self.name})[{ind_list}]'
+        return f'RValueArray({self.name})[{self.index_list}]'
 
     def get_tups(self):
         tups = []
@@ -715,6 +597,7 @@ class RValueArray(Array):
         # target shapes
         target_idx = batch_sig + fetch_sig
         target_par = batch_sig + slice_sig + elem_sig
+        # TODO: eliminate this call the GroupShape
         target_par_grouped = batch_sig + [GroupShape(slice_sig)] + elem_sig
         target_res = batch_sig + fetch_sig + elem_sig
 
@@ -740,10 +623,46 @@ class RValueArray(Array):
         return result
 
     def evaluate(self, trg_sig):
+        self.check_index_usage()
         if self.has_slices():
             return self._evaluate_sliced(trg_sig)
         else:
             return self.get_array(trg_sig)
+
+class ArraySlice(RValueArray, SliceExpr):
+    # Represents an expression ary[a,b,c,:,e,...] with exactly one ':' and
+    # the rest of the indices simple eintup names.  
+    def __init__(self, runtime, array_name, index_list, **kwds):
+        basis = [ t for t in index_list if t != STAR ]
+        kwds['basis'] = basis
+        super().__init__(runtime, array_name, index_list, **kwds)
+        try:
+            star_ind = index_list.index(STAR)
+        except ValueError:
+            raise RuntimeError(f'ArraySlice did not contain a Star index')
+        sig = runtime.array_sig[array_name]
+        self.ind_tup = sig[star_ind]
+        self.name = array_name
+
+    def __repr__(self):
+        return f'ArraySlice({self.name})[{self.index_list}]'
+
+    def dims(self):
+        def mask(use):
+            if use == STAR:
+                return [False] * self.ind_tup.rank()
+            else:
+                return [True] * use.rank()
+
+        mask_items = [ m for use in self.index_list for m in mask(use) ]
+        marg_dims = [ i for i, m in enumerate(mask_items) if m ]
+        ten = self.runtime.arrays[self.name]
+        maxs = tf.reduce_max(ten, axis=marg_dims)
+        return maxs.numpy().tolist()
+
+    def evaluate(self, trg_basis):
+        ten = super().evaluate(trg_basis + [self.ind_tup])
+        return ten
 
 class RandomCall(AST):
     # apply a function pointwise to the materialized arguments
