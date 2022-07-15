@@ -31,7 +31,7 @@ def _range_check(inds, dest_dims):
 # flatten an index tensor's inner dimension, assuming it is
 # used in the destination signature
 def flatten_with_bounds(index_ten, dest_sig):
-    dest_dims = flat_dims(dest_sig)
+    dest_dims = single_dims(dest_sig)
     in_bounds = _range_check(index_ten, dest_dims)
     index_ten = _flatten(index_ten, dest_dims)
     index_ten = tf.where(in_bounds, index_ten, -1)
@@ -54,7 +54,7 @@ def ndrange(dims):
     ten = tf.stack(ten, axis=len(dims))
     return ten
 
-def flat_dims(shapes):
+def single_dims(shapes):
     # shape.dims() may be empty, but this still works correctly
     return [ dim for shape in shapes for dim in shape.dims()]
 
@@ -100,7 +100,7 @@ def merge_tup_lists(a, b):
 
 # check tensor shape against sig
 def check_shape(ten, sig, is_packed):
-    expect_dims = packed_dims(sig) if is_packed else flat_dims(sig)
+    expect_dims = packed_dims(sig) if is_packed else single_dims(sig)
     if ten.shape.as_list() != expect_dims:
         desc = 'packed' if is_packed else 'flat'
         raise RuntimeError(

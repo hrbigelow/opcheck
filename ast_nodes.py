@@ -19,7 +19,7 @@ def combine_slices(slice_list):
     tens = [None] * n
     for i in range(n):
         ten = slice_list[i].evaluate(basis)
-        shape = util.flat_dims(basis + [elem_shapes[i]])
+        shape = util.single_dims(basis + [elem_shapes[i]])
         tens[i] = tf.broadcast_to(ten, shape)
     ten = tf.concat(tens, -1)
     util.check_shape(ten, basis + [elem_shape], False)
@@ -246,7 +246,7 @@ class DimsSlice(SliceExpr, StaticExpr):
         return [ v+1 for v in self.value() ]
 
     def value(self):
-        return util.flat_dims(self.shapes)
+        return util.single_dims(self.shapes)
 
     def evaluate(self, trg_basis):
         src_basis = self.get_basis()
@@ -274,7 +274,6 @@ class EinTupSlice(SliceExpr):
                 trg_basis + [self.elem_shape])
         return ten
 
-
 class FlattenSlice(SliceExpr):
     def __init__(self, slice_list):
         super().__init__(basis=list())
@@ -292,7 +291,7 @@ class FlattenSlice(SliceExpr):
 
     def evaluate(self, trg_basis):
         ten, merged_basis, merged_rank = combine_slices(self.slice_list)
-        ten = util._flatten(ten, util.flat_dims(self.slice_list))
+        ten = util.flatten_with_bounds(ten, self.slice_list)
         ten = util.to_sig(ten, merged_basis + [self.elem_shape], 
                 trg_basis + [self.elem_shape])
         return ten
@@ -395,8 +394,8 @@ class SliceBinOp(SliceExpr):
         rten = self.rhs.evaluate(src_basis)
         src_sig = src_basis + [self.elem_shape]
         trg_sig = trg_basis + [self.elem_shape]
-        lten = tf.broadcast_to(lten, util.flat_dims(src_sig))
-        rten = tf.broadcast_to(rten, util.flat_dims(src_sig))
+        lten = tf.broadcast_to(lten, util.single_dims(src_sig))
+        rten = tf.broadcast_to(rten, util.single_dims(src_sig))
         ten = self.op(lten, rten)
         ten = util.to_sig(ten, src_sig, trg_sig)
         return ten
@@ -524,7 +523,7 @@ class LValueArray(Array):
         else:
             val = rhs.evaluate(trg_sig)
 
-        trg_dims = util.flat_dims(trg_sig)
+        trg_dims = util.single_dims(trg_sig)
         val_dims = val.shape.as_list()
         if not util.broadcastable(val_dims, trg_dims):
             raise RuntimeError(
@@ -689,7 +688,7 @@ class RandomCall(AST):
         mins = tf.cast(mins, self.dtype)
         maxs = self.max_expr.evaluate(trg_sig)
         maxs = tf.cast(maxs, self.dtype)
-        trg_dims = util.flat_dims(trg_sig) 
+        trg_dims = util.single_dims(trg_sig) 
         rnd = tf.random.uniform(trg_dims, 0, 2**31-1, dtype=self.dtype)
         ten = rnd % (maxs - mins) + mins
         return ten
@@ -895,7 +894,7 @@ class Dims(AST, StaticExpr):
                 f'shapes list {shape_list} ({self.rank()})')
 
         src_sig = self.get_tups()
-        ten = tf.constant(util.flat_dims(self.shapes), dtype=util.tf_int)
+        ten = tf.constant(util.single_dims(self.shapes), dtype=util.tf_int)
         ten = util.to_sig(ten, src_sig, trg_sig)
         return ten
 
@@ -906,7 +905,7 @@ class Dims(AST, StaticExpr):
         if self.kind == DimKind.Index:
             raise RuntimeError(
                 f'Cannot call value() on a {DimKind.Index.value} Dims')
-        dims = util.flat_dims(self.shapes)
+        dims = util.single_dims(self.shapes)
         if self.kind == DimKind.Star:
             return dims
 
@@ -1080,7 +1079,7 @@ class TensorArg(AST):
         # runtime.arrays may be stored in a form merely broadcastable to the
         # signature.
         sig = self.runtime.array_sig[self.name]
-        full_dims = util.flat_dims(sig)
+        full_dims = util.single_dims(sig)
         ten = self.runtime.arrays[self.name]
         ten = tf.broadcast_to(ten, full_dims)
         return ten
@@ -1090,7 +1089,7 @@ class TensorWrap(AST):
     Wraps a static value and produces a constant tensor
     """
     def __init__(self, runtime, node):
-        if not isinstance(node, (Dims, RankExpr)):
+        if not isinstance(node, StaticExpr):
             raise RuntimeError(
                 f'TensorWrap can only wrap a Dims or RankExpr instance')
         super().__init__(node)
