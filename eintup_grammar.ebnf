@@ -48,4 +48,14 @@ Notes:
 
 *)
        
+(* Constraints - Both rcons and dcons will be used as base units to build 
+rcons_expr and dcons_expr binary arithmetic expressions.  *)
+
+rcons : integer
+      | RANK ( tup )
+
+
+dcons : integer
+      | DIMS ( tup )
+      | RANK ( tup )
 
