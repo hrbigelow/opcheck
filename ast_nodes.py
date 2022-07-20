@@ -820,36 +820,29 @@ class FloatExpr(ScalarExpr):
         return self.val
 
 class RankExpr(ScalarExpr, ShapeExpr, StaticExpr):
-    def __init__(self, runtime, tup_name_list):
+    def __init__(self, runtime, index_expr_list):
         super().__init__()
-        for name in tup_name_list:
-            if name not in runtime.tups:
-                raise RuntimeError(
-                    f'RankExpr tup {name} not a known EinTup.  Only EinTups '
-                    f'instantiated in the program may be used as constraints. '
-                    f'Known EinTups are: {runtime.tups.keys()}')
-
         self.runtime = runtime
-        self.tups = [ self.runtime.tup(name) for name in tup_name_list ]
+        self.index_exprs = index_expr_list
 
     def __repr__(self):
-        return f'RankExpr({repr(self.tups)})'
+        return f'RankExpr({repr(self.index_exprs)})'
 
     # needed to support ShapeExpr
     def dims(self):
         return [self.value()]
 
     def value(self):
-        return sum(tup.rank() for tup in self.tups)
+        return sum(index_expr.rank() for index_expr in self.index_exprs)
 
     # to be used during the constraint resolution phase.
     # the tups's ranks may not be ready net, so this call
     # will trigger the calculation of their dependent expressions
     def calc_value(self):
-        return sum(tup.calc_rank() for tup in self.tups)
+        return sum(index_expr.calc_rank() for index_expr in self.index_exprs)
 
     def get_tups(self):
-        return self.tups
+        return self.index_exprs
 
 class DimKind(enum.Enum):
     Star = 'Star'
