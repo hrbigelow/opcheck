@@ -75,7 +75,7 @@ result[batch,slice,other] = params[batch,indices[batch,slice,:],other]
 tf.gather_nd(params, indices, batch_dims=RANK(batch))
 ```
 
-Here there are many possible valid rank combinations for the Eintups `batch1`,
+Here there are many possible valid rank combinations for the Eintups `batch`,
 `elem`, `slice`, `coord`, and `other`.
 
 ```python
@@ -105,7 +105,7 @@ batch       elem                   other          slice          coord      Vali
 ### Meshgrid
 
 Einsum Tuple allows a straightforward expression of broadcasting behavior.  Any
-Eintups which appear on the left hand side but not the right are automatically,
+Eintups which appear on the left hand side but not the right are automatically
 broadcasted, in the same manner as Einstein Summation.  Using this notation,
 the last four lines of the Einsum Tuple program provide a concise description
 of meshgrid's coordinated broadcasting behavior.
@@ -121,7 +121,8 @@ out2[a,b,c,d] = in2[b]
 out3[a,b,c,d] = in3[c]
 out4[a,b,c,d] = in4[d]
 
-# Validate against tf meshgrid call.  The call returns an array of 
+# Validate against tf meshgrid call.  The call returns a tuple of four tensors
+# which are validated against out1, out2, out3, and out4
 tf.meshgrid(in1, in2, in3, in4, indexing=L('ij'))
 ```
 

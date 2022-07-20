@@ -2,6 +2,8 @@ scalar : array_elem
        | number
        | RANK ( index_expr_list )
 
+scalar_expr : (* See Arithmetic Expression, using 'scalar' as 'unit' *)
+
 assign : array_elem "=" scalar_expr
 
 array_elem : array_name [ index_expr_list ]
@@ -15,19 +17,19 @@ index  : integer
        | array_slice
        | index_expr
 
+index_expr : (* See Arithmetic Expression, using 'index' as 'unit' *)
+
+index_expr_list : index_expr
+                | index_expr_list , index_expr
+
 (* This ensures there will be exactly one ':' in the list *)
 sliced_index_expr_list : ":"
                        | index_expr_list , ":"
                        | sliced_index_expr_list , index_expr
 
-index_expr_list : index_expr
-                | index_expr_list , index_expr
-
-(* 
-
-Arithmetic Combinator to generate scalar_expr from scalar, and index_expr
-from index.  Substitute in 'scalar' or 'index' for 'unit' below.
-
+(* Arithmetic Expression - Arithmetic Combinator to generate scalar_expr from
+scalar, and index_expr from index.  Substitute in 'scalar' or 'index' for
+'unit' below.
 
 Taken from https://sly.readthedocs.io/en/latest/sly.html#writing-a-parser *)
 
@@ -40,11 +42,9 @@ term : factor
 factor : unit
        | ( expr )
 
-(*
-Notes:
+(* Notes:
 
 '//^' is truncating upwards (a //^ b == ceiling(a / b))
-
 
 *)
        
