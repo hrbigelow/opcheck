@@ -52,6 +52,7 @@ def ndrange(dims):
     ten = [tf.range(e, dtype=tf_int) for e in dims]
     ten = tf.meshgrid(*ten, indexing='ij')
     ten = tf.stack(ten, axis=len(dims))
+    ten = tf.cast(ten, dtype=tf_int) # needed when tf_stack gets empty list
     return ten
 
 def single_dims(shapes):
@@ -79,6 +80,53 @@ def pack_nested(ten, nested_sig):
     check_shape(ten, flat_sig, is_packed=False)
     dims = packed_dims_nested(nested_sig)
     return tf.reshape(ten, dims)
+
+def safe_pad(ten, pads, constant_values):
+    if len(pads) != ten.shape.rank:
+        raise RuntimeError(
+            f'pad: must be the same number of pads as tensor rank.'
+            f'got {len(pads)} and {ten.shape.rank}')
+
+    rank = len(pads)
+    flat = ten.shape.as_list()
+    # we use 6 because the max rank for tf.pad is 8
+    for lo in range(0, rank, 6):
+        hi = lo + 6
+        new_pad = [[0,0]] + pads[lo:hi] + [[0,0]]
+        shape = ([np.prod(flat[:lo], dtype=np.int32)] + flat[lo:hi] +
+                [np.prod(flat[hi:], dtype=np.int32)])
+        ten = tf.reshape(ten, shape)
+        ten = tf.pad(ten, new_pad, constant_values=constant_values)
+
+    new_shape = [ f + p[0] + p[1] for f, p in zip(flat, pads) ]
+    ten = tf.reshape(ten, new_shape)
+    return ten
+
+# overwrite (or accumulate) the values in trg_ten with those in src_ten if the
+# coordinates match.  ignore any positions in src_ten that are out-of-bounds in 
+# trg_ten
+def fit_to_size(src_ten, trg_ten, do_add):
+    if src_ten.shape.rank != trg_ten.shape.rank:
+        raise RuntimeError(
+            f'ranks must match between source and target tensors.'
+            f'got {src_ten.shape.rank} and {trg_ten.shape.rank}')
+
+    src_dims = src_ten.shape.as_list()
+    trg_dims = trg_ten.shape.as_list()
+    begin = tf.zeros([len(src_dims)], dtype=tf.int32)
+    trim_dims = [ min(src, trg) for src, trg in zip(src_dims, trg_dims) ]
+    src_ten = tf.slice(src_ten, begin, trim_dims)
+    paddings = [ [0, trg - trim] for trim, trg in zip(trim_dims, trg_dims) ]
+    # pad_ten = tf.constant(paddings, shape=[len(paddings), 2], dtype=tf.int32)
+    src_ten = safe_pad(src_ten, paddings, 0)
+    # src_ten = tf.pad(src_ten, pad_ten, constant_values=0) 
+
+    if do_add:
+        return tf.add(src_ten, trg_ten)
+    else:
+        mask = tf.constant([True], shape=trim_dims)
+        mask = safe_pad(mask, paddings, constant_values=False)
+        return tf.where(mask, src_ten, trg_ten)
 
 # used to construct a slightly order-preserving signature for
 # the result of a binary op

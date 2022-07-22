@@ -439,11 +439,6 @@ class Array(AST):
         pos = self._get_slice_pos()
         return sig[pos]
 
-    def check_array_exists(self):
-        if self.name not in self.runtime.arrays:
-            raise RuntimeError(
-                f'Array {self.name} values accessed before it was initialized')
-
     def check_index_usage(self):
         sig_list = self.runtime.array_sig[self.name]
         use_list = self.index_list
@@ -462,7 +457,9 @@ class Array(AST):
                 f'Usage is    : {[use.rank() for use in use_list]}\n')
 
     def get_array(self, trg_sig):
-        self.check_array_exists()
+        if self.name not in self.runtime.arrays:
+            raise RuntimeError(
+                f'Array {self.name} used as RValue before initialization')
         self.check_index_usage()
         ten = self.runtime.arrays[self.name]
         sig = self.runtime.array_sig[self.name]
@@ -484,7 +481,16 @@ class LValueArray(Array):
                 for ind in self.index_list)
         return f'LValueArray({self.name})[{ind_list}]'
 
-    def _evaluate_sliced(self, trg_sig, rhs):
+    """
+    If do_add, perform a straightforward scatter_add on the existing tensor
+    (pre_ten).  Otherwise, the result of this operation is one of:
+    1. the existing element from pre_ten, if absent from idx_ten
+    2. the sum of all rhs elements mapped into that element from idx_ten
+
+    To calculate this second form, it is a tf.scatter_nd 
+   
+    """
+    def _evaluate_sliced(self, rhs, do_add):
         # see ops/scatter_nd.et
         out_sig = self.nonslice_tups()
         dest = self.get_slice_subsig()
@@ -498,9 +504,13 @@ class LValueArray(Array):
         upd_ten = rhs.evaluate(slice_ + elem)
         upd_ten = util.pack_nested(upd_ten, [slice_, elem])
         idx_ten = util.pack_nested(idx_ten, [slice_, [idx_rank]])
-        out_dims = util.packed_dims_nested([dest, elem])
-        shape_ten = tf.constant(out_dims, util.tf_int)
+        pre_ten = self.get_tensor(upd_ten.dtype)
         out = dest + elem
+        out_dims = util.packed_dims_nested([dest, elem])
+        pre_ten = util.to_sig(pre_ten, self.get_sig(), out, in_packed=False,
+                out_packed=False)
+        pre_ten = tf.reshape(pre_ten, out_dims)
+        # shape_ten = tf.constant(out_dims, util.tf_int)
         with tf.device('/GPU:0'):
             # see https://github.com/tensorflow/tensorflow/issues/56567
             # will execute on CPU (which borks on out of bounds)
@@ -508,42 +518,43 @@ class LValueArray(Array):
             upd_dtype = upd_ten.dtype
             if upd_dtype == tf.int32:
                 upd_ten = tf.cast(upd_ten, tf.int64)
-            out_ten = tf.scatter_nd(idx_ten, upd_ten, shape_ten)
-            out_ten = tf.cast(out_ten, upd_dtype)
+            if do_add:
+                out_ten = tf.tensor_scatter_nd_add(pre_ten, idx_ten, upd_ten)
+            else:
+                out_ten = tf.scatter_nd(idx_ten, upd_ten, pre_ten.shape)
+                out_ten = tf.cast(out_ten, upd_dtype)
+                orig_mask = tf.constant(0, shape=pre_ten.shape, dtype=tf.int64)
+                upd_mask = tf.constant(1, shape=upd_ten.shape, dtype=tf.int64)
+                mask = tf.tensor_scatter_nd_max(orig_mask, idx_ten, upd_mask)
+                out_ten = tf.where(tf.cast(mask, tf.bool), out_ten, pre_ten)
+
+        out_ten = tf.cast(out_ten, upd_dtype)
         out_ten = tf.reshape(out_ten, util.packed_dims(out))
-        out_ten = util.to_sig(out_ten, out, trg_sig, in_packed=True, 
+        out_ten = util.to_sig(out_ten, out, self.get_sig(), in_packed=True, 
             out_packed=False)
         return out_ten
 
-    def assign(self, rhs):
+    # this ensures the first access of an LValueArray sets the shape of the
+    # tensor
+    def get_tensor(self, dtype):
+        if self.name not in self.runtime.arrays:
+            shape = util.single_dims(self.index_list)
+            self.runtime.arrays[self.name] = tf.zeros(shape, dtype)
+        return self.runtime.arrays[self.name]
+
+    def assign_or_add(self, rhs, do_add):
         self.check_index_usage()
-        trg_sig = self.get_sig()
         if self.has_slices():
-            val = self._evaluate_sliced(trg_sig, rhs)
+            new_val = self._evaluate_sliced(rhs, do_add)
+            self.runtime.arrays[self.name] = new_val
         else:
-            val = rhs.evaluate(trg_sig)
-
-        trg_dims = util.single_dims(trg_sig)
-        val_dims = val.shape.as_list()
-        if not util.broadcastable(val_dims, trg_dims):
-            raise RuntimeError(
-                f'Actual array shape {val_dims} not broadcastable to '
-                f'signature-based shape {trg_dims}')
-        self.runtime.arrays[self.name] = val
-
-    def add(self, rhs):
-        self.check_array_exists()
-        self.check_index_usage()
-
-        trg_sig = self.get_sig()
-        if self.has_slices():
-            val = self._evaluate_sliced(trg_sig, rhs)
-        else:
-            val = rhs.evaluate(trg_sig)
-
-        prev = self.runtime.arrays[self.name]
-        self.runtime.arrays[self.name] = tf.add(prev, val)
-    
+            rhs_val = rhs.evaluate(self.index_list)
+            full_dims = util.single_dims(self.index_list)
+            rhs_val = tf.broadcast_to(rhs_val, full_dims)
+            prev_val = self.get_tensor(rhs_val.dtype)
+            new_val = util.fit_to_size(rhs_val, prev_val, do_add)
+            self.runtime.arrays[self.name] = new_val 
+        
 class RValueArray(Array):
     def __init__(self, runtime, array_name, index_list, **kwds):
         if array_name not in runtime.array_sig:
@@ -764,21 +775,18 @@ class ArrayBinOp(AST):
         return ten
 
 class Assign(AST):
-    def __init__(self, lhs, rhs, do_accum=False):
+    def __init__(self, lhs, rhs, do_add=False):
         super().__init__(lhs, rhs)
         self.lhs = lhs
         self.rhs = rhs
-        self.do_accum = do_accum
+        self.do_add = do_add
 
     def __repr__(self):
-        op_str = '+=' if self.do_accum else '='
+        op_str = '+=' if self.do_add else '='
         return f'Assign: {repr(self.lhs)} {op_str} {repr(self.rhs)}'
 
     def evaluate(self):
-        if self.do_accum:
-            self.lhs.add(self.rhs)
-        else:
-            self.lhs.assign(self.rhs)
+        self.lhs.assign_or_add(self.rhs, self.do_add)
 
 class ScalarExpr(AST):
     def __init__(self, *children):

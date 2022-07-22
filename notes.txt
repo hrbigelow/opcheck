@@ -38,6 +38,62 @@ same shape), enabling easily generating cartesian products.
 The functions AST::evaluate, flat_dims, get_inds, get_cardinality,
 layout_to_sig all take / return lists of EinTups.
 
+Array Assignment
+
+The top-level statements in the Einsum Tuple language are all array
+assignments, of the form:
+
+lval_array = rval_expr
+lval_array += rval_expr
+
+In order to evaluate the first (assignment) form, the runtime must achieve the
+following logical effect:
+
+0. assign 0 to all elements of the left hand side array
+
+1. determine the *set* (not counting duplicates) of all EinTups appearing as
+variables in an index expression on the left or right hand side.  Note that an
+EinTup that occurs inside a DIMS() or RANK() call is not a variable.
+
+2. enumerate the total set of combined values (the cartesian product) of the
+EinTups
+
+3. for each tup value set, compute the values for all index expressions.  if
+any component of any index expression is out of bounds with respect to that
+array's signature (runtime.array_sig), skip steps 4-6.
+
+4. for each index expression value set, access the value of the array elements
+on the right hand side
+
+5. compute the value of the right hand side expression from the values of the
+array elements
+
+6. add this value to the left hand side array element identified by the index
+expression list.
+
+
+For the second (accumulation) form, do the same, except skip step 0.
+
+The actual algorithm used to carry out these logical steps is as follows:
+
+For the first (assignment) form.  If lval_array index_expr_list has only simple
+EinTups:
+
+1. determine the set of all EinTups appearing as variables in lval_array
+
+2. call val = rhs.evaluate(lval_call).  This evaluates rval_expr, then
+marginalizes out any right-only Eintups, and broadcasts the quantity across any
+left-only EinTups.
+
+3. trim or pad each dimension as necessary to fit lhs.get_sig().  If val's
+dimension is greater, trim it.  If less, pad with zero.  This is
+util.fit_to_size()
+
+If lval_array index_expr_list has any index expressions, the
+lhs._evaluate_sliced() function must be used.  
+
+
+
 
 SliceExpr
 

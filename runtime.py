@@ -104,6 +104,8 @@ class Runtime(object):
     def init_all_shapes(self, shape_map):
         for tup_name, shape in shape_map.items():
             self.tup(tup_name).initialize(shape)
+        self.arrays.clear()
+
 
     # generate shapes according to ordered tups
     def gen_shapes(self, tups, reps=30):

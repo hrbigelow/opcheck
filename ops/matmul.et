@@ -9,7 +9,7 @@ result
 RANK(row) = 1
 RANK(col) = 1
 RANK(inner) = 1
-RANK(batch) IN [0,15]
+RANK(batch) IN [0,6]
 DIMS(batch) IN [0,4]
 DIMS(row) IN [0,50]
 DIMS(inner) IN [0,10]

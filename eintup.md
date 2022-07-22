@@ -27,7 +27,7 @@ expressions (Eintups or expressions of them, see below) that index the array.
 All binary operations, including assignment, perform automatic broadcasting of
 eintups that are present in just one operand.  For example, the expression
 
-```
+```csharp
 outer[batch,row,col] = vec1[batch,row] * vec2[batch,col]
 ``` 
 
@@ -49,15 +49,31 @@ example:
 outer[batch,dup] = ary[batch]
 ```
 
-## Insensitivity to Index Permutation in Binary operations
+## Insensitivity to Relative Index Order in Binary array expressions 
 
-Because all eintups are named, the order of eintups makes no difference until
-the final assignment.  For example, the following are all legal and produce the
-same result:
+The naming of Eintups allows binary array expressions to work regardless of the
+relative order of indices of their operands.  For example, all three
+multiplication operations below are equivalent, regardless of the relative
+orders of the indices of the left and right sides of the multiplication.
 
 ```
+mat1[batch,row,inner] = ... # initialization
+mat2[inner,col,batch] = ... # initialization
+
+# Define two transposed versions of mat1
+m1p1[row,batch,inner] = mat1[batch,row,inner]
+m1p2[row,inner,batch] = mat1[batch,row,inner]
+
+m2p1[col,batch,inner] = mat2[inner,col,batch]
+m2p2[inner,col,batch] = mat2[inner,col,batch]
+
+# Any combination of (mat1, m1p1, m1p2) can be multiplied by (mat2, m2p1, m2p2)
+# Only the combination of *sets* of indices matter, not their order
 result[batch,row,col] = mat1[batch,row,inner] * mat2[inner,col,batch]
-result[batch,row,col] = mat1[inner,batch,row] * mat2[col,inner,batch]
+result[batch,row,col] = m1p1[row,batch,inner] * mat2[inner,col,batch]
+result[batch,row,col] = m1p2[row,inner,batch] * mat2[inner,col,batch]
+result[batch,row,col] = m1p1[row,batch,inner] * m2p1[col,batch,inner]
+result[batch,row,col] = m1p2[row,inner,batch] * m2p2[inner,col,batch]
 ```
 
 ## Index Expressions
@@ -117,6 +133,83 @@ DIMS(tup * static_expr) = (DIMS(tup) - 1) * static_expr + 1
 
 The full logic of dimension calculation can be found in [ast_nodes.py
 SliceBinOp::dims()](https://github.com/hrbigelow/einsum-tuple/blob/40f08f1995af97eb93257d65547e7abb9aa3c9db/ast_nodes.py#L325)
+
+
+## The Array Slice index expression
+
+*Einsum Tuple* supports an index expression based on the idea of an array (or
+tensor) slice.  To introduce it, note that a tensor of n dimensions with
+integer elements may be viewed as a tensor of n-1 dimensions whose elements are
+1D integer tuples of a fixed size.  For example, let's assume an integer valued
+array `indices[slice,coord]`  of shapes `DIMS(slice)=[3,5]`, `DIMS(coord)=[7]`
+so that the full shape of `indices` is `[3,5,7]`. We can view the tensor itself
+as a function of two arguments (the component values of `DIMS(slice)`) which
+outputs 7-tuples of integers. The space over which the two arguments vary are
+the dimensions `[3,5]`. Just like an Eintup, the array slice is a set of
+tuples, and can be used as such.  Using it as an index expression, we have:
+
+```
+indices[slice,coord] = ... # initialization
+output[indices[slice,:],elem] = RANDOM(0,10,INT)
+```
+
+The index expression is `indices[slice,:]`. It is like an ordinary array
+access, except that `coord` has been called with the special ":" symbol. In
+order to be legal, `RANK(coord)` must equal 1, and `DIMS(coord)` must equal the
+rank of the first place in the `output` array. Note that it would be perfectly
+valid if the ":" were in a non-terminal position. For example, using
+`indices[coord,slice]` as the array, and `indices[:,slice]` as the index
+expression is also valid.
+
+Using an array slice as an index expression is a scatter operation if used on
+the left hand side, and a gather operation if on the right.
+
+## Automatic Rank Equality Constraints
+
+Although the `.et` files allow the user to specify rank and dims constraints
+explicitly, the runtime system infers one type of constraint automatically.
+Any pair of Eintups used in the same index expression will be constrained to
+have the same rank.  For example, if the expression `ipos-DIMS(stride)*opos` is
+used in the program, then the runtime will generate additional constraints 
+`RANK(stride) = RANK(ipos)` and `RANK(opos) = RANK(ipos)`.
+
+## An Einsum Tuple Array is sized on first use
+
+Einsum Tuple defines the shape of an Array at the moment it first appears in
+the program, which must be on the left hand side of an assignment.  The shape
+is determined by the dimensions of each member of the index expression list.
+Subsequent usage of the array (on the left or right) is only restricted by the
+runtime in two ways.  First, that the number of index expressions used to index
+it must match that in the first use.  Although one might imagine having a
+rank-3 Eintup and trying to use it in place of a rank-1 and rank-2 Eintup, this
+is not allowed.  Second, the index expression ranks must match those of the
+first use.  For example, here is the Einsum Tuple definition of
+`tf.scatter_nd`.  The Array `output` first appears on line 3, with Eintups
+`dest`, `elem`.  At runtime, when the execution reaches line 3, the shape of
+`output` will be determined by the dimensions of `dest` and `elem` which are
+initialized before execution.  On the fourth line, the array slice index
+expression `indices[slice,:]` is used in place of `dest`.  The system will
+check that it has the same rank as `dest`.
+
+```
+indices[slice,coord] = RANDOM(0, DIMS(dest)[coord], INT)
+updates[slice,elem] = RANDOM(0, 10, FLOAT)
+output[dest,elem] = 0.0 
+output[indices[slice,:],elem] = updates[slice,elem]
+
+```
+
+## Out of bounds index values are silently ignored
+
+Following the previous `tf.scatter_nd` example, what happens if
+`indices[slice,:]` has component values which are either negative, or greater
+than the dimensions of `dist`?  When that happens, the entire assignment statement
+is ignored for that setting of the Eintups.  One simpler example of this could
+be trimming:
+
+```
+input[elem] = ... # initialization
+trimmed[
 
 ## The Index Expression function FLAT()
 
