@@ -156,9 +156,9 @@ def check_shape(ten, sig, is_packed):
             f'signature {desc} shape {expect_dims}')
     
 
-# reshape / transpose ten, with starting shape src_sig, to be broadcastable to
-# trg_sig.  if in_packed, expect ten shape to be in the packed form of src_sig.
-# produce a tensor with either packed or flat (broadcastable) form of trg_sig
+# reshape / transpose ten, with starting shape src_sig, to shape trg_sig.  if
+# in_packed, expect ten shape to be in the packed form of src_sig.  produce a
+# tensor with either packed or flat form of trg_sig
 def to_sig(ten, src_sig, trg_sig, in_packed=False, out_packed=False):
     check_shape(ten, src_sig, in_packed)
 
@@ -194,6 +194,9 @@ def to_sig(ten, src_sig, trg_sig, in_packed=False, out_packed=False):
 
     if not out_packed:
         ten = tf.reshape(ten, trg_dims)
+        ten = tf.broadcast_to(ten, single_dims(trg_sig))
+    else:
+        ten = tf.broadcast_to(ten, packed_dims(trg_sig))
 
     return ten
 

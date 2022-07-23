@@ -393,10 +393,14 @@ class SliceBinOp(SliceExpr):
         rtup = self.rhs.get_rank_constraint_root()
         if ltup is None and rtup is None:
             return None
-        elif ltup is None or ltup.name < rtup.name:
+        elif ltup is None: 
             return rtup
-        else:
+        elif rtup is None:
             return ltup
+        elif ltup.name < rtup.name:
+            return ltup
+        else:
+            return rtup
 
     def add_rank_constraint(self):
         ltup = self.lhs.get_rank_constraint_root()
@@ -1100,10 +1104,14 @@ class StaticBinOpBase(AST, StaticExpr):
         rtup = self.arg2.get_rank_constraint_root()
         if ltup is None and rtup is None:
             return None
-        elif ltup is None or ltup.name < rtup.name:
+        elif ltup is None: 
             return rtup
-        else:
+        elif rtup is None:
             return ltup
+        elif ltup.name < rtup.name:
+            return ltup
+        else:
+            return rtup
 
     def add_rank_constraint(self):
         ltup = self.arg1.get_rank_constraint_root()
