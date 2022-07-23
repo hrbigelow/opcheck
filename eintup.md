@@ -189,7 +189,6 @@ DIMS(tup * static_expr) = (DIMS(tup) - 1) * static_expr + 1
 The full logic of dimension calculation can be found in [ast_nodes.py
 SliceBinOp::dims()](https://github.com/hrbigelow/einsum-tuple/blob/40f08f1995af97eb93257d65547e7abb9aa3c9db/ast_nodes.py#L325)
 
-
 ## The Array Slice index expression
 
 *Einsum Tuple* supports an index expression based on the idea of an array (or
@@ -221,12 +220,32 @@ the left hand side, and a gather operation if on the right.
 
 ## Automatic Rank Equality Constraints
 
-Although the `.et` files allow the user to specify rank and dims constraints
-explicitly, the runtime system infers one type of constraint automatically.
-Any pair of Eintups used in the same index expression will be constrained to
-have the same rank.  For example, if the expression `ipos-DIMS(stride)*opos` is
-used anywhere in the program, then the runtime will generate additional
-constraints `RANK(stride) = RANK(ipos)` and `RANK(opos) = RANK(ipos)`.
+The runtime system infers that EinTups have the same rank in the following
+situations.  First, if any two EinTups are used together as variables in an
+index expression, such as `ipos-DIMS(stride)*opos`.  This will equate the ranks
+for `ipos`, `stride`, and `opos`.  Second, if two index expressions are used in
+  the same place in the same array, their ranks will be equated.  For instance:
+
+```
+trim[dest] = 0
+trim[elem-DIMS(left_trim)] = input[elem]
+```
+
+Because `dest` and the expression `elem-DIMS(left_trim)` are used in the first
+position of array `trim`, the ranks of `dims`, `elem`, and `left_trim` will be
+equated.
+
+Finally, when `DIMS()` calls, with a single EinTup argument, are used in a
+binary expression in a constraint, their ranks will be equated.  For example:
+
+`DIMS(dest) = DIMS(elem) - DIMS(left_trim) - DIMS(right_trim)`
+
+Because the right hand side is an arithmetic expression using multiple `DIMS()`
+calls, the ranks of `elem`, `left_trim`, and `right_trim` are automatically
+equated.
+
+In these contexts, 'equated' means that the runtime system automatically
+constraints them to have the same ranks when generating ranks and dimensions.
 
 ## An Einsum Tuple Array is sized on first use
 
@@ -238,42 +257,19 @@ runtime in two ways.  First, that the number of index expressions used to index
 it must match that in the first use.  Although one might imagine having a
 rank-3 Eintup and trying to use it in place of a rank-1 and rank-2 Eintup, this
 is not allowed.  Second, the index expression ranks must match those of the
-first use.  For example, here is the Einsum Tuple definition of
-`tf.scatter_nd`.  The Array `output` first appears on line 3, with Eintups
-`dest`, `elem`.  At runtime, when the execution reaches line 3, the shape of
-`output` will be determined by the dimensions of `dest` and `elem` which are
-initialized before execution.  On the fourth line, the array slice index
-expression `indices[slice,:]` is used in place of `dest`.  The system will
-check that it has the same rank as `dest`.
+first use.  
+
+For example, here is the Einsum Tuple definition of `tf.scatter_nd`.  The Array
+`output` first appears on line 3, with Eintups `dest`, `elem`.  At runtime,
+when the execution reaches line 3, the shape of `output` will be determined by
+the dimensions of `dest` and `elem` which are initialized before execution.  On
+the fourth line, the array slice index expression `indices[slice,:]` is used in
+place of `dest`.  The system will check that it has the same rank as `dest`.
 
 ```
 indices[slice,coord] = RANDOM(0, DIMS(dest)[coord], INT)
 updates[slice,elem] = RANDOM(0, 10, FLOAT)
 output[dest,elem] = 0.0 
 output[indices[slice,:],elem] = updates[slice,elem]
-
 ```
-
-## Out of bounds index values are silently ignored
-
-Following the previous `tf.scatter_nd` example, what happens if
-`indices[slice,:]` has component values which are either negative, or greater
-than the dimensions of `dist`?  When that happens, the entire assignment statement
-is ignored for that setting of the Eintups.  One simpler example of this could
-be trimming:
-
-```
-input[elem] = ... # initialization
-trimmed[
-
-## The Index Expression function FLAT()
-
-There is (so far) a single function which accepts an index_expr_list and
-returns a index expression, called `FLAT()`.
-
-
-
-
-
-
 
