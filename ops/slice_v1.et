@@ -7,7 +7,6 @@ tf.slice(input, begin=DIMS(left_trim), size=DIMS(dest))
 trim
 
 RANK(elem) IN [1,3]
-RANK(right_trim) = RANK(elem)
 DIMS(left_trim) IN [3,10]
 DIMS(right_trim) IN [3,10]
 DIMS(elem) IN [50,100]

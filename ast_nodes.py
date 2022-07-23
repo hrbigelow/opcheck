@@ -205,6 +205,9 @@ class StaticExpr(object):
     def calc_value(self):
         return self.value()
 
+    def get_rank_constraint_root(self):
+        return None
+
 class ElemShape(ShapeExpr):
     def __init__(self, shape_list):
         self.shape_list = shape_list
@@ -1007,8 +1010,14 @@ class DimsConstraint(AST, StaticExpr):
         super().__init__()
         self.tup = eintup 
 
+    def __repr__(self):
+        return f'DimsConstraint({self.tup})'
+
     def value(self):
         return self.tup.dims()
+
+    def get_rank_constraint_root(self):
+        return self.tup
 
     def calc_value(self):
         if not self.tup.has_dims():
@@ -1044,31 +1053,6 @@ class RangeConstraint(AST, StaticExpr):
             vals = np.random.randint(self.min, self.max+1, self.tup.rank()) 
             return vals.tolist()
 
-class StaticArraySlice(AST, StaticExpr):
-    def __init__(self, runtime, array_name):
-        super().__init__()
-        if array_name not in runtime.array_sig:
-            raise RuntimeError(
-                f'Cannot instantiate ArraySlice as first appearance of array '
-                f'\'{array_name}\'')
-        sig = runtime.array_sig[array_name]
-        if len(sig) != 1:
-            raise RuntimeError(
-                f'A StaticArraySlice must be Rank 1.  Got signature {sig}')
-        self.name = array_name
-        self.runtime = runtime
-        self.ind_tup = sig[0]
-
-    def __repr__(self):
-        return f'StaticArraySlice({self.name})[{self.ind_tup}]'
-
-    def value(self):
-        if self.ind_tup.rank() != 1:
-            raise RuntimeError(
-                f'StaticArraySlice must be rank 1.  Got {self.ind_tup.rank()}')
-        ten = self.runtime.arrays[self.name]
-        return ten.numpy().tolist()
-
 class StaticBinOpBase(AST, StaticExpr):
     """
     A Binary operator for use only in constraints.
@@ -1093,6 +1077,8 @@ class StaticBinOpBase(AST, StaticExpr):
         self.arg1 = arg1
         self.arg2 = arg2
 
+        self.add_rank_constraint()
+
     # map the op to broadcasted values
     def _map_op(self, vals1, vals2):
         is_list1 = isinstance(vals1, (list, tuple))
@@ -1108,6 +1094,23 @@ class StaticBinOpBase(AST, StaticExpr):
             return [ self.op(el1, el2) for el1, el2 in zip(vals1, vals2) ]
         else:
             return self.op(vals1, vals2)
+
+    def get_rank_constraint_root(self):
+        ltup = self.arg1.get_rank_constraint_root()
+        rtup = self.arg2.get_rank_constraint_root()
+        if ltup is None and rtup is None:
+            return None
+        elif ltup is None or ltup.name < rtup.name:
+            return rtup
+        else:
+            return ltup
+
+    def add_rank_constraint(self):
+        ltup = self.arg1.get_rank_constraint_root()
+        rtup = self.arg2.get_rank_constraint_root()
+        if ltup is None or rtup is None:
+            return
+        ltup.equate_rank(rtup)
 
     def value(self):
         vals1 = self.arg1.value()
@@ -1133,25 +1136,6 @@ class ArithmeticBinOp(StaticBinOpBase):
 
     def reduce(self, op_vals):
         return op_vals
-
-class LogicalOp(StaticBinOpBase):
-    def __init__(self, arg1, arg2, op):
-        super().__init__(arg1, arg2)
-        ops = [ operator.lt, operator.le, operator.eq, operator.ge, operator.gt
-                ]
-        ops_strs = [ '<', '<=', '==', '>=', '>' ]
-        self.op_string = op
-        self.op = dict(zip(ops_strs, ops))[op]
-
-    def __repr__(self):
-        return (f'LogicalOp({repr(self.arg1)} {self.op_string} ' +
-                f'{repr(self.arg2)})')
-
-    def reduce(self, op_vals):
-        if isinstance(op_vals, list):
-            return all(op_vals)
-        else:
-            return op_vals
 
 class TensorArg(AST):
     def __init__(self, runtime, name):
