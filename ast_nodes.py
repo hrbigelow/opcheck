@@ -53,8 +53,11 @@ class EinTup(ShapeExpr):
         self.name = name
         self._dims = None
         self._rank = None
-        # TODO: parameterize these
-        self.rank_expr = (0, 10)
+
+        # Must be set to a parent tup (for equality constraint) or a
+        # tuple range
+        self.rank_parent = None
+        self.rank_range = None
         self.gen_expr = RangeConstraint(0, 100, self)
 
     def __repr__(self):
@@ -91,17 +94,58 @@ class EinTup(ShapeExpr):
                 f'dims received {dims} but rank is {self.rank()}')
         self._dims = list(dims)
 
-    # calculate the rank from the rank_expr
+    # calculate the rank from the rank_parent
     def calc_rank(self):
         if not self.has_rank():
-            self.set_rank(self.rank_expr.calc_value())
+            if self.rank_parent is not None:
+                rank = self.rank_parent.calc_rank()
+                self.set_rank(rank)
+            else:
+                raise RuntimeError(
+                    f'calc_rank found uninitialized rank with no parent')
         return self.rank()
 
     def add_gen_expr(self, gen_expr):
         self.gen_expr = gen_expr
 
-    def add_rank_expr(self, rank_expr):
-        self.rank_expr = rank_expr
+    def _find_rank_root(self):
+        tup = self
+        while tup.rank_parent is not None:
+            tup = tup.rank_parent
+        return tup
+    
+    def equate_rank(self, tup):
+        a = self._find_rank_root()
+        b = tup._find_rank_root()
+        if a.name < b.name:
+            b.rank_parent = a
+        elif b.name < a.name:
+            a.rank_parent = b
+        else:
+            # already have the same root
+            pass 
+
+    def set_rank_range(self, rng):
+        if self.rank_range is not None:
+            raise RuntimeError(
+                f'EinTup {repr(self)} already has a rank range set as '
+                f'{self.rank_range}.  Attempting to set it to {rng}')
+        self.rank_range = rng
+
+    def lift_rank_range(self):
+        rng = self.rank_range
+        if rng is None:
+            return
+        self.rank_range = None
+        tup = self._find_rank_root()
+        if tup != self and tup.rank_range is not None:
+            raise RuntimeError(
+                f'set_rank_range: rank range for {repr(self)} already set '
+                f'on its root {repr(tup)} as {tup.rank_range}')
+        tup.set_rank_range(rng)
+
+    def get_rank_constraint_root(self):
+        return self
 
     def gen_dims(self):
         if not self.has_rank():
@@ -196,6 +240,9 @@ class SliceExpr(AST, ShapeExpr):
     def get_basis(self):
         return self.basis
 
+    def get_rank_constraint_root(self):
+        return None
+
     def evaluate(self, trg_basis):
         # return a tensor whose shape is broadcastable to 
         # trg_basis + [self.rank_sig()]
@@ -245,6 +292,11 @@ class DimsSlice(SliceExpr, StaticExpr):
     def dims(self):
         return [ v+1 for v in self.value() ]
 
+    def get_rank_constraint_root(self):
+        if len(self.shapes) == 1 and isinstance(self.shapes[0], EinTup):
+            return self.shapes[0]
+        return None
+
     def value(self):
         return util.single_dims(self.shapes)
 
@@ -261,11 +313,14 @@ class EinTupSlice(SliceExpr):
         self.tup = eintup 
         super().__init__([self.tup])
 
+    def __repr__(self):
+        return f'EinTupSlice({self.basis})'
+
     def dims(self):
         return self.tup.dims()
 
-    def __repr__(self):
-        return f'EinTupSlice({self.basis})'
+    def get_rank_constraint_root(self):
+        return self.tup
 
     def evaluate(self, trg_basis):
         src_basis = self.get_basis()
@@ -319,8 +374,33 @@ class SliceBinOp(SliceExpr):
             raise RuntimeError(
                 f'Can only divide by StaticExpr.  Got {type(rhs)}')
 
+        self.add_rank_constraint()
+
     def __repr__(self):
         return f'SliceBinOp({self.lhs} {self.op_string} {self.rhs})' 
+
+    """
+    Returns the root of the Rank equality constraint subtree established by this
+    SliceBinOp.  Every EinTupSlice and DimsSlice used in the SliceBinOp tree
+    must have the same rank.  So, a rank equality constraint tree is built
+    during SliceBinOp construction.
+    """
+    def get_rank_constraint_root(self):
+        ltup = self.lhs.get_rank_constraint_root()
+        rtup = self.rhs.get_rank_constraint_root()
+        if ltup is None and rtup is None:
+            return None
+        elif ltup is None or ltup.name < rtup.name:
+            return rtup
+        else:
+            return ltup
+
+    def add_rank_constraint(self):
+        ltup = self.lhs.get_rank_constraint_root()
+        rtup = self.rhs.get_rank_constraint_root()
+        if ltup is None or rtup is None:
+            return
+        ltup.equate_rank(rtup)
 
     def dims(self):
         # Broadcast as necessary
@@ -470,11 +550,19 @@ class Array(AST):
         ten = util.to_sig(ten, use_sig, trg_sig)
         return ten
 
+    def add_rank_constraints(self, usage_list):
+        for sig, use in zip(self.get_sig(), usage_list):
+            sig_root = sig.get_rank_constraint_root()
+            use_root = use.get_rank_constraint_root()
+            if sig_root is not None and use_root is not None:
+                sig_root.equate_rank(use_root)
+
 class LValueArray(Array):
     def __init__(self, runtime, array_name, index_list):
         if array_name not in runtime.array_sig:
             runtime.array_sig[array_name] = index_list
         super().__init__(runtime, array_name, index_list)
+        self.add_rank_constraints(index_list)
 
     def __repr__(self):
         ind_list = ','.join(ind if isinstance(ind, str) else repr(ind) 
@@ -562,6 +650,7 @@ class RValueArray(Array):
                 f'All arrays must first appear on the left hand side.'
                 f'Array {array_name} first appears on the right.')
         super().__init__(runtime, array_name, index_list, **kwds)
+        self.add_rank_constraints(index_list)
 
     def __repr__(self):
         return f'RValueArray({self.name})[{self.index_list}]'

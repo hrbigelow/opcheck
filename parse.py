@@ -121,12 +121,18 @@ class BCParser(Parser):
 
     @_('RANK LPAREN tup RPAREN IN closed_interval')
     def rank_range(self, p):
-        p.tup.add_rank_expr(p.closed_interval)
+        lo, hi = p.closed_interval
+        p.tup.set_rank_range(range(lo, hi+1))
         return None
 
-    @_('RANK LPAREN tup RPAREN ASSIGN rcons_expr')
+    @_('RANK LPAREN tup RPAREN ASSIGN unsigned_int')
+    def rank_range(self, p):
+        v = p.unsigned_int
+        p.tup.set_rank_range(range(v, v+1))
+
+    @_('RANK LPAREN tup RPAREN ASSIGN RANK LPAREN tup RPAREN')
     def rank_equals(self, p):
-        p.tup.add_rank_expr(p.rcons_expr)
+        p.tup0.equate_rank(p.tup1)
         return None
 
     @_('DIMS LPAREN tup RPAREN IN closed_interval')
@@ -144,31 +150,6 @@ class BCParser(Parser):
     @_('LBRACK unsigned_int COMMA unsigned_int RBRACK')
     def closed_interval(self, p):
         return p.unsigned_int0, p.unsigned_int1
-
-    @_('rcons_term',
-       'rcons_expr add_sub_op rcons_term')
-    def rcons_expr(self, p):
-        if hasattr(p, 'rcons_expr'):
-            return ArithmeticBinOp(p.rcons_expr, p.rcons_term, p.add_sub_op)
-        else:
-            return p.rcons_term
-    
-    @_('rcons_factor',
-       'rcons_term int_mul_div_mod_op rcons_factor')
-    def rcons_term(self, p):
-        if hasattr(p, 'int_mul_div_mod_op'):
-            return ArithmeticBinOp(p.rcons_term, p.rcons_factor, p.int_mul_div_mod_op)
-        else:
-            return p.rcons_factor
-
-    @_('integer_node',
-       'rank_cons',
-       'LPAREN rcons_expr RPAREN')
-    def rcons_factor(self, p):
-        if hasattr(p, 'rcons_expr'):
-            return p.rcons_expr
-        else:
-            return p[0]
 
     @_('dcons_term',
        'dcons_expr add_sub_op dcons_term')

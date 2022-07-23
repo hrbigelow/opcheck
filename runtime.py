@@ -89,6 +89,9 @@ class Runtime(object):
             self.parser.parse(con)
 
         # post-init all AST nodes
+        for tup in self.tups.values():
+            tup.lift_rank_range()
+
         all_nodes = self.statements + [self.tf_call]
 
     def clear_shapes(self):
@@ -106,25 +109,21 @@ class Runtime(object):
             self.tup(tup_name).initialize(shape)
         self.arrays.clear()
 
-
     # generate shapes according to ordered tups
     def gen_shapes(self, tups, reps=30):
-        te = { t: t.rank_expr for t in tups }
-        rng = { k: v for k, v in te.items() if isinstance(v, tuple) }
-        expr_tups = [ k for k, v in te.items() if isinstance(v, StaticExpr) ]
-        range_list = [range(r[0], r[1]+1) for r in rng.values()]
+        range_tups = [ t for t in tups if t.rank_range is not None ]
+        range_list = [ t.rank_range for t in range_tups ]
         combos = itertools.product(*range_list)
 
         for ranks in combos:
             for i in range(reps):
                 self.clear_shapes()
-                for t, r in zip(rng.keys(), ranks):
+                for t, r in zip(range_tups, ranks):
                     t.set_rank(r)
-                for tup in expr_tups:
-                    tup.calc_rank()
-                # now, ranks are completely set
-                for tup in te.keys():
-                    tup.gen_dims()
+                for t in tups:
+                    t.calc_rank()
+                for t in tups:
+                    t.gen_dims()
                 shapes = [ t.dims() for t in tups ]
                 yield shapes
 

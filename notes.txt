@@ -93,6 +93,19 @@ If lval_array index_expr_list has any index expressions, the
 lhs._evaluate_sliced() function must be used.  
 
 
+Automatic Rank Equivalence Constraints
+
+Whenever two of either EinTupSlice or DimsSlice instances appear together in an
+index expression, their ranks must match.  Instead of requiring the user to
+specify rank equivalence constraints for such cases, we infer them from the
+index expressions.
+
+The approach is to inspect each complex index expression appearing anywhere in the
+program, which will be a SliceBinOp.  Then, traverse the SliceBinOp to collect
+all EinTupSlice and DimsSlice instances.  From there, extract the set of all
+tups.  Then, order them in dictionary order by name.  Add the first tup as a
+rank constraint to all the subsequent tups.
+
 
 
 SliceExpr

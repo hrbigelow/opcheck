@@ -9,7 +9,6 @@ RANK(batch) = 1
 DIMS(batch) = 1
 RANK(ichan) = 1 
 RANK(ipos) = 2
-RANK(bsz) = RANK(ipos)
 DIMS(bsz) IN [2,2]
 DIMS(ichan) IN [3,3]
 DIMS(ipos) IN [4,4]
