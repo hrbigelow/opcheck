@@ -10,12 +10,8 @@ out
 
 RANK(batch) = 1
 RANK(ipos) = 2
-RANK(dpos) = RANK(ipos)
-RANK(opos) = RANK(ipos)
-RANK(stride) = RANK(ipos)
 RANK(ichan) = 1
 RANK(ochan) = 1
-RANK(cmul) = 1
 DIMS(batch) IN [1,3]
 DIMS(ipos) IN [15,100]
 DIMS(dpos) IN [2,5]

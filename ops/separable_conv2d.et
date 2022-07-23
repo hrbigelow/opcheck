@@ -1,8 +1,0 @@
-input[batch,ipos,ichan] = RANDOM(0, 10, FLOAT)
-depthwise_filter[dpos,ichan,mult] = RANDOM(0, 1, FLOAT)
-pointwise_filter[unit,ppos,ochan] = RANDOM(0, 1, FLOAT)
-input_index[dpos,ipos,dim] = RANGE[dpos,dim] + RANGE[ipos,dim]
-point_index[ichan,mult] = RANGE[ichan,dim] * RANGE[mult,dim] + RANGE[mult,dim]
-output[batch,
-
-

@@ -8,15 +8,12 @@ tf.nn.conv_transpose(input=input, filters=filters,
 
 output
 
-DIMS(batch) IN [1,4]
-RANK(ipos) IN [1,3]
-RANK(fpos) = RANK(ipos)
-RANK(opos) = RANK(ipos)
-RANK(stride) = RANK(ipos)
-DIMS(stride) IN [1,3]
 RANK(batch) = 1
 RANK(ichan) = 1
 RANK(ochan) = 1
+DIMS(batch) IN [1,4]
+RANK(ipos) IN [1,3]
+DIMS(stride) IN [1,3]
 DIMS(opos) = (DIMS(ipos) - 1) * DIMS(stride) + DIMS(fpos)
 DIMS(fpos) IN [1,4]
 DIMS(ipos) IN [10,14]
