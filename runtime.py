@@ -14,6 +14,9 @@ class Runtime(object):
         # map of eintup names to EinTup instances
         self.tups = {}
 
+        # anonymous eintups used for rank constraints 
+        self.anon_tups = []
+
         # defines the signature (see notes.txt) of arrays
         self.array_sig = {}
 
@@ -92,6 +95,13 @@ class Runtime(object):
         for tup in self.tups.values():
             tup.lift_rank_range()
 
+        for tup in self.anon_tups:
+            tup.lift_rank_range()
+
+        # add implicit rank constraint of 1 to any unconstrained EinTups
+        for tup in self.tups.values():
+            tup.maybe_set_rank_range(range(1,2))
+
         all_nodes = self.statements + [self.tf_call]
 
     def clear_shapes(self):
@@ -104,9 +114,9 @@ class Runtime(object):
                 continue
             tup.gen_dims()
 
-    def init_all_shapes(self, shape_map):
-        for tup_name, shape in shape_map.items():
-            self.tup(tup_name).initialize(shape)
+    def init_all_shapes(self, tups, shapes):
+        for tup, shape in zip(tups, shapes):
+            tup.initialize(shape)
         self.arrays.clear()
 
     # generate shapes according to ordered tups
@@ -128,24 +138,27 @@ class Runtime(object):
                 yield shapes
 
     def validate_all(self):
-        tup_order = list(self.tups.values())
-        tup_names = [ t.name for t in tup_order ]
-        n = len(tup_order)
-        all_shapes = list(self.gen_shapes(tup_order, self.reps))
+        vis_tups = list(self.tups.values())
+        all_tups = vis_tups + self.anon_tups
+        n_vis = len(vis_tups)
+
+        # generates all combinations of conformant shapes and ranks for tups
+        all_shapes = list(self.gen_shapes(all_tups, self.reps))
         # compute padding
-        w = [ len(n) for n in tup_names ]
+        width = [ len(t.name) for t in vis_tups ]
         for shapes in all_shapes:
-            for i in range(n):
-                name = tup_order[i].name
-                w[i] = max(w[i], len(str(shapes[i])))
+            for i in range(n_vis):
+                name = vis_tups[i].name
+                width[i] = max(width[i], len(str(shapes[i])))
 
-        print(''.join(f'{tup_names[i]:<{w[i]+3}s}' for i in range(n)), '  Valid')
+        print(''.join(f'{vis_tups[i].name:<{width[i]+3}s}' 
+            for i in range(n_vis)), '  Valid')
+
         for shapes in all_shapes:
-            dmap = dict(zip(tup_names, shapes))
-            self.init_all_shapes(dmap)
+            self.init_all_shapes(all_tups, shapes)
             valid = self.validate()
-
-            line = ''.join(f'{str(shapes[i]):<{w[i]+3}s}' for i in range(n))
+            line = ''.join(f'{str(shapes[i]):<{width[i]+3}s}' for i in
+                    range(n_vis))
             print(f'{line}   {valid}')
 
     # validate the current rank + dims setting
@@ -161,6 +174,9 @@ class Runtime(object):
         if name not in self.tups:
             self.tups[name] = EinTup(name)
         return self.tups[name]
+
+    def add_anon_tup(self, tup):
+        self.anon_tups.append(tup)
 
     def tup(self, eintup):
         if eintup not in self.tups:

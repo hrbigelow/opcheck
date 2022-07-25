@@ -6,7 +6,7 @@ class BCLexer(Lexer):
     # Set of token names.   This is always required
     tokens = { IDENT, QUAL_NM, COMMA, COLON, SQSTR, DQSTR, UFLOAT, UINT,
             ASSIGN, ACCUM, LPAREN, RPAREN, LBRACK, RBRACK, PLUS, MINUS, TIMES,
-            MODULO, TRUEDIV, TRUNCDIV, CEILDIV, DIMS, IN, RANGE, RANK, RANDOM,
+            MODULO, TRUEDIV, TRUNCDIV, CEILDIV, DIMS, IN, RANK, RANDOM,
             TENSOR, FLAT, L, DTYPE }
 
     # String containing ignored characters between tokens
@@ -14,7 +14,6 @@ class BCLexer(Lexer):
 
     # Regular expression rules for tokens
     DIMS    = 'DIMS'
-    RANGE   = 'RANGE'
     RANK    = 'RANK'
     RANDOM  = 'RANDOM'
     TENSOR  = 'TENSOR'
@@ -329,7 +328,6 @@ class BCParser(Parser):
 
     @_('rval_array', 
        'rand_call',
-       'range_array',
        'dims_index',
        'number_node')
     def rval_unit(self, p):
@@ -372,23 +370,23 @@ class BCParser(Parser):
     def rand_call(self, p):
         return RandomCall(self.runtime, p.rand_arg0, p.rand_arg1, p.DTYPE)
 
-    @_('RANGE LBRACK tup COMMA tup RBRACK')
-    def range_array(self, p):
-        return RangeExpr(self.runtime, p.tup0, p.tup1)
-
     @_('number_node', 'rank', 'dims_index', 'rval_array')
     def rand_arg(self, p):
         return p[0]
 
-    @_('COLON',
+    @_('star_expr',
        'sliced_index_exprs COMMA index_expr',
-       'index_exprs COMMA COLON')
+       'index_exprs COMMA star_expr')
     def sliced_index_exprs(self, p):
         if hasattr(p, 'COMMA'):
             p[0].append(p[2])
             return p[0]
         else:
             return [p[0]]
+
+    @_('COLON')
+    def star_expr(self, p):
+        return Star(self.runtime)
 
     @_('IDENT')
     def array_name(self, p):
@@ -449,7 +447,7 @@ class BCParser(Parser):
     def flatten_slice(self, p):
         slice_list = [ self.maybe_convert_eintup(item) 
                 for item in p.index_exprs ]
-        return FlattenSlice(slice_list)
+        return FlattenSlice(self.runtime, slice_list)
 
     @_('IDENT')
     def tup_name(self, p):

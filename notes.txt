@@ -106,7 +106,15 @@ all EinTupSlice and DimsSlice instances.  From there, extract the set of all
 tups.  Then, order them in dictionary order by name.  Add the first tup as a
 rank constraint to all the subsequent tups.
 
+Implicit Rank 1 Constraints
 
+If an EinTup rank is unconstrained after all implied and explicit constraints
+are processed, the system will assign it a range constraint of [1,1].  This
+means that if the user wants the rank to vary, he must provide the range
+explicitly.
+
+The EinTup rank constraint logic is implemented using two members: rank_parent
+and rank_range.  Exactly one of these must be set.  With this rubric 
 
 SliceExpr
 

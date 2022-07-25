@@ -9,7 +9,6 @@ result
 RANK(batch) IN [0,3]
 RANK(slice) IN [0,3]
 RANK(other) IN [0,3]
-RANK(coord) = 1
 DIMS(coord) = RANK(elem)
 RANK(elem) IN [1,5]
 DIMS(batch) IN [0,4]

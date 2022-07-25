@@ -25,6 +25,16 @@ def combine_slices(slice_list):
     util.check_shape(ten, basis + [elem_shape], False)
     return ten, basis, elem_shape
 
+
+class Star(object):
+    def __init__(self, runtime):
+        self.rank_root = EinTup('')
+        self.rank_root.set_rank_range(range(1, 2))
+        runtime.add_anon_tup(self.rank_root)
+
+    def get_rank_constraint_root(self):
+        return self.rank_root
+
 STAR = ':'
 
 class ShapeExpr(object):
@@ -54,8 +64,7 @@ class EinTup(ShapeExpr):
         self._dims = None
         self._rank = None
 
-        # Must be set to a parent tup (for equality constraint) or a
-        # tuple range
+        # Exactly one of rank_parent or rank_range must be set.
         self.rank_parent = None
         self.rank_range = None
         self.gen_expr = RangeConstraint(0, 100, self)
@@ -102,7 +111,8 @@ class EinTup(ShapeExpr):
                 self.set_rank(rank)
             else:
                 raise RuntimeError(
-                    f'calc_rank found uninitialized rank with no parent')
+                    f'calc_rank found uninitialized rank with no parent '
+                    f'for {repr(self)}')
         return self.rank()
 
     def add_gen_expr(self, gen_expr):
@@ -131,6 +141,12 @@ class EinTup(ShapeExpr):
                 f'EinTup {repr(self)} already has a rank range set as '
                 f'{self.rank_range}.  Attempting to set it to {rng}')
         self.rank_range = rng
+
+    # Set the rank range if it has no constraint
+    def maybe_set_rank_range(self, rng):
+        root = self._find_rank_root()
+        if root.rank_range is None:
+            root.rank_range = rng
 
     def lift_rank_range(self):
         rng = self.rank_range
@@ -221,13 +237,6 @@ class GroupShape(ShapeExpr):
 
     def dims(self):
         return [ dim for sh in self.shape_list for dim in sh.dims() ]
-
-class FlatShape(ShapeExpr):
-    def __init__(self, shape_list):
-        self.shape_list = shape_list
-
-    def dims(self):
-        return [ np.prod([sh.nelem() for sh in self.shape_list]) ]
 
 class SliceExpr(AST, ShapeExpr):
     # Each entry in an Array index_list is either a naked EinTup or a SliceExpr
@@ -333,15 +342,21 @@ class EinTupSlice(SliceExpr):
         return ten
 
 class FlattenSlice(SliceExpr):
-    def __init__(self, slice_list):
+    def __init__(self, runtime, slice_list):
         super().__init__(basis=list())
         self.slice_list = slice_list
+        self.rank_root = EinTup('')
+        self.rank_root.set_rank_range(range(1, 2))
+        runtime.add_anon_tup(self.rank_root)
 
     def __repr__(self):
         return f'FlattenSlice({self.slice_list})'
         
     def get_basis(self):
         return merge_bases(self.slice_list)
+
+    def get_rank_constraint_root(self):
+        return self.rank_root
 
     def dims(self):
         ub = np.prod([sh.nelem() for sh in self.slice_list], dtype=np.int32)
@@ -535,7 +550,7 @@ class Array(AST):
                 f'Expected {len(sig_list)} but called with {len(use_list)}')
 
         def match(sig, use):
-            return use == STAR or sig.rank() == use.rank()
+            return isinstance(use, Star) or sig.rank() == use.rank()
 
         if not all(match(sig, use) for sig, use in zip(sig_list, use_list)):
             raise RuntimeError(
@@ -552,7 +567,7 @@ class Array(AST):
         sig = self.runtime.array_sig[self.name]
         z = zip(sig, self.index_list)
         def subst_sig(use):
-            return use == STAR or isinstance(use, SliceExpr)
+            return isinstance(use, (SliceExpr, Star))
         use_sig = [ sig if subst_sig(use) else use for sig, use in z]
         ten = util.to_sig(ten, use_sig, trg_sig)
         return ten
@@ -739,12 +754,14 @@ class ArraySlice(RValueArray, SliceExpr):
     # Represents an expression ary[a,b,c,:,e,...] with exactly one ':' and
     # the rest of the indices simple eintup names.  
     def __init__(self, runtime, array_name, index_list, **kwds):
-        basis = [ t for t in index_list if t != STAR ]
+        basis = [ t for t in index_list if not isinstance(t, Star) ]
         kwds['basis'] = basis
         super().__init__(runtime, array_name, index_list, **kwds)
-        try:
-            star_ind = index_list.index(STAR)
-        except ValueError:
+        for i, use in enumerate(index_list):
+            if isinstance(use, Star):
+                star_ind = i 
+                break
+        else:
             raise RuntimeError(f'ArraySlice did not contain a Star index')
         sig = runtime.array_sig[array_name]
         self.ind_tup = sig[star_ind]
@@ -755,7 +772,7 @@ class ArraySlice(RValueArray, SliceExpr):
 
     def dims(self):
         def mask(use):
-            if use == STAR:
+            if isinstance(use, Star):
                 return [False] * self.ind_tup.rank()
             else:
                 return [True] * use.rank()
@@ -800,45 +817,12 @@ class RandomCall(AST):
         ten = rnd % (maxs - mins) + mins
         return ten
 
-class RangeExpr(AST):
-    # Problem: no good way to instantiate 'children' here since
-    # the eintup's are just strings
-    # RANGE[s, c], with s the key_eintup, and c the 1-D last_eintup
-    def __init__(self, runtime, key_eintup, last_eintup):
-        super().__init__()
-        self.runtime = runtime
-        self.key_tup = runtime.maybe_add_tup(key_eintup)
-        self.last_tup = runtime.maybe_add_tup(last_eintup)
-
-    def __repr__(self):
-        return f'RangeExpr({self.key_tup}, {self.last_tup})'
-
-    def get_tups(self):
-        return [self.key_tup, self.last_tup]
-
-    def evaluate(self, trg_sig):
-        if self.last_tup.rank() != 1:
-            raise RuntimeError(f'RangeExpr: last EinTup \'{self.last_tup}\''
-                    f' must have rank 1.  Got {self.last_tup.rank()}')
-        ind_dims = self.last_tup.dims()[0] 
-        key_rank = self.key_tup.rank()
-        if ind_dims != key_rank:
-            raise RuntimeError(
-                    f'RangeExpr: last EinTup \'{self.last_tup}\' has dimension '
-                    f'{ind_dims} but must be equal to key EinTup '
-                    f'\'{self.key_tup}\' rank {key_rank}')
-        src_sig = self.get_tups() 
-        ten = util.ndrange(self.key_tup.dims())
-        ten = util.to_sig(ten, src_sig, trg_sig)
-        return ten
-
 class ArrayBinOp(AST):
     def __init__(self, runtime, lhs, rhs, op_string):
         super().__init__(lhs, rhs)
         # TODO: expand to include RankExpr, IntExpr, and add evaluate()
         # methods to those classes
-        allowed_types = (RangeExpr, RandomCall, RValueArray, Dims, IntExpr,
-                ArrayBinOp)
+        allowed_types = (RandomCall, RValueArray, Dims, IntExpr, ArrayBinOp)
         if not isinstance(lhs, allowed_types):
             raise RuntimeError(
                 f'left-hand-side argument is type {type(lhs)}, not allowed')
