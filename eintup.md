@@ -246,7 +246,7 @@ calls, the ranks of `elem`, `left_trim`, and `right_trim` are automatically
 equated.
 
 In these contexts, 'equated' means that the runtime system automatically
-constraints them to have the same ranks when generating ranks and dimensions.
+constrains them to have the same ranks when generating ranks and dimensions.
 
 ## An Einsum Tuple Array is sized on first use
 

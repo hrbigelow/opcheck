@@ -50,21 +50,57 @@ output[batch,opos,ochan] = filters[fpos,ichan,ochan] * input[batch,fpos+DIMS(str
 
 # Validation call
 tf.nn.convolution(input=input, filters=filters, strides=DIMS(stride), padding=L('VALID'))
+
+# Constraints - DIMS constraints are necessary to avoid OOM errors
+# The constraint on DIMS(opos) is needed for correctness.
+RANK(ipos) IN [1,3]
+DIMS(stride) IN [1,3]
+DIMS(fpos) IN [2,5]
+DIMS(ipos) IN [15,24]
+DIMS(batch) IN [1,4]
+DIMS(ichan) IN [1,3]
+DIMS(ochan) IN [1,3]
+DIMS(opos) = (DIMS(ipos) - DIMS(fpos) + 1) //^ DIMS(stride)
 ```
 
 To validate the Einsum Tuple definition for convolution against
 `tf.nn.convolution`, run the `.et` file.  The runtime system instantiates the
 *Einsum Tuple* program with all valid combinations of ranks of Eintups, and
-runs each instance.
+runs each instance.  The runtime instantiated values for `DIMS(batch)`,
+`DIMS(ipos)` etc are shown in each output line.  In this example, the first
+lines are 1D convolutions, followed by 2D and then 3D.
 
 ```bash
 # Validate the above expression for 1D, 2D and 3D
-$ python eintup.py ops/conv_valid_v1.et
-batch   ipos           ichan   fpos        ochan   opos        stride         Valid
-[3]     [24]           [2]     [4]         [1]     [11]        [2]            [True]
-[1]     [24, 15]       [3]     [2, 5]      [2]     [12, 11]    [2, 1]         [True]
-[1]     [18, 18, 20]   [1]     [2, 3, 4]   [3]     [6, 8, 6]   [3, 2, 3]      [True]
+# An optional number of reps can be specified as second argument (here, 5 reps)
+y@henry-gs65:einsum-tuple$ python eintup.py ops/conv_valid_v1.et 5
+batch   ipos           ichan   fpos        ochan   opos          stride         Valid
+[3]     [18]           [3]     [4]         [1]     [8]           [2]            [True]
+[2]     [24]           [1]     [5]         [3]     [10]          [2]            [True]
+[1]     [23]           [2]     [4]         [2]     [10]          [2]            [True]
+[4]     [15]           [3]     [3]         [1]     [5]           [3]            [True]
+[2]     [20]           [2]     [2]         [2]     [19]          [1]            [True]
+[2]     [17, 23]       [2]     [5, 3]      [3]     [5, 11]       [3, 2]         [True]
+[4]     [23, 21]       [1]     [3, 2]      [1]     [7, 20]       [3, 1]         [True]
+[2]     [18, 22]       [1]     [4, 3]      [3]     [8, 10]       [2, 2]         [True]
+[2]     [21, 17]       [3]     [2, 3]      [3]     [20, 8]       [1, 2]         [True]
+[2]     [23, 23]       [1]     [2, 2]      [1]     [8, 22]       [3, 1]         [True]
+[4]     [15, 19, 23]   [1]     [4, 5, 2]   [2]     [12, 5, 22]   [1, 3, 1]      [True]
+[3]     [20, 24, 18]   [1]     [5, 4, 5]   [2]     [6, 7, 5]     [3, 3, 3]      [True]
+[2]     [20, 23, 17]   [1]     [4, 4, 5]   [1]     [17, 7, 5]    [1, 3, 3]      [True]
+[4]     [15, 23, 19]   [3]     [3, 2, 3]   [1]     [13, 11, 9]   [1, 2, 2]      [True]
+[2]     [22, 17, 21]   [2]     [5, 5, 5]   [2]     [18, 7, 17]   [1, 2, 1]      [True]
 ```
+
+Note that the input dimensions are quite small.  This is necessary to avoid
+out-of-memory errors, because the actual implementation unrolls the input or
+filter into a higher dimensional structure.  The unrolled filter is
+`filters[ipos-DIMS(stride)*opos,ichan,ochan]` and is
+`RANK(ipos,opos,ichan,ochan) = 8` for 3D.  The unrolled input is
+`input[batch,fpos+DIMS(stride)*opos,ichan]` and has
+`RANK(batch,fpos,opos,ichan) = 8` as well, for the 3D case.  More detail about
+rank and dimension calculation for expressions in the **Einsum Tuple** language
+can be found in [intro.md](https://github.com/hrbigelow/einsum-tuple/blob/master/intro.md)
 
 ### Gather
 
@@ -73,7 +109,6 @@ batch   ipos           ichan   fpos        ochan   opos        stride         Va
 params[batch,readloc,elem] = RANDOM(0, 10, FLOAT)
 indices[batch,writeloc,coord] = RANDOM(0, DIMS(readloc)[coord], INT)
 result[batch,writeloc,elem] = params[batch,indices[batch,writeloc,:],elem]
-
 
 # Rank constraints
 RANK(batch) IN [0,4]
@@ -85,8 +120,14 @@ RANK(elem) IN [0,3]
 tf.gather_nd(params, indices, batch_dims=RANK(batch))
 ```
 
+The Gather operation is unusual in that it employs tensor `indices` whose
+values are used as indices into another tensor `params`.  It is also highly
+polymorphic in the number of combinations of dimensions that it accepts. 
 Here there are many possible valid rank combinations for the Eintups `batch`,
 `elem`, `readloc` and `writeloc`.
+
+A more gradual introduction and detailed explanation of `tf.gather_nd` is given
+in [intro.md](https://github.com/hrbigelow/einsum-tuple/blob/master/intro.md).
 
 ```python
 $ python eintup.py ops/gather_nd.et
