@@ -219,6 +219,66 @@ expression is also valid.
 Using an array slice as an index expression is a scatter operation if used on
 the left hand side, and a gather operation if on the right.
 
+# Runtime
+
+The file `eintup.py` interprets the sections in the `.et` file and runs both
+the **Einsum Tuple** program and the framework function call.  It also parses
+and infers constraints on the ranks and dimensions of the indices mentioned in
+the program.
+
+The `.et` file has four sections, each section separated by one or more blank
+lines.  The first section is the **Einsum Tuple** program as a list of
+statements.  The second section is the framework call.  It is a quasi-Python
+function call statement which is preprocessed in a few ways:
+
+1. Bare identifiers resolve to tensors mentioned in the Einsum Tuple program
+2. `DIMS(...)` expressions resolve to a Python list of integers
+3. `RANK(...)` expressions resolve to a Python integer
+4. The `L(...)` function allows passing in a Python literal
+5. The `TENSOR(...)` function creates a tensor from `DIMS()`, `RANK()` or integer arguments.
+
+The runtime will run the framework call, and then compare the output(s) with those
+listed on the Outputs line, which are computed using the Einsum Tuple program.
+
+The third section is just a single line listing which tensors in the **Einsum
+Tuple** program are to be compared with the returned tensors from the framework
+call.  This is usually just a single tensor, but may be a list.  The order must
+match that expected from the framework call.  For an example, see
+[meshgrid.et](https://github.com/hrbigelow/einsum-tuple/blob/master/ops/meshgrid.et)
+
+## Constraints
+
+Constraints on the ranks and dimensions of all Eintups are specified in the
+fourth and last section of the `.et` file.  These constraints are used by the
+runtime to generate valid combinations of ranks and dimensions to instantiate
+the program and run it.
+
+There are four types:
+
+```
+DIMS(tup) IN [min, max]
+RANK(tup) IN [min, max]
+DIMS(tup) = dcons_expr
+RANK(tup) = rcons_expr
+```
+
+The `IN` forms cause the runtime to generate some value in `[min, max]`
+randomly.  The '=' forms evaluate the *dcons_expr* or *rcons_expr* and assign
+the result to the left hand side.  *rcons_expr* is an arithmetic expression
+that can consist of integers or `RANK(tup)` expressions.  Taken together, these
+constraints form a dependency graph, and it is an error if the graph is
+circular.  The runtime system automatically finds the proper order to resolve
+the dependencies.
+
+*dcons_expr* is an arithmetic expression of integers, `DIMS(tup)` or
+`RANK(tup)` expressions.  Like the *rcons_expr*, it is an error if there are
+circular dependencies.  Note that the `DIMS()` constraints can depend on both
+`DIMS()` and `RANK()` expressions, while the `RANK()` constraints may only
+depend on other `RANK()` constraints.  This is because the runtime constraint
+resolution process proceeds in two phases.  In the first phase, it assigns all
+EinTup ranks according to the rank constraints, without assigning dimensions to
+the EinTups.  In the second phase, it resolves all dims constraints.
+
 ## Automatic Rank Equality Constraints
 
 The runtime system infers that EinTups have the same rank in the following
@@ -247,6 +307,7 @@ equated.
 
 In these contexts, 'equated' means that the runtime system automatically
 constrains them to have the same ranks when generating ranks and dimensions.
+
 
 ## An Einsum Tuple Array is sized on first use
 

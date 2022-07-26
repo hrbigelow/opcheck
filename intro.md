@@ -446,36 +446,3 @@ output[batch,opos,ochan] = filters[ipos-opos,ichan,ochan] * input[batch,ipos,ich
 
 Of course, this is not a memory efficient way to compute convolution, but it provides a simple definition.  Looking at the formula, it is also easy to see that the `input` tensor appears alone as a single multiplicative term.  Therefore the operation is easily shown to be linear in the input.
 
-
-
-# Runtime
-
-The `.et` file third section is the 'TF Call'.  It is a quasi-Python function call statement which is preprocessed in a few ways:
-
-1. Bare identifiers resolve to tensors mentioned in the Einsum Tuple program
-2. $\dims{\cdots}$ expressions resolve to a Python list of integers
-3. $\rank{\cdots}$ expressions resolve to a Python integer
-4. The $\func{L}{\cdots}$ function allows passing in a Python literal
-5. The $\func{TENSOR}{\cdots}$ function creates a tensor from $\dims{}$, $\rank{}$ or integer arguments.
-
-The runtime will run the TF Call, and then compare the output(s) with those listed on the Outputs line, which are computed using the Einsum Tuple program.
-
-# Constraints
-
-Constraints on the ranks and dimensions of all Eintups are specified in the fourth and last section of the `.et` file.  These constraints are used by the runtime to generate valid combinations of ranks and dimensions to instantiate the program and run it.
-
-There are four types:
-
-
-\begin{array}{ll}
-\dims{tup} & \mathsf{IN} \: [\mathsf{min}, \mathsf{max} ] \\
-\rank{tup} & \mathsf{IN} \: [\mathsf{min}, \mathsf{max} ] \\
-\dims{tup} & \sym{=} \: \mathit{dcons\_expr} \\
-\rank{tup} & \sym{=} \: \mathit{rcons\_expr} \\
-\end{array}
-
-
-The 'IN' forms cause the runtime to generate some value in `[min, max]` randomly.  The '=' forms evaluate the *dcons_expr* or *rcons_expr* and assign the result to the left hand side.  *rcons_expr* is an arithmetic expression that can consist of integers or $\rank{tup}$ expressions.  Taken together, these constraints form a dependency graph, and it is an error if the graph is circular.  The runtime system automatically finds the proper order to resolve the dependencies.
-
-*dcons_expr* is an arithmetic expression of integers, $\dims{tup}$ or $\rank{tup}$ expressions.  Like the *rcons_expr*, it is an error if there are circular dependencies.  Note that the $\dims{}$ constraints can depend on both $\dims{}$ and $\rank{}$ expressions, while the $\rank{}$ constraints may only depend on other $\rank{}$ constraints.  This is because the runtime constraint resolution process proceeds in two phases.  In the first phase, it assigns all EinTup ranks according to the rank constraints, without assigning dimensions to the EinTups.  In the second phase, it resolves all dims constraints.
-
