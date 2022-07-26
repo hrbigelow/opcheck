@@ -174,10 +174,11 @@ counterintuitive.  For example:
 DIMS(tup - other) = DIMS(tup)  
 
 # The mod operation may or may not truncate the maximal value, depending
-# on the component-wise maxima of `tup` and `other`
-DIMS(tup % DIMS(other)) = min(DIMS(tup), DIMS(other))
+# on the component-wise maxima of `tup` and `other` (or simply the value of
+`other`, if it is an integer)
+DIMS(tup % other) = min(DIMS(tup), other)
 
-# Here, static_expr can be an integer or DIMS(other)
+# Here, static_expr can be an integer or integer tuple value
 # All of these binary expressions follow the same logic.  Since the maximum
 # value of tup is one less than DIMS(tup), we take the component-wise
 # modified maximum value, and add 1 to get the exclusive upper bound
@@ -272,4 +273,23 @@ updates[slice,elem] = RANDOM(0, 10, FLOAT)
 output[dest,elem] = 0.0 
 output[indices[slice,:],elem] = updates[slice,elem]
 ```
+
+## The FLAT function
+
+The FLAT() function accepts an `index_expr_list` and returns an `index_expr` of
+rank 1.  It calculates the value of the index into the flattened version of the
+array.  If `index` is out of bounds (negative or too high) in any of its
+components, `FLAT(index)` will be -1.
+
+```python
+array = np.ndarray(shape=DIMS(index_expr_list))
+flat_array = array.flatten()
+
+# True for all values of index
+array[index] = flat_array[FLAT(index)]
+```
+
+It is implemented as class
+[FlattenSlice](https://github.com/hrbigelow/einsum-tuple/blob/aef37c7844148f863d523f4228bdaf9d64c2baa7/ast_nodes.py#L365)
+
 

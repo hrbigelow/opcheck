@@ -6,8 +6,8 @@ tf.gather_nd(params, indices, batch_dims=RANK(batch))
 
 result
 
-RANK(batch) IN [0,3]
-RANK(readloc) IN [1,5]
+RANK(batch) IN [0,4]
+RANK(readloc) IN [1,4]
 RANK(writeloc) IN [1,3]
 RANK(elem) IN [0,3]
 DIMS(coord) = RANK(readloc)

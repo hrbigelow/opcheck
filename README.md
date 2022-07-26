@@ -23,6 +23,17 @@ By naming groups of dimensions and allowing them to be variable in number, the
 user can easily see which groups travel together and in what relative
 positions, in each tensor.
 
+This README shows some quick code examples with short explanations. 
+For a more gradual introduction, see
+[intro.md](https://github.com/hrbigelow/einsum-tuple/blob/master/intro.md).
+The complete set of available examples of popular tensor operations defined in
+Einsum Tuple are in [ops
+directory](https://github.com/hrbigelow/einsum-tuple/tree/master/ops).  For a
+technical description, see
+[eintup.md](https://github.com/hrbigelow/einsum-tuple/blob/master/eintup.md)
+and the formal grammar
+[eintup_grammar.ebnf](https://github.com/hrbigelow/einsum-tuple/blob/master/eintup_grammar.ebnf).
+
 ## Examples
 
 ### Convolution for any spatial dimensions 
@@ -110,106 +121,7 @@ batch       readloc       elem         writeloc      coord      Valid
 []          [4, 2, 8]     [1]          [9]           [3]        [True]
 []          [5, 6, 10]    [6]          [9, 9]        [3]        [True]
 []          [8, 1, 4]     [8]          [6, 9, 9]     [3]        [True]
-[]          [8, 4, 1]     [4, 8]       [9]           [3]        [True]
-[]          [6, 1, 10]    [10, 5]      [4, 1]        [3]        [True]
-[]          [1, 5, 10]    [9, 6]       [2, 10, 5]    [3]        [True]
-[]          [4, 3, 10]    [10, 3, 6]   [9]           [3]        [True]
-[]          [5, 1, 9]     [1, 7, 3]    [3, 3]        [3]        [True]
-[]          [2, 3, 5]     [3, 3, 4]    [4, 10, 2]    [3]        [True]
-[3]         [9]           []           [2]           [1]        [True]
-[4]         [3]           []           [2, 5]        [1]        [True]
-[0]         [6]           []           [3, 4, 9]     [1]        [True]
-[2]         [9]           [1]          [9]           [1]        [True]
-[3]         [1]           [1]          [2, 5]        [1]        [True]
-[0]         [3]           [1]          [4, 6, 2]     [1]        [True]
-[2]         [9]           [7, 1]       [3]           [1]        [True]
-[0]         [4]           [9, 1]       [4, 2]        [1]        [True]
-[3]         [7]           [6, 3]       [8, 2, 2]     [1]        [True]
-[2]         [2]           [6, 4, 1]    [8]           [1]        [True]
-[2]         [3]           [4, 6, 1]    [7, 1]        [1]        [True]
-[0]         [5]           [4, 1, 2]    [8, 2, 6]     [1]        [True]
-[0]         [9, 8]        []           [6]           [2]        [True]
-[1]         [8, 5]        []           [5, 8]        [2]        [True]
-[0]         [3, 1]        []           [4, 8, 2]     [2]        [True]
-[4]         [9, 9]        [3]          [7]           [2]        [True]
-[1]         [5, 4]        [5]          [2, 1]        [2]        [True]
-[4]         [7, 9]        [10]         [6, 6, 3]     [2]        [True]
-[3]         [10, 10]      [6, 7]       [1]           [2]        [True]
-[3]         [6, 8]        [4, 10]      [9, 6]        [2]        [True]
-[3]         [2, 8]        [8, 8]       [1, 1, 3]     [2]        [True]
-[1]         [3, 10]       [6, 9, 4]    [5]           [2]        [True]
-[2]         [8, 3]        [7, 10, 1]   [5, 8]        [2]        [True]
-[2]         [8, 6]        [8, 10, 2]   [2, 4, 5]     [2]        [True]
-[1]         [3, 3, 5]     []           [5]           [3]        [True]
-[2]         [3, 2, 3]     []           [6, 8]        [3]        [True]
-[4]         [4, 5, 1]     []           [6, 8, 10]    [3]        [True]
-[4]         [1, 3, 5]     [1]          [5]           [3]        [True]
-[2]         [4, 5, 6]     [10]         [4, 10]       [3]        [True]
-[1]         [7, 10, 5]    [7]          [9, 10, 2]    [3]        [True]
-[1]         [2, 1, 4]     [6, 9]       [1]           [3]        [True]
-[1]         [8, 7, 4]     [2, 7]       [6, 4]        [3]        [True]
-[2]         [2, 10, 10]   [6, 4]       [3, 3, 2]     [3]        [True]
-[2]         [7, 3, 9]     [1, 5, 5]    [6]           [3]        [True]
-[3]         [3, 10, 1]    [5, 9, 10]   [5, 2]        [3]        [True]
-[0]         [3, 5, 7]     [4, 3, 5]    [4, 6, 8]     [3]        [True]
-[1, 1]      [8]           []           [9]           [1]        [True]
-[1, 3]      [2]           []           [6, 10]       [1]        [True]
-[2, 2]      [9]           []           [7, 8, 7]     [1]        [True]
-[2, 0]      [1]           [10]         [6]           [1]        [True]
-[1, 0]      [6]           [2]          [8, 6]        [1]        [True]
-[4, 1]      [6]           [10]         [8, 2, 3]     [1]        [True]
-[2, 0]      [1]           [9, 10]      [5]           [1]        [True]
-[1, 4]      [5]           [1, 9]       [4, 8]        [1]        [True]
-[4, 4]      [3]           [2, 8]       [6, 5, 4]     [1]        [True]
-[3, 3]      [1]           [3, 7, 3]    [6]           [1]        [True]
-[1, 3]      [6]           [5, 2, 2]    [7, 1]        [1]        [True]
-[2, 4]      [5]           [7, 8, 6]    [6, 6, 7]     [1]        [True]
-[1, 4]      [7, 6]        []           [3]           [2]        [True]
-[2, 1]      [5, 2]        []           [1, 8]        [2]        [True]
-[0, 4]      [10, 3]       []           [1, 10, 10]   [2]        [True]
-[4, 0]      [10, 9]       [8]          [5]           [2]        [True]
-[0, 1]      [5, 2]        [4]          [1, 1]        [2]        [True]
-[0, 2]      [8, 9]        [8]          [7, 2, 4]     [2]        [True]
-[0, 3]      [1, 5]        [7, 8]       [9]           [2]        [True]
-[0, 1]      [9, 1]        [8, 9]       [7, 3]        [2]        [True]
-[2, 2]      [3, 3]        [6, 4]       [10, 5, 10]   [2]        [True]
-[2, 1]      [3, 10]       [8, 9, 3]    [7]           [2]        [True]
-[3, 3]      [9, 3]        [3, 1, 10]   [5, 9]        [2]        [True]
-[3, 4]      [3, 2]        [3, 1, 6]    [4, 8, 8]     [2]        [True]
-[0, 1]      [9, 8, 6]     []           [7]           [3]        [True]
-[1, 4]      [2, 3, 7]     []           [1, 2]        [3]        [True]
-[0, 4]      [7, 1, 2]     []           [3, 9, 6]     [3]        [True]
-[0, 3]      [5, 3, 8]     [1]          [1]           [3]        [True]
-[3, 0]      [3, 9, 6]     [3]          [5, 9]        [3]        [True]
-[1, 2]      [2, 5, 4]     [10]         [9, 5, 7]     [3]        [True]
-[1, 1]      [7, 6, 8]     [3, 5]       [6]           [3]        [True]
-[2, 2]      [1, 5, 10]    [9, 3]       [9, 4]        [3]        [True]
-[4, 1]      [5, 1, 10]    [1, 10]      [1, 7, 9]     [3]        [True]
-[3, 2]      [4, 7, 8]     [1, 3, 4]    [9]           [3]        [True]
-[3, 1]      [4, 9, 4]     [1, 3, 9]    [10, 3]       [3]        [True]
-[2, 4]      [8, 10, 4]    [8, 2, 4]    [9, 6, 2]     [3]        [True]
-[4, 3, 0]   [1]           []           [9]           [1]        [True]
-[2, 2, 2]   [8]           []           [9, 6]        [1]        [True]
-[1, 0, 4]   [10]          []           [9, 5, 8]     [1]        [True]
-[1, 3, 3]   [7]           [7]          [5]           [1]        [True]
-[4, 0, 1]   [2]           [1]          [6, 2]        [1]        [True]
-[3, 0, 2]   [3]           [7]          [2, 5, 10]    [1]        [True]
-[1, 3, 4]   [7]           [7, 9]       [8]           [1]        [True]
-[4, 0, 3]   [2]           [4, 9]       [5, 9]        [1]        [True]
-[4, 0, 0]   [7]           [4, 5]       [8, 10, 7]    [1]        [True]
-[1, 2, 0]   [4]           [10, 7, 2]   [7]           [1]        [True]
-[3, 1, 0]   [3]           [6, 6, 8]    [5, 8]        [1]        [True]
-[2, 4, 4]   [4]           [9, 10, 7]   [6, 4, 1]     [1]        [True]
-[1, 0, 2]   [6, 4]        []           [3]           [2]        [True]
-[3, 3, 4]   [10, 7]       []           [3, 8]        [2]        [True]
-[0, 2, 3]   [6, 4]        []           [9, 10, 6]    [2]        [True]
-[0, 2, 4]   [5, 4]        [9]          [6]           [2]        [True]
-[4, 3, 0]   [5, 8]        [8]          [6, 5]        [2]        [True]
-[2, 4, 3]   [8, 1]        [9]          [5, 9, 6]     [2]        [True]
-[1, 3, 2]   [6, 7]        [8, 6]       [6]           [2]        [True]
-[4, 0, 1]   [8, 1]        [4, 7]       [4, 7]        [2]        [True]
-[4, 1, 2]   [5, 1]        [3, 8]       [6, 1, 6]     [2]        [True]
-[1, 1, 2]   [3, 1]        [8, 6, 9]    [4]           [2]        [True]
+...
 [2, 0, 1]   [1, 8]        [2, 8, 10]   [3, 1]        [2]        [True]
 [4, 4, 3]   [5, 10]       [8, 1, 3]    [6, 7, 8]     [2]        [True]
 [4, 2, 0]   [10, 8, 7]    []           [7]           [3]        [True]
@@ -268,15 +180,9 @@ Tuple definition given below is actually a more generic operation.
 1. `bsz` must be rank 2 and square shaped.
 2. `ichan` and `batch` must be rank 1.
 
-In the expression, the `output` has four dimension subspaces.  The first and
-last are indexed by `batch` and `ichan` respectively.  The middle two are
-*index expressions* and comprise the main logic of `tf.nn.space_to_depth`.
-
-Index expressions are component-wise, so the ranks of each binary operation
-must match.  The `FLAT()` function is described in more detail in the companion
-article.  See
+See
 [ops/flatten.et](https://github.com/hrbigelow/einsum-tuple/blob/master/ops/flatten.et)
-for a simple example of its usage.
+for a simple example of `FLAT()` usage.
 
 ```python
 # From ops/space_to_depth.et
@@ -295,9 +201,21 @@ batch   ipos     ichan   bsz         Valid
 [1]     [4, 4]   [3]     [2, 2]      [True]
 ```
 
+`DIMS(bsz)` provides the runtime constant `block_size`.  The index expression
+`ipos//DIMS(bsz)` calculates the block that the `ipos` belongs to.  The
+sub-expression `ipos % DIMS(bsz)` provides the position within the block, and
+the full expression `FLAT(ipos % DIMS(bsz), ichan)` calculates the depth, as
+described in the TensorFlow documentation for space_to_depth:
+
+> Non-overlapping blocks of size block_size x block_size are rearranged into
+> depth at each location.  The Y, X coordinates within each block of the input
+> become the high order component of the output channel index.
+> The depth of the output tensor is block_size * block_size * input_depth.
+
 # More Detail
 
-Einsum Tuple language is an extension of Einstein Summation (einsum) notation, with these rules.
+Einsum Tuple language is an extension of Einstein Summation (einsum) notation,
+with these rules.
 
 1. indices are tuples of unspecified length
 2. tensors can be indexed with arbitrary expressions of indices (*index expressions*)
@@ -305,10 +223,13 @@ Einsum Tuple language is an extension of Einstein Summation (einsum) notation, w
 4. like einsum notation, broadcasting and summation are automatic
 5. unlike einsum notation, indexing expressions appear in brackets, not subscripts
 
-
-
 For quick examples of popular tensor operations defined in Einsum Tuple, see
 the [ops directory](https://github.com/hrbigelow/einsum-tuple/tree/master/ops).
 For a more gradual introduction, see
-[intro.md](https://github.com/hrbigelow/einsum-tuple/blob/master/intro.md)
+[intro.md](https://github.com/hrbigelow/einsum-tuple/blob/master/intro.md).
+For a technical description, see
+[eintup.md](https://github.com/hrbigelow/einsum-tuple/blob/master/eintup.md)
+and the formal grammar
+[eintup_grammar.ebnf](https://github.com/hrbigelow/einsum-tuple/blob/master/eintup_grammar.ebnf).
+
 
