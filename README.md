@@ -1,35 +1,27 @@
 
 # Einsum Tuple - a mini-language for defining tensor operations
 
-## Motivation
+## Introduction
 
-Most Tensorflow and PyTorch operations are defined in terms of *dimension
-subspaces*.  For example, most operations involve the 'batch dimensions'.
-Convolutions have the notion of 'spatial dimensions', 'input channels' and
-'output channels'.  The depthwise separable convolution, and the
-`tf.nn.space_to_depth` operation have the notion of 'depth'.
+This repo defines and implements a runtime for **Einsum Tuple**, a high level
+mini-language for defining tensor operations.  Each definition is
+self-contained in an `.et` (Einsum Tuple) file.  Once defined, the Einsum Tuple
+operation definition is evaluated using multiple combinations of shapes, and
+verified against a provided framework call.  For example:
 
-Many of these operations work across a range of choices for the *rank* of these
-dimension subspaces.  Convolutions for instance work across the spatial
-dimensions ranks of 1, 2, or 3.
+```
+python eintup.py ops/conv_valid_v1.et
+```
 
-To take a more complex example,
-[tf.gather_nd](https://www.tensorflow.org/api_docs/python/tf/gather_nd) 
-is described without explicit names for these groups of dimensions, other than
-the 'batch dimensions'.  The documentation describes the notion of [gathering
-scalars](https://www.tensorflow.org/api_docs/python/tf/gather_nd#gathering_scalars)
-and [gathering
-slices](https://www.tensorflow.org/api_docs/python/tf/gather_nd#gathering_scalars)
-as two separate subcases.  But, this is hard to visualize without explicit
-names for these dimension subspaces.
+The central feature of the language is to assign meaningful names to *groups of
+dimensions* in the input and output tensors.  Once named, the sizes of the
+groups are subject to certain constraints which will be enumerated by the
+system.  The constraints also serve as documentation for the user for valid
+input combinations.
 
-Here, I propose a mini-language, **Einsum Tuple**, to define such tensor
-operations concisely.  In most cases, after defining the inputs, the actual
-logic of the operation can be expressed in a single assignment statement.  The
-language's central notion is the *eintup* - a tuple-form of an Einstein
-summation index which names a dimension subspace.  The length of the *eintup*
-represents the rank of the subspace, and is unspecified in the expression,
-making the expressions generic with respect to ranks.
+By naming groups of dimensions and allowing them to be variable in number, the
+user can easily see which groups travel together and in what relative
+positions, in each tensor.
 
 ## Examples
 
@@ -67,39 +59,171 @@ batch   ipos           ichan   fpos        ochan   opos        stride         Va
 
 ```python
 # The Gather operation
-params[batch,elem,other] = RANDOM(0, 10, FLOAT)
-indices[batch,slice,coord] = RANDOM(0, DIMS(elem)[coord], INT)
-result[batch,slice,other] = params[batch,indices[batch,slice,:],other]
+params[batch,readloc,elem] = RANDOM(0, 10, FLOAT)
+indices[batch,writeloc,coord] = RANDOM(0, DIMS(readloc)[coord], INT)
+result[batch,writeloc,elem] = params[batch,indices[batch,writeloc,:],elem]
+
+
+# Rank constraints
+RANK(batch) IN [0,4]
+RANK(readloc) IN [1,4]
+RANK(writeloc) IN [1,3]
+RANK(elem) IN [0,3]
 
 # Validation
 tf.gather_nd(params, indices, batch_dims=RANK(batch))
 ```
 
 Here there are many possible valid rank combinations for the Eintups `batch`,
-`elem`, `slice`, `coord`, and `other`.
+`elem`, `readloc` and `writeloc`.
 
 ```python
 $ python eintup.py ops/gather_nd.et
-batch       elem                   other          slice          coord      Valid
-[]          [13]                   []             []             [1]        [True]
-[]          [5]                    []             [14]           [1]        [True]
-[]          [5]                    []             [12, 2]        [1]        [True]
-[]          [6]                    []             [2, 9, 10]     [1]        [True]
-[]          [14]                   [8]            []             [1]        [True]
-[]          [2]                    [16]           [11]           [1]        [True]
-[]          [6]                    [11]           [18, 7]        [1]        [True]
-[]          [2]                    [16]           [11, 14, 18]   [1]        [True]
-[]          [3]                    [6, 16]        []             [1]        [True]
-[]          [8]                    [6, 5]         [3]            [1]        [True]
-[]          [18]                   [18, 2]        [6, 8]         [1]        [True]
-[]          [5]                    [6, 10]        [19, 18, 20]   [1]        [True]
-[]          [11]                   [18, 16, 12]   []             [1]        [True]
-[]          [1]                    [6, 12, 11]    [14]           [1]        [True]
-[]          [17]                   [15, 14, 14]   [5, 13]        [1]        [True]
-[]          [8]                    [5, 8, 6]      [8, 9, 1]      [1]        [True]
-[]          [10, 14]               []             []             [2]        [True]
-[]          [13, 16]               []             [7]            [2]        [True]
-...
+batch       readloc       elem         writeloc      coord      Valid
+[]          [6]           []           [2]           [1]        [True]
+[]          [7]           []           [8, 1]        [1]        [True]
+[]          [3]           []           [4, 5, 1]     [1]        [True]
+[]          [3]           [4]          [5]           [1]        [True]
+[]          [8]           [5]          [7, 1]        [1]        [True]
+[]          [7]           [9]          [2, 7, 8]     [1]        [True]
+[]          [10]          [6, 2]       [4]           [1]        [True]
+[]          [7]           [10, 4]      [2, 4]        [1]        [True]
+[]          [10]          [4, 7]       [4, 1, 5]     [1]        [True]
+[]          [7]           [3, 6, 1]    [9]           [1]        [True]
+[]          [4]           [3, 8, 6]    [9, 4]        [1]        [True]
+[]          [9]           [8, 9, 4]    [10, 1, 8]    [1]        [True]
+[]          [5, 2]        []           [2]           [2]        [True]
+[]          [2, 7]        []           [6, 2]        [2]        [True]
+[]          [1, 9]        []           [3, 3, 6]     [2]        [True]
+[]          [3, 4]        [5]          [4]           [2]        [True]
+[]          [4, 3]        [1]          [7, 2]        [2]        [True]
+[]          [8, 4]        [6]          [10, 1, 4]    [2]        [True]
+[]          [1, 1]        [9, 8]       [7]           [2]        [True]
+[]          [6, 2]        [8, 6]       [1, 6]        [2]        [True]
+[]          [1, 10]       [5, 5]       [6, 6, 7]     [2]        [True]
+[]          [7, 8]        [3, 5, 5]    [3]           [2]        [True]
+[]          [6, 6]        [7, 3, 9]    [4, 7]        [2]        [True]
+[]          [3, 7]        [5, 7, 10]   [4, 10, 5]    [2]        [True]
+[]          [7, 3, 3]     []           [1]           [3]        [True]
+[]          [7, 9, 5]     []           [8, 6]        [3]        [True]
+[]          [8, 1, 4]     []           [1, 9, 4]     [3]        [True]
+[]          [4, 2, 8]     [1]          [9]           [3]        [True]
+[]          [5, 6, 10]    [6]          [9, 9]        [3]        [True]
+[]          [8, 1, 4]     [8]          [6, 9, 9]     [3]        [True]
+[]          [8, 4, 1]     [4, 8]       [9]           [3]        [True]
+[]          [6, 1, 10]    [10, 5]      [4, 1]        [3]        [True]
+[]          [1, 5, 10]    [9, 6]       [2, 10, 5]    [3]        [True]
+[]          [4, 3, 10]    [10, 3, 6]   [9]           [3]        [True]
+[]          [5, 1, 9]     [1, 7, 3]    [3, 3]        [3]        [True]
+[]          [2, 3, 5]     [3, 3, 4]    [4, 10, 2]    [3]        [True]
+[3]         [9]           []           [2]           [1]        [True]
+[4]         [3]           []           [2, 5]        [1]        [True]
+[0]         [6]           []           [3, 4, 9]     [1]        [True]
+[2]         [9]           [1]          [9]           [1]        [True]
+[3]         [1]           [1]          [2, 5]        [1]        [True]
+[0]         [3]           [1]          [4, 6, 2]     [1]        [True]
+[2]         [9]           [7, 1]       [3]           [1]        [True]
+[0]         [4]           [9, 1]       [4, 2]        [1]        [True]
+[3]         [7]           [6, 3]       [8, 2, 2]     [1]        [True]
+[2]         [2]           [6, 4, 1]    [8]           [1]        [True]
+[2]         [3]           [4, 6, 1]    [7, 1]        [1]        [True]
+[0]         [5]           [4, 1, 2]    [8, 2, 6]     [1]        [True]
+[0]         [9, 8]        []           [6]           [2]        [True]
+[1]         [8, 5]        []           [5, 8]        [2]        [True]
+[0]         [3, 1]        []           [4, 8, 2]     [2]        [True]
+[4]         [9, 9]        [3]          [7]           [2]        [True]
+[1]         [5, 4]        [5]          [2, 1]        [2]        [True]
+[4]         [7, 9]        [10]         [6, 6, 3]     [2]        [True]
+[3]         [10, 10]      [6, 7]       [1]           [2]        [True]
+[3]         [6, 8]        [4, 10]      [9, 6]        [2]        [True]
+[3]         [2, 8]        [8, 8]       [1, 1, 3]     [2]        [True]
+[1]         [3, 10]       [6, 9, 4]    [5]           [2]        [True]
+[2]         [8, 3]        [7, 10, 1]   [5, 8]        [2]        [True]
+[2]         [8, 6]        [8, 10, 2]   [2, 4, 5]     [2]        [True]
+[1]         [3, 3, 5]     []           [5]           [3]        [True]
+[2]         [3, 2, 3]     []           [6, 8]        [3]        [True]
+[4]         [4, 5, 1]     []           [6, 8, 10]    [3]        [True]
+[4]         [1, 3, 5]     [1]          [5]           [3]        [True]
+[2]         [4, 5, 6]     [10]         [4, 10]       [3]        [True]
+[1]         [7, 10, 5]    [7]          [9, 10, 2]    [3]        [True]
+[1]         [2, 1, 4]     [6, 9]       [1]           [3]        [True]
+[1]         [8, 7, 4]     [2, 7]       [6, 4]        [3]        [True]
+[2]         [2, 10, 10]   [6, 4]       [3, 3, 2]     [3]        [True]
+[2]         [7, 3, 9]     [1, 5, 5]    [6]           [3]        [True]
+[3]         [3, 10, 1]    [5, 9, 10]   [5, 2]        [3]        [True]
+[0]         [3, 5, 7]     [4, 3, 5]    [4, 6, 8]     [3]        [True]
+[1, 1]      [8]           []           [9]           [1]        [True]
+[1, 3]      [2]           []           [6, 10]       [1]        [True]
+[2, 2]      [9]           []           [7, 8, 7]     [1]        [True]
+[2, 0]      [1]           [10]         [6]           [1]        [True]
+[1, 0]      [6]           [2]          [8, 6]        [1]        [True]
+[4, 1]      [6]           [10]         [8, 2, 3]     [1]        [True]
+[2, 0]      [1]           [9, 10]      [5]           [1]        [True]
+[1, 4]      [5]           [1, 9]       [4, 8]        [1]        [True]
+[4, 4]      [3]           [2, 8]       [6, 5, 4]     [1]        [True]
+[3, 3]      [1]           [3, 7, 3]    [6]           [1]        [True]
+[1, 3]      [6]           [5, 2, 2]    [7, 1]        [1]        [True]
+[2, 4]      [5]           [7, 8, 6]    [6, 6, 7]     [1]        [True]
+[1, 4]      [7, 6]        []           [3]           [2]        [True]
+[2, 1]      [5, 2]        []           [1, 8]        [2]        [True]
+[0, 4]      [10, 3]       []           [1, 10, 10]   [2]        [True]
+[4, 0]      [10, 9]       [8]          [5]           [2]        [True]
+[0, 1]      [5, 2]        [4]          [1, 1]        [2]        [True]
+[0, 2]      [8, 9]        [8]          [7, 2, 4]     [2]        [True]
+[0, 3]      [1, 5]        [7, 8]       [9]           [2]        [True]
+[0, 1]      [9, 1]        [8, 9]       [7, 3]        [2]        [True]
+[2, 2]      [3, 3]        [6, 4]       [10, 5, 10]   [2]        [True]
+[2, 1]      [3, 10]       [8, 9, 3]    [7]           [2]        [True]
+[3, 3]      [9, 3]        [3, 1, 10]   [5, 9]        [2]        [True]
+[3, 4]      [3, 2]        [3, 1, 6]    [4, 8, 8]     [2]        [True]
+[0, 1]      [9, 8, 6]     []           [7]           [3]        [True]
+[1, 4]      [2, 3, 7]     []           [1, 2]        [3]        [True]
+[0, 4]      [7, 1, 2]     []           [3, 9, 6]     [3]        [True]
+[0, 3]      [5, 3, 8]     [1]          [1]           [3]        [True]
+[3, 0]      [3, 9, 6]     [3]          [5, 9]        [3]        [True]
+[1, 2]      [2, 5, 4]     [10]         [9, 5, 7]     [3]        [True]
+[1, 1]      [7, 6, 8]     [3, 5]       [6]           [3]        [True]
+[2, 2]      [1, 5, 10]    [9, 3]       [9, 4]        [3]        [True]
+[4, 1]      [5, 1, 10]    [1, 10]      [1, 7, 9]     [3]        [True]
+[3, 2]      [4, 7, 8]     [1, 3, 4]    [9]           [3]        [True]
+[3, 1]      [4, 9, 4]     [1, 3, 9]    [10, 3]       [3]        [True]
+[2, 4]      [8, 10, 4]    [8, 2, 4]    [9, 6, 2]     [3]        [True]
+[4, 3, 0]   [1]           []           [9]           [1]        [True]
+[2, 2, 2]   [8]           []           [9, 6]        [1]        [True]
+[1, 0, 4]   [10]          []           [9, 5, 8]     [1]        [True]
+[1, 3, 3]   [7]           [7]          [5]           [1]        [True]
+[4, 0, 1]   [2]           [1]          [6, 2]        [1]        [True]
+[3, 0, 2]   [3]           [7]          [2, 5, 10]    [1]        [True]
+[1, 3, 4]   [7]           [7, 9]       [8]           [1]        [True]
+[4, 0, 3]   [2]           [4, 9]       [5, 9]        [1]        [True]
+[4, 0, 0]   [7]           [4, 5]       [8, 10, 7]    [1]        [True]
+[1, 2, 0]   [4]           [10, 7, 2]   [7]           [1]        [True]
+[3, 1, 0]   [3]           [6, 6, 8]    [5, 8]        [1]        [True]
+[2, 4, 4]   [4]           [9, 10, 7]   [6, 4, 1]     [1]        [True]
+[1, 0, 2]   [6, 4]        []           [3]           [2]        [True]
+[3, 3, 4]   [10, 7]       []           [3, 8]        [2]        [True]
+[0, 2, 3]   [6, 4]        []           [9, 10, 6]    [2]        [True]
+[0, 2, 4]   [5, 4]        [9]          [6]           [2]        [True]
+[4, 3, 0]   [5, 8]        [8]          [6, 5]        [2]        [True]
+[2, 4, 3]   [8, 1]        [9]          [5, 9, 6]     [2]        [True]
+[1, 3, 2]   [6, 7]        [8, 6]       [6]           [2]        [True]
+[4, 0, 1]   [8, 1]        [4, 7]       [4, 7]        [2]        [True]
+[4, 1, 2]   [5, 1]        [3, 8]       [6, 1, 6]     [2]        [True]
+[1, 1, 2]   [3, 1]        [8, 6, 9]    [4]           [2]        [True]
+[2, 0, 1]   [1, 8]        [2, 8, 10]   [3, 1]        [2]        [True]
+[4, 4, 3]   [5, 10]       [8, 1, 3]    [6, 7, 8]     [2]        [True]
+[4, 2, 0]   [10, 8, 7]    []           [7]           [3]        [True]
+[0, 1, 4]   [5, 5, 10]    []           [7, 3]        [3]        [True]
+[0, 2, 3]   [8, 1, 8]     []           [6, 1, 6]     [3]        [True]
+[1, 3, 3]   [5, 2, 9]     [8]          [6]           [3]        [True]
+[0, 3, 1]   [4, 2, 6]     [5]          [7, 2]        [3]        [True]
+[2, 1, 3]   [1, 4, 10]    [3]          [9, 4, 9]     [3]        [True]
+[2, 0, 4]   [9, 4, 6]     [5, 10]      [5]           [3]        [True]
+[2, 4, 3]   [9, 1, 1]     [4, 8]       [3, 4]        [3]        [True]
+[3, 2, 1]   [8, 8, 9]     [4, 1]       [5, 3, 4]     [3]        [True]
+[1, 3, 3]   [9, 7, 9]     [2, 1, 10]   [9]           [3]        [True]
+[2, 4, 1]   [3, 1, 6]     [3, 10, 1]   [4, 2]        [3]        [True]
+[0, 4, 2]   [9, 5, 6]     [2, 8, 6]    [8, 6, 7]     [3]        [True]
 ```
 
 ### Meshgrid
@@ -185,6 +309,6 @@ Einsum Tuple language is an extension of Einstein Summation (einsum) notation, w
 
 For quick examples of popular tensor operations defined in Einsum Tuple, see
 the [ops directory](https://github.com/hrbigelow/einsum-tuple/tree/master/ops).
-For the main documentation, see this
-[article](https://www.mlcrumbs.com/einsum-tuple/public/index.html).
+For a more gradual introduction, see
+[intro.md](https://github.com/hrbigelow/einsum-tuple/blob/master/intro.md)
 
