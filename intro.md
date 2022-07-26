@@ -1,19 +1,3 @@
-$
-\newcommand\ein[1]{ \color{RoyalBlue}{\mathsf{#1}} }
-\newcommand\aryid[1]{ \color{ForestGreen}{#1} }
-\newcommand\sym[1]{ \color{black}{\mathtt{#1}} }
-\newcommand\com[0]{ \sym{,\,} }
-\newcommand\ary[2]{ \ein{ \aryid{#1} \sym{[} #2 \sym{]} } }
-\newcommand\rankid[0]{ \color{firebrick}{RANK} }
-\newcommand\dimsid[0]{ \color{firebrick}{DIMS} }
-\newcommand\func[2]{ \ein{ \color{black}{#1} } \sym{(} #2 \sym{)} }
-\newcommand{\flatid}[0]{FLAT}
-\newcommand\rank[1]{ \ein{ \rankid \sym{(} #1 \sym{)} } }
-\newcommand\dims[1]{ \ein{ \dimsid \sym{(} #1 \sym{)} } }
-\newcommand{\flatcall}[1]{ \ein{\flatid \sym{(} #1 \sym{)} } }
-$
-
-
 # Introduction to the Einsum Tuple mini-language
 
 I introduce a notation or mini-language which I call **Einsum Tuple** for describing tensor operations, available in the [einsum-tuple](https://github.com/hrbigelow/einsum-tuple) repo.  It is a high-level language in the style of MatLab, which is both close to an abstract mathematical form, and also executable by an interpreter.  The interpreter, or 'runtime' runs a short **Einsum Tuple** program, usually only three lines, defining inputs and producing outputs.  It then runs a user-specified TensorFlow operation on the same tensor inputs, and then verifies the **Einsum Tuple** outputs against those produced by the TensorFlow operation.
@@ -318,216 +302,151 @@ It is possible for the slices in the `indices` tensor to be out of bounds with r
 
 
 
-## Index Expressions are central to tensor operations
+# Index Expressions and Unrolling
 
-As a simple example of an index expression, consider the following routine, which takes the 5-element array `source` and builds a matrix from it, spreading the elements out diagonally:
+The file [index_expr.py](https://github.com/hrbigelow/einsum-tuple/blob/master/doc/index_expr.py) implements two concepts useful for understanding the expressions of **Einsum Tuple** language.  The first is the notion of *unrollin* an index or index expression.  The second is the notion of *mapping* the unrolled index values to an array (or tensor).
 
-```python
-source = [1,4,7,5,2]
+As mentioned previously, **Einsum Tuple** takes the viewpoint that indices, not tensors, are the primary owner of dimension information.  So, for example, if we see index `i` or `j` used, we can assume that somewhere, the dimension of `i` and `j` have been defined.
 
-def index_expr(row, col):
-  return col-row+2
+So suppose we have indices `i` and `j` such that `DIMS(i) = [8]` and `DIMS(j) = [9]`.  In the most general case, an index may have multiple dimensions, but for the purposes of this example, both will just have one dimension.
 
-# returns the ary element, or 0 if out of bounds
-def safe_get(idx, ary):
-  if idx in np.ndindex(ary.shape):
-    return ary[idx]
-  else:
-    return 0
-
-target = np.fromfunction(np.frompyfunc(safe_get(
-
-# an 8x8 matrix of zeros
-nrow = ncol = 8
-target = [ [0] * ncol for _ in range(nrow) ]
-
-for row in range(nrow):
-  for col in range(ncol):
-    index_expr = col-row+2
-    if index_expr in range(len(source)):
-      target[row][col] = source[index_expr]
-
-for trg_row in target:
-  print(repr(trg_row))
-[7, 5, 2, 0, 0, 0, 0, 0]
-[4, 7, 5, 2, 0, 0, 0, 0]
-[1, 4, 7, 5, 2, 0, 0, 0]
-[0, 1, 4, 7, 5, 2, 0, 0]
-[0, 0, 1, 4, 7, 5, 2, 0]
-[0, 0, 0, 1, 4, 7, 5, 2]
-[0, 0, 0, 0, 1, 4, 7, 5]
-[0, 0, 0, 0, 0, 1, 4, 7]
-```
-
-We can see that the elements of `source` have been picked up and placed in multiple locations in `target`, according to the index expression `row-col+2`.  To better visualize what this index expression looks like, we can also explicitly calculate it:
+Here are implementations of *index unrolling* and *array mapping*:
 
 ```python
-indices = np.fromfunction(lambda row, col: col-row+2, [8,8], dtype=np.int32)
-print(indices)
-[[ 2  3  4  5  6  7  8  9]
- [ 1  2  3  4  5  6  7  8]
- [ 0  1  2  3  4  5  6  7]
- [-1  0  1  2  3  4  5  6]
- [-2 -1  0  1  2  3  4  5]
- [-3 -2 -1  0  1  2  3  4]
- [-4 -3 -2 -1  0  1  2  3]
- [-5 -4 -3 -2 -1  0  1  2]]
+import numpy as np
 
-# Now we can instead use indices as the index expression
-for row in range(nrow):
-  for col in range(ncol):
-    if indices[row][col] in range(len(source)):
-      target[row][col] = source[indices[row][col]]
-      # target[row][col] = source[col-row+2]
+# evaluate index_expr across the cartesian product of index values
+# return the evaluations as an array
+def unroll(index_expr, dims):
+    ufunc = np.frompyfunc(index_expr, nin=len(dims), nout=1)
+    return np.fromfunction(ufunc, dims, dtype=int)
+
+# create a new array mapping each ind in unrolled_inds to its value in ary
+# returning 0 for out of bounds indices
+def map_ary(unrolled_inds, ary):
+    def pyfunc(idx):
+        return ary[idx] if idx in np.ndindex(ary.shape) else 0
+    ufunc = np.vectorize(pyfunc)
+    return ufunc(unrolled_inds)
 ```
 
-We have now introduced a layer of indirection.  Instead of indexing `source` using the expression `col-row+2` directly, we first stored that expression in an `indices` array, and later retrieved it.  
+Unrolling an index expression produces an array, with dimensions equal to the set of index variables in the expression.  By convention, index expressions produce integer tuple values, even if just one element.
 
-Here, `indices[row][col]` is being used as a function, like `indices(row, col)` its elements carry no information other than the expression value.
+```python
+dims_i = 8
+dims_j = 9
+# index expression is '(i,)' which could appear as ary1d[i]
+print(unroll(lambda i: (i,), (dims_i,)))
+[(0,) (1,) (2,) (3,) (4,) (5,) (6,) (7,)]
+
+# index expression is '(j,)' which could appear as ary1d[j]
+print(unroll(lambda j: (j,), (dims_j,)))
+[(0,) (1,) (2,) (3,) (4,) (5,) (6,) (7,) (8,)]
+
+# index expression is '(i,j)' which could appear as ary2d[i,j]
+print(unroll(lambda i,j: (i,j), (dims_i, dims_j)))
+[[(0, 0) (0, 1) (0, 2) (0, 3) (0, 4) (0, 5) (0, 6) (0, 7) (0, 8)]
+ [(1, 0) (1, 1) (1, 2) (1, 3) (1, 4) (1, 5) (1, 6) (1, 7) (1, 8)]
+ [(2, 0) (2, 1) (2, 2) (2, 3) (2, 4) (2, 5) (2, 6) (2, 7) (2, 8)]
+ [(3, 0) (3, 1) (3, 2) (3, 3) (3, 4) (3, 5) (3, 6) (3, 7) (3, 8)]
+ [(4, 0) (4, 1) (4, 2) (4, 3) (4, 4) (4, 5) (4, 6) (4, 7) (4, 8)]
+ [(5, 0) (5, 1) (5, 2) (5, 3) (5, 4) (5, 5) (5, 6) (5, 7) (5, 8)]
+ [(6, 0) (6, 1) (6, 2) (6, 3) (6, 4) (6, 5) (6, 6) (6, 7) (6, 8)]
+ [(7, 0) (7, 1) (7, 2) (7, 3) (7, 4) (7, 5) (7, 6) (7, 7) (7, 8)]]
+
+# index expression is '(j-i+2,)' which could appear as ary1d[j-i+2]
+# note that in this case, the unrolled array has dimensions DIMS(i,j)
+# but the element values are one-element tuples.
+print(unroll(lambda i,j: (j-i+2,), (dims_i, dims_j)))
+[[(2,) (3,) (4,) (5,) (6,) (7,) (8,) (9,) (10,)]
+ [(1,) (2,) (3,) (4,) (5,) (6,) (7,) (8,) (9,)]
+ [(0,) (1,) (2,) (3,) (4,) (5,) (6,) (7,) (8,)]
+ [(-1,) (0,) (1,) (2,) (3,) (4,) (5,) (6,) (7,)]
+ [(-2,) (-1,) (0,) (1,) (2,) (3,) (4,) (5,) (6,)]
+ [(-3,) (-2,) (-1,) (0,) (1,) (2,) (3,) (4,) (5,)]
+ [(-4,) (-3,) (-2,) (-1,) (0,) (1,) (2,) (3,) (4,)]
+ [(-5,) (-4,) (-3,) (-2,) (-1,) (0,) (1,) (2,) (3,)]]
+```
+
+Now, with these unrolled index expressions, we can apply them to array expressions.  In the example below, the index expression is `(i-1,j-2)`, which has two index variables `i` and `j`, each with one dimension (as defined above).  Therefore, the unrolled expression has two dimensions.  Also note that the value of the expression is a 2-component tuple.  So, we'll apply the unrolled indices to a 2-D array called `grid`, which could be convolutional filter weights, for example.
+
+```python
+grid = np.array([
+        [1,1,2,1,1],
+        [1,3,3,4,4],
+        [2,3,9,6,5],
+        [1,6,4,4,3],
+        [1,1,3,1,1]
+])
+
+# unrolling the index expression '(i-1,j-2)'
+offset_inds = unroll(lambda i,j: (i-1,j-2), (dims_i, dims_j))
+print(offset_inds)
+[[(-1,-2) (-1,-1) (-1,0) (-1,1) (-1,2) (-1,3) (-1,4) (-1,5) (-1,6)]
+ [(0, -2) (0, -1) (0, 0) (0, 1) (0, 2) (0, 3) (0, 4) (0, 5) (0, 6)]
+ [(1, -2) (1, -1) (1, 0) (1, 1) (1, 2) (1, 3) (1, 4) (1, 5) (1, 6)]
+ [(2, -2) (2, -1) (2, 0) (2, 1) (2, 2) (2, 3) (2, 4) (2, 5) (2, 6)]
+ [(3, -2) (3, -1) (3, 0) (3, 1) (3, 2) (3, 3) (3, 4) (3, 5) (3, 6)]
+ [(4, -2) (4, -1) (4, 0) (4, 1) (4, 2) (4, 3) (4, 4) (4, 5) (4, 6)]
+ [(5, -2) (5, -1) (5, 0) (5, 1) (5, 2) (5, 3) (5, 4) (5, 5) (5, 6)]
+ [(6, -2) (6, -1) (6, 0) (6, 1) (6, 2) (6, 3) (6, 4) (6, 5) (6, 6)]]
+
+# evaluating the expression 'grid[i-1,j-2]'
+vals = map_ary(offset_inds, grid)
+print(vals)
+[[0 0 0 0 0 0 0 0]
+ [0 0 1 1 2 1 1 0]
+ [0 0 1 3 3 4 4 0]
+ [0 0 2 3 9 6 5 0]
+ [0 0 1 6 4 4 3 0]
+ [0 0 1 1 3 1 1 0]
+ [0 0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0 0]]
+```
+
+In the above example, both the unrolled index expression and the target array were 2-D.  But in general there need be no relation between the dimension of the index expression and the number of components in its value.
+
+In this example, we evaluate `source[j-i+2]`.  The index expression `j-i+2` still has two indices `i` and `j`, but its value is one component, so it must be applied to a 1-D array.
+
+```python
+# unrolling the index expression 'j-i+2'
+inds = unroll(lambda i,j: (j-i+2,), (dims_i, dims_j))
+print(inds)
+[[(2,) (3,) (4,) (5,) (6,) (7,) (8,) (9,)]
+ [(1,) (2,) (3,) (4,) (5,) (6,) (7,) (8,)]
+ [(0,) (1,) (2,) (3,) (4,) (5,) (6,) (7,)]
+ [(-1,) (0,) (1,) (2,) (3,) (4,) (5,) (6,)]
+ [(-2,) (-1,) (0,) (1,) (2,) (3,) (4,) (5,)]
+ [(-3,) (-2,) (-1,) (0,) (1,) (2,) (3,) (4,)]
+ [(-4,) (-3,) (-2,) (-1,) (0,) (1,) (2,) (3,)]
+ [(-5,) (-4,) (-3,) (-2,) (-1,) (0,) (1,) (2,)]]
+
+source = np.array([1,4,7,5,2])
+
+# evaluate source[j-i+2]
+vals = map_ary(inds, source)
+print(vals)
+[[7 5 2 0 0 0 0 0]
+ [4 7 5 2 0 0 0 0]
+ [1 4 7 5 2 0 0 0]
+ [0 1 4 7 5 2 0 0]
+ [0 0 1 4 7 5 2 0]
+ [0 0 0 1 4 7 5 2]
+ [0 0 0 0 1 4 7 5]
+ [0 0 0 0 0 1 4 7]]
+```
+
+Notice now that the mapping result takes the same shape as the unrolled indices, and the `source` array values are duplicated.  You might also notice that this looks like the positions of filter weights moved across some input, and indeed this is the expression used in the [first formulation](https://github.com/hrbigelow/einsum-tuple/blob/master/ops/conv_valid_v1.et) of convolution, in which the filter is unrolled along the output spatial dimension.
 
 
+```python
+# Convolution performed by unrolling the filter across the output, using index expression ipos-opos
+output[batch,opos,ochan] = filters[ipos-opos,ichan,ochan] * input[batch,ipos,ichan]
+```
+
+Of course, this is not a memory efficient way to compute convolution, but it provides a simple definition.  Looking at the formula, it is also easy to see that the `input` tensor appears alone as a single multiplicative term.  Therefore the operation is easily shown to be linear in the input.
 
 
-
-# Einsum Tuple - a mini-language for defining tensor operations
-
-## Introduction
-
-Einsum Tuple is a mini-language for defining tensor operations.  It resembles Einstein summation notation but has some additional properties.  It aims to provide a way to define fundamental tensor operations in a rank-agnostic way.  That is, one expression in Einsum Tuple may define a family of tensor operations, all sharing the same basic logic, but varying in the numbers of batch, spatial, channel, etc, dimensions.  This is a companion article to the source code at the [einsum-tuple](https://github.com/hrbigelow/einsum-tuple) repository.  To get a quick look at examples, see the [ops directory](https://github.com/hrbigelow/einsum-tuple/tree/master/ops).
-
-Einsum Tuple language is an extension of Einstein Summation (einsum) notation, with these rules.
-
-1. indices are tuples of unspecified length
-2. tensors can be indexed with arbitrary expressions of indices (*index expressions*)
-3. out-of-bounds index values are silently ignored
-4. like einsum notation, broadcasting and summation are automatic
-5. unlike einsum notation, indexing expressions appear in brackets, not subscripts
-
-For example, here is a rank-agnostic definition of batched matrix multiplication:
-
-$
-\ary{output}{batch \com row \com col} = 
-\ary{input}{batch \com row \com inner} \sym{*}
-\ary{weights}{batch \com inner \com col}
-$
-
-The identifiers $\ein{batch}$, $\ein{row}$, $\ein{col}$, and $\ein{inner}$ are "eintups", the Einsum Tuple equivalent of Einstein indices.  Eintups symbolize a tuple of an unspecified number (even zero) of individual indices.  For instance:
-
-\begin{array}{ll}
-\ein{\aryid{output}}_{brc} & = \ein{\aryid{input}}_{bri} \ein{\aryid{weights}}_{bic} \\ 
-\ein{\aryid{output}}_{b_{1}b_{2}rc} & = \ein{\aryid{input}}_{b_{1}b_{2}ri} \ein{\aryid{weights}}_{b_{1}b_{2}ic} \\ 
-\ein{\aryid{output}}_{b_{1}b_{2}b_{3}rc} & = \ein{\aryid{input}}_{b_{1}b_{2}b_{3}ri} \ein{\aryid{weights}}_{b_{1}b_{2}b_{3}ic} \\ 
-\ein{\aryid{output}}_{br_{1}r_{2}c} & = \ein{\aryid{input}}_{br_{1}r_{2}i} \ein{\aryid{weights}}_{bic} \\ 
-...
-\end{array}
-
-In fact, it is more general than just matrix multiplication.  In ordinary batched matrix multiplication, each batch entry is strictly a rank-2 object, because the *row*, *inner* and *column* dimensions are single dimensions.  In the statement above however, there is no restriction on the ranks of $\ein{row}$, $\ein{col}$ or $\ein{inner}$, and yet, the statement is well defined and produces a result.
-
-
-## Rank and Dimensions 
-
-Before execution, the runtime system configures shapes of all eintups.  It does this in two phases, first choosing a *rank*, or number of indices, and then generates *dimensions*.  For example, the system might set the rank of batch to 3 and its dimensions to `[2,4,3]` before execution.  These quantities can be accessed in the language as $\dims{batch}$ and $\rank{batch}$.  They are constants during the execution phase, but change at each new shape configuration.
-
-After shape configuration, the shapes of every array expression is known.  For example, the shape of $\ein{\aryid{output}}$  would be $\dims{batch \com row \com col}$, which is shorthand for $\dims{batch}$ concatenated with $\dims{row}$ and then $\dims{col}$.  Its rank is given by $\rank{batch \com row \com col}$ .
-
-## Index expressions
-
-Index expressions are arithmetic expressions of eintups and integer valued arguments, and sometimes functions of them.  For example, here is the `tf.nn.convolution` operation expressed in Einsum Tuple, using the `padding=VALID` option.
-
-\begin{aligned}
-\ary{output}{batch \com opos \com ochan} \sym{=\,} & 
-\ary{filters}{ipos \sym{-} \dims{stride} \sym{*} opos \com ichan \com ochan} \\
-\sym{*\,} & \ary{input}{batch \com ipos \com ichan}
-\end{aligned}
-
-
-The index expression is $\ein{ipos} \sym{-} \dims{stride} \sym{*} \ein{opos}$.  To be well-formed, binary operation between eintups and $\dims{\cdots}$ arguments must have equal rank.  In this case, $\ein{ipos}$, $\ein{stride}$, and $\ein{opos}$ must have the same rank or the statement won't compile.
-
-Note that this expression can have component values that are negative.  Einsum Tuple implicitly ignores out-of-bounds indices (negative or too high).  If any component of an index expression in the top level assignment statement is out of bounds, the whole calculation doesn't participate in the Einstein summation / assignment.
-
-In the statement above, it is clear that the convolution operation is linear in the $\ein{\aryid{input}}$ tensor since it appears with a single multiplicative term.  An equivalent formula showing linearity in the $\ein{\aryid{filters}}$ is given by:
-
-
-\begin{aligned}
-\ary{output}{batch \com opos \com ochan} & \sym{=}
-\ary{filters}{fpos \com ichan \com ochan} \\
-& \sym{*} \ary{input}{batch \com fpos \sym{+} \dims{stride} \sym{*} opos \com ichan}
-\end{aligned}
-
-
-## Indexing expression Basis
-
-The indexing expression $\ein{ipos} - \dims{stride} \sym{*} \ein{opos}$ can be thought of as a computed tensor over the space $\dims{ipos \com opos}$  whose elements are 1D tuples with $\rank{ipos}$ members.  Each element of this virtual tensor is then used to index into its parent array $\ein{\aryid{filters}}$ , which expects a tuple of that size.
-
-The set $\ein{ipos \com opos}$ of eintups is known as the *basis* for the indexing expression, and it is derived as the set of all eintup variables in the expression.  Note that while $\ein{stride}$ appears, it isn't a variable because $\dims{stride}$ resolves to a constant at runtime.
-
-The basis of the full index list in the expression $\ary{filters}{ipos \sym{-} \dims{stride} \sym{*} opos \com ichan \com ochan}$ is then $\ein{ipos \com opos \com ichan \com ochan}$.  This is one eintup larger than the basis of the $\ein{\aryid{filters}}$ array to begin with.  Thus, one can think of this as a sort of calculated broadcast, or 'unrolling' of the filters tensor but in a diagonal direction.  The convolution becomes a fully connected layer "matrix multiplication" using this unrolled filter matrix.
-
-In the second form, the input is 'unrolled' and becomes a matrix which multiplies the filters.
-
-## Implicit Broadcasting
-
-Einsum Tuple statements perform implicit broadcasting of tuples which appear on the left hand side of an assignment but not on the right.  For example, here is a formula for `tf.meshgrid`, which constructs a set of broadcasted tensors in a coordinated way.
-
-\begin{aligned}
-\ary{in1}{a} & = \func{RANDOM}{0, 10, \mathsf{INT}} \\
-\ary{in2}{b} & = \func{RANDOM}{0, 10, \mathsf{INT}} \\
-\ary{in3}{c} & = \func{RANDOM}{0, 10, \mathsf{INT}} \\
-\ary{in4}{d} & = \func{RANDOM}{0, 10, \mathsf{INT}} \\
-\ary{out1}{a \com b \com c \com d} & = \ary{in1}{a} \\
-\ary{out2}{a \com b \com c \com d} & = \ary{in2}{b} \\
-\ary{out3}{a \com b \com c \com d} & = \ary{in3}{c} \\
-\ary{out4}{a \com b \com c \com d} & = \ary{in4}{d} \\
-\end{aligned}
-
-The $\ein{\aryid{out}}$ arrays are equivalent to the call `tf.meshgrid(in1, in2, in3, in4, indexing=L('ij'))`
-
-In the assignment, $\ein{\aryid{out1}}$ receives broadcasted values for eintups $\ein{b}$, $\ein{c}$, and $\ein{d}$, and so forth.
-
-
-
-## The FLAT() function
-
-Aside from arithmetic binary operations, there is one function (so far) which accepts an index expression list and returns an index expression.  It returns a tensor of the same basis as its expression list.  Each element of the expression list is mapped into the flattened space of $\dims{expr\_list}$.  For example, if the index expression list has $\dims{expr\_list} = [2,4,3,7,2]$, then each element $(i,j,k,l,m)$ is mapped to the scalar quantity $i*4*3*7*2 + j*3*7*2 + k*7*2 + l*2 + m$.  This can be thought of as the index in the flat representation, assuming outer-dimension-major ordering of the tensor elements.
-
-Flattening a multi-dimensional tensor with $\ary{output}{\func{FLAT}{a \com b \com c \com d}} = \ary{input}{a \com b \com c \com d}$ is equivalent to `output = tf.reshape(input, -1)`.  
-
-Using this function, here is the Einsum Tuple expression for `tf.nn.space_to_depth`:
-
-$
-\ary{output}{batch \com ipos \sym{//} \dims{bsz} \com 
-\func{FLAT}{ipos \sym{\,\%\,} \dims{bsz} \com ichan}} =
-\ary{input}{batch \com ipos \com ichan}
-$
-
-This is a concise, complete description of the space-to-depth operation.  It is general with respect to $\rank{ipos}$, the number of spatial dimensions.  Also, the blocksize, $\dims{bsz}$ can be any shape, not necessarily square.  Tensorflow's implementation assumes two spatial dimensions and square blocksize.
-
-It is instructive to reconcile the Einsum Tuple expression with the TensorFlow [documentation](https://www.tensorflow.org/api_docs/python/tf/nn/space_to_depth).  Here are some excerpts from `tf.nn.space_to_depth`:
-
-> Non-overlapping blocks of size block_size x block size are rearranged into depth at each location.
-
-The expression $\ein{ipos} \sym{//} \dims{bsz}$ takes on distinct values in the pattern of 'non-overlapping blocks` of the input locations.
-
-> The Y, X coordinates within each block of the input become the high order component of the output channel index.
-
-The expression $\ein{ipos \: \sym{\%\,} \dims{bsz}}$ is the 'Y, X coordinates within each block', and it appears as the high order component in the overall expression $\func{FLAT}{\ein{ipos} \: \sym{\%\,} \dims{bsz} \com \ein{ichan}}$.
-
-> The depth of the output tensor is block_size * block_size * input_depth.
-
-The expression $\ein{ipos \: \sym{\%\,} \dims{bsz}}$ takes on values up to the exclusive range $\dims{bsz}$.  `input_depth` corresponds to $\ein{ichan}$ and finally, the $\func{FLAT}{}$ call creates values in the range of the product of dimensions.
-
-# Using an Array as Index Expression
-
-An Eintup array of $n$ dimensions with integer elements may be viewed as a an array of $n-1$ dimensions whose elements are 1D integer tuples of a fixed size.  For example, let's assume an integer valued array $\ary{indices}{slice \com coord}$ of shapes $\dims{slice} = [3,5]$, $\dims{coord} = [7]$ so that the full shape of $\ein{\aryid{indices}}$ is $[3,5,7]$.  We can view the array itself as a function of two arguments (the component values of $\dims{slice}$) which outputs 7-tuples of integers.  The space over which the two arguments vary, are the dimensions $[3,5]$.  Using it as an index expression, we have:
-
-\begin{aligned}
-\ary{indices}{slice \com coord} & = \func{RANDOM}{0, 10, \mathsf{INT}} \\
-\ary{output}{\ary{indices}{slice \com \sym{:}} \com elem} & = \cdots 
-\end{aligned}
-
-The index expression is $\ary{indices}{slice \com \sym{:}}$.  It is like an ordinary array access, except that $\ein{coord}$ has been called with the special "$\sym{:}$" symbol.  In order to be legal, $\rank{coord}$ must equal 1, and $\dims{coord}$ must equal the rank of the first place in the $\ein{\aryid{output}}$.  Note that it would be perfectly valid if the "$\sym{:}$" were in a non-terminal position.  For example, using $\ary{indices}{coord \com slice}$ as the array, and $\ary{indices}{\sym{:} \com slice}$ as the index expression is also valid.
-
-Using an array slice as an index expression is a `scatter` operation if used on the left hand side, and a `gather` operation if on the right.
 
 # Runtime
 
@@ -560,6 +479,3 @@ The 'IN' forms cause the runtime to generate some value in `[min, max]` randomly
 
 *dcons_expr* is an arithmetic expression of integers, $\dims{tup}$ or $\rank{tup}$ expressions.  Like the *rcons_expr*, it is an error if there are circular dependencies.  Note that the $\dims{}$ constraints can depend on both $\dims{}$ and $\rank{}$ expressions, while the $\rank{}$ constraints may only depend on other $\rank{}$ constraints.  This is because the runtime constraint resolution process proceeds in two phases.  In the first phase, it assigns all EinTup ranks according to the rank constraints, without assigning dimensions to the EinTups.  In the second phase, it resolves all dims constraints.
 
-# Einsum Tuple Full Grammar Specification
-
-The full grammar specification can be found in [eintup_grammar.ebnf](https://github.com/hrbigelow/einsum-tuple/blob/master/eintup_grammar.ebnf)
