@@ -27,11 +27,11 @@ filter signature = [filter_pos, input_channel, output_channel]
 output signature = [batch, output_pos, output_channel]
 
 # named index groups (instantiation)
-batch.shape = [10]
-input_pos.shape  = [28, 28]
-filter_pos.shape  = [3, 3]
-output_pos.shape  = input_pos.shape - filter_pos.shape + 1  # (broadcasted)
-input_channel.shape = [3]
+batch.shape          = [10]
+input_pos.shape      = [28, 28]
+filter_pos.shape     = [3, 3]
+output_pos.shape     = input_pos.shape - filter_pos.shape + 1  # (broadcasted)
+input_channel.shape  = [3]
 output_channel.shape = [8]
 ```
 
