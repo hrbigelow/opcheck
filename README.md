@@ -22,17 +22,17 @@ output.shape = [10, 26, 26, 8]
           -
 
 # Tensor signatures (template)
-input signature  = [batch, ipos, ichan]
-filter signature = [fpos, ichan, ochan]
-output signature = [batch, opos, ochan]
+input signature  = [batch, input_pos, input_channel]
+filter signature = [filter_pos, input_channel, output_channel]
+output signature = [batch, output_pos, output_channel]
 
 # named index groups (instantiation)
 batch.shape = [10]
-ipos.shape  = [28, 28]
-fpos.shape  = [3, 3]
-opos.shape  = ipos.shape - fpos.shape + 1  # (broadcasted)
-ichan.shape = [3]
-ochan.shape = [8]
+input_pos.shape  = [28, 28]
+filter_pos.shape  = [3, 3]
+output_pos.shape  = input_pos.shape - filter_pos.shape + 1  # (broadcasted)
+input_channel.shape = [3]
+output_channel.shape = [8]
 ```
 
 In this repo, I introduce an intermediate concept of the *named index group* to
@@ -64,7 +64,7 @@ to changing numbers of dimensions.  Thus, the same tensor signature and
 expressions may be used for multiple instantiations of the operation.  For
 example, convolution instantiated for 1, 2, or 3 spatial dimensions.
 
-In this repo, the *named index group* concept is called an **Einsum Tuple** or
+In this repo, the *named index group* concept is called an *Einsum Tuple* or
 an *eintup*, for short.
 
 ## Introduction
