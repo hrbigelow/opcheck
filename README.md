@@ -4,7 +4,7 @@
 ## Motivation
 
 ```python
-# Tensor Shapes
+# Tensor shapes
 input.shape  = [10, 28, 28, 3]
 filter.shape = [3, 3, 3, 8]
 output.shape = [10, 26, 26, 8]
@@ -13,12 +13,12 @@ output.shape = [10, 26, 26, 8]
            \ /
             .
 
-# Tensor Signatures
-input[batch, ipos, ichan]
-filter[fpos, ichan, ochan]
-output[batch, opos, ochan]
+# Tensor signatures (template)
+input.signature  = [batch, ipos, ichan]
+filter.signature = [fpos, ichan, ochan]
+output.signature = [batch, opos, ochan]
 
-# named index groups with shapes
+# named index groups (instantiation)
 batch.shape = [10]
 ipos.shape  = [28, 28]
 fpos.shape  = [3, 3]
