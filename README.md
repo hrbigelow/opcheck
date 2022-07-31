@@ -28,20 +28,41 @@ ochan.shape = [8]
 ```
 
 Much mental effort in building ML models is spent keeping track of *tensor
-shapes*, and how each operation transforms them from inputs to outputs.  Some
+shapes*, and how individual dimensions transform from inputs to outputs.  Some
 dimensions match one-to-one between two inputs, or between an input and and
 output.  Other dimensions may be simple functions of input dimensions.  Good
 understanding of tensor operations requires knowing the relationships between
 all of the dimensions of each tensor involved.
 
-In this repo, I introduce an intermediate concept, and notation for it,
-to simplify this dimension-tracking problem.  Instead of viewing dimensions as
+In this repo, I introduce an intermediate concept, and notation for it, to
+simplify this dimension-tracking problem.  Instead of viewing dimensions as
 attributes of tensors directly, introduce a layer of indirection:  let tensors
-have *named index groups*, and let these groups each have a *shape*.  Using
-this two-step definition, tensor shapes are still well defined, yet much easier
-to mentally keep track of.  It also introduces a form of referential integrity
-\- if two tensors share the same index group, this is a declarative way to
-  establish that their sub-shapes must match.
+have a *signature*, an ordered list of *named index groups*.  And let these
+groups each have a *shape*.  Using this two-step definition, tensor shapes are
+still well defined, yet much easier to mentally keep track of.  It also
+introduces a form of referential integrity \- if two tensors share the same
+index group in their signatures, this is a declarative way to establish that
+their sub-shapes must match.
+
+With this new notation, many (not all) tensor operations may be defined
+mathematically using an adapted form of Einstein summation notation.  This
+adapted form is already used in official TensorFlow documentation, for example
+[convolution](https://www.tensorflow.org/api_docs/python/tf/nn/convolution),
+[matmul](https://www.tensorflow.org/api_docs/python/tf/linalg/matmul),
+[depthwise
+convolution](https://www.tensorflow.org/api_docs/python/tf/nn/depthwise_conv2d),
+[dilation 2d](https://www.tensorflow.org/api_docs/python/tf/nn/dilation2d).
+
+However, quite often, the formulas given there don't use meaningful index
+names, even when meaningful names are used elsewhere in the same documentation
+to define tensor shapes.  This repo introduces a syntax that merges both ideas
+into a declarative, but executable formula to define many tensor operations.
+
+One additional benefit to this notation is that, by giving names to *groups* of
+dimensions rather than individual dimensions, one attains a level of genericity
+to changing numbers of dimensions.  Thus, the same tensor signature and
+expressions may be used for multiple instantiations of the operation.  For
+example, convolution instantiated for 1, 2, or 3 spatial dimensions.
 
 ## Introduction
 
