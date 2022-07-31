@@ -3,20 +3,28 @@
 
 ## Motivation
 
+Much mental effort in building ML models is spent keeping track of *tensor
+shapes*, and how individual dimensions transform from inputs to outputs.  Some
+dimensions match one-to-one between two inputs, or between an input and and
+output.  Other dimensions may be simple functions of input dimensions.  Good
+understanding of tensor operations requires knowing the relationships between
+all of the dimensions of each tensor involved.
+
 ```python
 # Tensor shapes
 input.shape  = [10, 28, 28, 3]
 filter.shape = [3, 3, 3, 8]
 output.shape = [10, 26, 26, 8]
 
-            |
-           \ /
-            .
+          |
+          |
+         \ /
+          -
 
 # Tensor signatures (template)
-input.signature  = [batch, ipos, ichan]
-filter.signature = [fpos, ichan, ochan]
-output.signature = [batch, opos, ochan]
+input signature  = [batch, ipos, ichan]
+filter signature = [fpos, ichan, ochan]
+output signature = [batch, opos, ochan]
 
 # named index groups (instantiation)
 batch.shape = [10]
@@ -27,22 +35,14 @@ ichan.shape = [3]
 ochan.shape = [8]
 ```
 
-Much mental effort in building ML models is spent keeping track of *tensor
-shapes*, and how individual dimensions transform from inputs to outputs.  Some
-dimensions match one-to-one between two inputs, or between an input and and
-output.  Other dimensions may be simple functions of input dimensions.  Good
-understanding of tensor operations requires knowing the relationships between
-all of the dimensions of each tensor involved.
-
-In this repo, I introduce an intermediate concept, and notation for it, to
+In this repo, I introduce an intermediate concept of the *named index group* to
 simplify this dimension-tracking problem.  Instead of viewing dimensions as
-attributes of tensors directly, introduce a layer of indirection:  let tensors
-have a *signature*, an ordered list of *named index groups*.  And let these
-groups each have a *shape*.  Using this two-step definition, tensor shapes are
-still well defined, yet much easier to mentally keep track of.  It also
-introduces a form of referential integrity \- if two tensors share the same
-index group in their signatures, this is a declarative way to establish that
-their sub-shapes must match.
+attributes of tensors directly, let tensors have a *signature*, an ordered list
+of the named index groups.  Then, let each group have a *shape*.  Using this
+two-step definition, tensor shapes are well defined yet much easier to mentally
+track.  This also introduces a form of referential integrity \- if two tensors
+share the same index group in their signatures, this is a declarative way to
+establish that the sub-shapes must match.
 
 With this new notation, many (not all) tensor operations may be defined
 mathematically using an adapted form of Einstein summation notation.  This
@@ -63,6 +63,9 @@ dimensions rather than individual dimensions, one attains a level of genericity
 to changing numbers of dimensions.  Thus, the same tensor signature and
 expressions may be used for multiple instantiations of the operation.  For
 example, convolution instantiated for 1, 2, or 3 spatial dimensions.
+
+In this repo, the *named index group* concept is called an **Einsum Tuple** or
+an *eintup*, for short.
 
 ## Introduction
 
