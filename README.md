@@ -1,6 +1,48 @@
 
 # Einsum Tuple - a mini-language for defining tensor operations
 
+## Motivation
+
+```python
+# Tensor Shapes
+input.shape  = [10, 28, 28, 3]
+filter.shape = [3, 3, 3, 8]
+output.shape = [10, 26, 26, 8]
+
+            |
+           \ /
+            .
+
+# Tensor Signatures
+input[batch, ipos, ichan]
+filter[fpos, ichan, ochan]
+output[batch, opos, ochan]
+
+# named index groups with shapes
+batch.shape = [10]
+ipos.shape  = [28, 28]
+fpos.shape  = [3, 3]
+opos.shape  = ipos.shape - fpos.shape + 1  # (broadcasted)
+ichan.shape = [3]
+ochan.shape = [8]
+```
+
+Much mental effort in building ML models is spent keeping track of *tensor
+shapes*, and how each operation transforms them from inputs to outputs.  Some
+dimensions match one-to-one between two inputs, or between an input and and
+output.  Other dimensions may be simple functions of input dimensions.  Good
+understanding of tensor operations requires knowing the relationships between
+all of the dimensions of each tensor involved.
+
+In this repo, I introduce an intermediate concept, and notation for it,
+to simplify this dimension-tracking problem.  Instead of viewing dimensions as
+attributes of tensors directly, introduce a layer of indirection:  let tensors
+have *named index groups*, and let these groups each have a *shape*.  Using
+this two-step definition, tensor shapes are still well defined, yet much easier
+to mentally keep track of.  It also introduces a form of referential integrity
+- if two tensors share the same index group, this is a declarative way to
+  establish that their sub-shapes must match.
+
 ## Introduction
 
 This repo defines and implements a runtime for **Einsum Tuple**, a high level
