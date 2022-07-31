@@ -40,7 +40,7 @@ attributes of tensors directly, introduce a layer of indirection:  let tensors
 have *named index groups*, and let these groups each have a *shape*.  Using
 this two-step definition, tensor shapes are still well defined, yet much easier
 to mentally keep track of.  It also introduces a form of referential integrity
-- if two tensors share the same index group, this is a declarative way to
+\- if two tensors share the same index group, this is a declarative way to
   establish that their sub-shapes must match.
 
 ## Introduction
