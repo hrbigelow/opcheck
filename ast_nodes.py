@@ -224,6 +224,14 @@ class StaticExpr(object):
     def get_rank_constraint_root(self):
         return None
 
+class SchemaFunctionExpr(StaticExpr):
+    def __init__(self, schema_func, schema):
+        self.schema = schema
+        self.schema_func = schema_func
+
+    def value(self):
+        return self.schema_func(self.schema)
+
 class ElemShape(ShapeExpr):
     def __init__(self, shape_list):
         self.shape_list = shape_list
