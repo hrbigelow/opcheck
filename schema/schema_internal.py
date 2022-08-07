@@ -1,10 +1,83 @@
 import itertools
 from collections import OrderedDict
-from ast_nodes import EinTup, SchemaFunctionExpr
 from error import *
 
-class OpSchema(object):
+class RankInput(object):
+    # An input which defines the rank of some signature
+    def __init__(self, schema, name, rank, sig):
+        self.schema = schema
+        self.name = name
+        self._rank = rank
+        self.sig = sig
+
+    def __repr__(self):
+        return f'RankInput({self.name}[{self._rank}]({self.sig})'
+
+    def rank(self):
+        return self._rank
+
+    def valid_rank(self):
+        return self.schema.sig_rank(self.sig) == self.rank()
+
+class ShapeInput(object):
+    def __init__(self, schema, name, kind, shape, sig):
+        self.schema = schema
+        self.name = name
+        self.kind = kind
+        self.shape = shape
+        self.sig = sig
+
+    def __repr__(self):
+        return f'ShapeInput({self.name},{self.kind})[{self.shape}]({self.sig})'
+
+    # return whether the actual rank and rank predicted by the indices
+    # are the same
+    def valid_rank(self):
+        return self.schema.sig_rank(self.sig) == self.rank()
+
+    def dims(self):
+        return self.shape
+
+    def rank(self):
+        return len(self.dims())
+
+    def sub_dims(self, letter_idx):
+        b, e = self.schema.sig_range(letter_idx, self.sig)
+        return self.shape[b:e]
+
+    # called for output
+    def set_dims(self, shape):
+        self.shape = list(shape)
+
+    # return a 3-member array, for example:
+    # 'input[ b,  i1,  i2, k]',
+    # '     [10, 100, 100, 3]',
+    # '                    ^ '
+    # shows the signature interpretation (b, i1, i2, k), the actual shape
+    # (10, 100, 100, 3), and the highlighted usage of the sig_letter (k)
+    # This is useful for highlighting shape constraint violations to the user
+    def index_usage(self, highlight_letter=None):
+        rows = [ self.schema.sig_list(self.sig), self.dims() ]
+        table, coords = tabulate(rows, ', ', left_justify=False) 
+        out1 = f'{self.name}[{table[0]}]'
+        out2 = f'[{table[1]}]'
+        out = [ [out1], [out2] ]
+        width = len(table[0])
+
+        if highlight_letter is not None:
+            b, e = self.schema.sig_range(highlight_letter, self.sig)
+            rng = range(coords[b][0], coords[e-1][1])
+            highlight = ''.join('^' if i in rng else ' ' for i in range(width))
+            out3 = f'{highlight} ' # trailing space aligns with closing bracket
+            out.append([out3])
+
+        justify, _ = tabulate( out, '', left_justify=False)
+        return justify
+
+class SchemaInternal(object):
     """
+    Internal workings of the Schema object
+
     An object which represents the 'Shape API' of one framework operation.
     The lifecycle of the OpSchema is as follows:
 
@@ -22,23 +95,24 @@ class OpSchema(object):
     4. Usually, only parameters which affect the Shape API logic itself will 
        be used during this call.
 
-    5. Once configured, 
-
+    TODO: complete docs
     """
     def __init__(self, op_path):
         self.op_path = op_path
 
+        # arguments given to the op
+        self.arguments = None
         # map of EinTups, letter -> tup (with tup.name a description)
         self.index = OrderedDict()
 
-        # Signatures for inputs (for example:  filters => 'fio'
-        self.input_sig = {}
+        # Array of ShapeInput
+        self.input_shapes = []
 
-        # Actual shapes of inputs (and possibly outputs) from the function call
-        self.tensor_shapes = {}
+        # Array of RankInput 
+        self.input_ranks = []
 
         # Ordered (and named) Signatures for outputs 
-        self.output_sig = OrderedDict()
+        self.output_shapes = []
 
         # Function provided for initializing the schema
         self.init_schema = None
@@ -53,28 +127,20 @@ class OpSchema(object):
         ind += '\n'.join(let + ': ' + repr(tup) for let, tup in
                 self.index.items())
         sig = 'Input signatures: \n'
-        sig += '\n'.join(f'{name}: {sig}' for name, sig in self.input_sig.items())
+        sig += '\n'.join(f'{sig}' for sig in self.input_shapes)
         out = 'Output signatures: \n'
-        out += '\n'.join(f'{name}: {sig}' for name, sig in
-                self.output_sig.items())
+        out += '\n'.join(f'{sig}' for sig in self.output_shapes)
         err = 'Errors: \n'
         err += '\n'.join(repr(e) for e in self.errors) 
         return '\n\n'.join((ind, sig, out, err))
 
     def clear(self):
         self.index.clear()
-        self.input_sig.clear()
-        self.output_sig.clear()
+        self.input_shapes.clear()
+        self.input_ranks.clear()
+        self.output_shapes.clear()
         self.errors.clear()
-        self.tensor_shapes.clear()
         self.has_outputs = False
-
-    def clear_shapes(self):
-        for tup in self.index.values():
-            tup.clear()
-
-    def add_index(self, letter_name, full_name):
-        self.index[letter_name] = EinTup(full_name)
 
     # fails if any letters in signature don't exist in self.index
     def _check_sig(self, arg_name, signature):
@@ -86,60 +152,30 @@ class OpSchema(object):
                 f"{','.join(self.index.keys())}"
                 f'Call OpSchema::add_index with the missing letter code.')
 
-    def add_signature(self, arg_name, signature):
-        self._check_sig(arg_name, signature)
-        self.input_sig[arg_name] = signature
 
-    def get_dims(self, sig):
+    def sig_dims(self, sig):
         return [dim for s in sig for dim in self.index[s].dims()]
 
-    def rank(self, sig):
+    def sig_rank(self, sig):
         return sum(self.index[s].rank() for s in sig)
 
-    def append_output_signature(self, arg_name, signature):
-        self._check_sig(arg_name, signature)
-        self.output_sig[arg_name] = signature
-
-    def _get_index(self, letter_name):
+    def get_index(self, letter_name):
         if letter_name not in self.index:
             raise RuntimeError(
                 f'No index with letter name \'{letter_name}\' exists')
         return self.index[letter_name]
 
-    def equate_rank(self, letter1, letter2):
-        ind1 = self._get_index(letter1)
-        ind2 = self._get_index(letter2)
-        ind1.equate_rank(ind2)
 
-    def set_rank_range(self, letter_name, rng):
-        ind = self._get_index(letter_name)
-        ind.set_rank_range(rng)
-
-    # constraint is a function accepting self 
-    def add_dims_constraint(self, letter_name, constraint):
-        ind = self._get_index(letter_name)
-        static_expr = SchemaFunctionExpr(constraint, self)
-        ind.add_gen_expr(constraint)
-
-    def set_init(self, init_func):
-        self.init_schema = init_func
-
-    def init(self, bound_args):
+    def _init(self, bound_args):
         self.clear()
+        self.arguments = bound_args
         self.init_schema(self, bound_args)
         for tup in self.index.values():
             if tup.rank_range is None and tup.rank_parent is None:
                 tup.set_rank_range(range(1, 2))
             tup.lift_rank_range()
-        for name in self.input_sig.keys():
-            if name not in bound_args:
-                raise RuntimeError(
-                    f'Schema expected input {name} but was not found in '
-                    f'argument list.  Argument list contains: '
-                    f'{bound_args.keys()}')
-            self.tensor_shapes[name] = bound_args[name].shape.as_list() 
 
-    def log_error(self, err):
+    def _log_error(self, err):
         self.errors.append(err)
 
     def evaluate(self):
@@ -151,47 +187,44 @@ class OpSchema(object):
 
         ranks_found = False
         for ranks in combos:
-            self.clear_shapes()
+            for tup in self.index.values():
+                tup.clear()
             for t, r in zip(range_tups, ranks):
                 t.set_rank(r)
             for t in tups:
                 t.calc_rank()
+
             # check if input ranks match signature ranks
-            for name, sig in self.input_sig.items():
-                if self.rank(sig) != len(self.tensor_shapes[name]):
-                    break
-            else:
+            if all(s.valid_rank() for s in self.input_shapes +
+                    self.input_ranks):
                 ranks_found = True
                 break
         
         if not ranks_found:
             # The rank combination was inconsistent.  Try harder to guess
             # what the user intended?
-            self.log_error(NoMatchingRanks())
+            self._log_error(NoMatchingRanks())
             return False
 
         # Found a rank combination matching the inputs.
-        # Now, either set dimension of index to input sub_dims,
-        # or, check sub_dims against index.dims()
+        # Check all index shape <=> input shape consistency
         dims_valid = True
-        for name, sig in self.input_sig.items():
-            input_dims = self.tensor_shapes[name]
-            offset = 0
-            for letter in sig:
+        for shape in self.input_shapes:
+            for letter in shape.sig:
                 tup = self.index[letter]
-                sub_dims = input_dims[offset:offset+tup.rank()]
+                sub_dims = shape.sub_dims(letter)
                 if tup.has_dims():
-                    if tup.dims() != sub_dims:
-                        self.log_error(ShapeError(name, letter, sub_dims))
+                    if tup.dims() != shape.sub_dims(letter):
+                        self._log_error(ShapeError(shape.name, letter, sub_dims))
                         dims_valid = False
                 else:
                     tup.set_dims(sub_dims)
-                offset += tup.rank()
 
-        if any(not tup.has_dims() for tup in self.index.values()):
-            raise RuntimeError(
-                f'Failed to set dimensions for some indices'
-                f'Schema:\n{self}')
+        # Any remaining tups without dims are by definition output-only.
+        # They must have a gen_expr
+        for tup in self.index.values():
+            if not tup.has_dims():
+                tup.gen_dims()
 
         return dims_valid
 
@@ -225,84 +258,50 @@ class OpSchema(object):
         tab, _ = tabulate(rows, '   ', True)
         return '\n'.join(tab)
 
-    """
-    Returns (for example) a multi-line string:
+    def _print_shapes(self, shapes, highlight):
+        msg = ''
+        for shape in shapes:
+            msg += '\n'.join(shape.index_usage(highlight))
+            msg += '\n\n'
+        return msg
 
-    input[ b,  i1,  i2, k]   filters[f1, f2, k, l]
-         [10, 100, 100, 3]          [ 9,  9, 8, 8]
-                        ^                    ^
+    def print_inputs(self, highlight=None):
+        return self._print_shapes(self.input_shapes, highlight)
 
-    Highlighting the extent of the indices denoted by shape_error.index_letter 
-    """
-    def shape_interpretation(self, with_output=False, highlight_letter=None):
-        items = list(self.input_sig.items()) 
-        if with_output:
-            items.extend(self.output_sig.items())
-
-        n = len(items)
-        outer = [ [None] * n for _ in range(2) ]
-        highlight = [None] * n
-        for ii, name_sig in enumerate(items):
-            name, sig = name_sig
-            rows = [ self.sig_list(sig), self.tensor_shapes[name] ]
-            table, coords = tabulate(rows, ', ', False)
-            outer[0][ii] = f'{name}[{table[0]}]'
-            outer[1][ii] = f'[{table[1]}]'
-
-            if highlight_letter is not None:
-                width = len(table[0])
-                b, e = self.sig_range(highlight_letter, sig)
-                rng = range(coords[b][0], coords[e-1][1])
-                hi = ''.join('^' if i in rng else ' ' for i in range(width))
-                highlight[ii] = f' {hi} '
-
-        if highlight_letter is not None:
-            outer.append(highlight)
-
-        out = ''
-        sep = ''
-        for i in range(n):
-            rows = [ [row[i]] for row in outer ]
-            table, _ = tabulate(rows, '', False)
-            out += sep
-            out += '\n'.join(table)
-            sep = '\n\n'
-        return out
-
-        # this was for all in one line.  was less readable
-        # outer_table, _ = tabulate(outer, '   ', False)
-        # return '\n'.join(outer_table)
+    def print_outputs(self, highlight=None):
+        return self._print_shapes(self.output_shapes, highlight)
 
     # check that the framework op output shapes match those predicted from
     # opcheck.
     def validate(self, ret_val):
         err = ''
         msg = ''
+
         if not isinstance(ret_val, tuple):
             ret_val = (ret_val,)
-        if len(self.output_sig) != len(ret_val):
-            err += f'OpSchema({self.op_path}) expected {len(self.output_sig)} outputs '
+        if len(self.output_shapes) != len(ret_val):
+            err += f'OpSchema({self.op_path}) expected '
+            f'{len(self.output_shapes)} outputs '
             f'but framework returned {len(ret_val)}\n'
         else:
             self.has_outputs = True
-            z = zip(self.output_sig.items(), ret_val, range(1, len(ret_val) + 1))
-            for name_sig, ret, pos in z: 
-                name, sig = name_sig
-                sig_dims = self.get_dims(sig)
+            z = zip(self.output_shapes, ret_val, range(1, len(ret_val) + 1))
+            for shape, ret, pos in z: 
+                sig_dims = self.sig_dims(shape.sig)
                 ret_dims = ret.shape.as_list()
                 if sig_dims != ret_dims:
                     err += (f'Output {pos} {name} shape mismatch: '
                             f'opcheck expected {sig_dims} but framework returned '
                             f'{ret_dims}\n')
-                self.tensor_shapes[name] = ret_dims
+                shape.set_dims(ret_dims)
 
         if err == '':
-            msg = f'{self.op_path} opcheck passed\n\n'
             msg += 'Indices:\n'
             msg += self.print_indices()
             msg += '\n\n'
             msg += 'Inferred Signature with actual shapes:\n\n'
-            msg += self.shape_interpretation(True)
+            msg += self.print_inputs()
+            msg += self.print_outputs() 
 
         return err, msg
 
@@ -313,9 +312,10 @@ class OpSchema(object):
                 # msg += 'Indices:\n'
                 msg += self.print_indices()
                 msg += '\n\n'
-                msg += self.print_shape_interpretation(False, err.index_letter)
+                msg += self.print_inputs(err.index_letter)
             elif isinstance(err, NoMatchingRanks):
                 msg += err.message(self)
 
         return msg
+
 

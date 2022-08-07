@@ -108,12 +108,6 @@ class Runtime(object):
         for tup in self.tups.values():
             tup.clear()
 
-    def gen_dims(self):
-        for tup in self.tups.values():
-            if not tup.primary() or tup.has_dims():
-                continue
-            tup.gen_dims()
-
     def init_all_shapes(self, tups, shapes):
         for tup, shape in zip(tups, shapes):
             tup.initialize(shape)

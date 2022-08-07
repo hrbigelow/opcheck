@@ -27,10 +27,10 @@ class ShapeError(SchemaError):
 
 
 # convert rows of arbitrary objects to tabular row strings
-def tabulate(rows, sep, do_left_justify=True):
+def tabulate(rows, sep, left_justify=True):
     n = len(rows[0])
     w = [max(len(str(row[c])) for row in rows) for c in range(n)]
-    if do_left_justify:
+    if left_justify:
         t = [sep.join(f'{str(row[c]):<{w[c]}s}' for c in range(n))
                 for row in rows]
     else:

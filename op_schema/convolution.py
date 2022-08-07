@@ -1,8 +1,6 @@
 import opcheck
 op = opcheck.register('tf.nn.convolution')
 
-# print('got here in convolution.py')
-
 def init_schema(op, pars):
     op.add_index('b', 'batch')
     op.add_index('i', 'input spatial')
@@ -15,25 +13,32 @@ def init_schema(op, pars):
         in_sig = 'bik'
     else:
         in_sig = 'bki'
-    op.add_signature('input', in_sig)
-    op.add_signature('filters', 'fkl')
-
-    op.append_output_signature('output', 'bol')
+    op.add_input_tensor('input', in_sig)
+    op.add_input_tensor('filters', 'fkl')
+    op.append_output_tensor('output', 'bol')
 
     op.set_rank_range('i', range(1, 4))
     op.equate_rank('i', 'f')
     op.equate_rank('i', 'o')
     
-    """
-    def dcons():
-        if pars['padding'] == 'VALID':
-            pad_filter_dims = (op.dims('f') - 1) * op.arg('dilation') + 1
-            return ( (op.dims('i') - pad_filter_dims + 1) //^ op.arg('stride'))
+    def dcons(schema):
+        idims = opcheck.Broadcastable(schema.index['i'].dims())
+        fdims = opcheck.Broadcastable(schema.index['f'].dims())
+        stride = schema.get_arg('strides') 
+        dilation = schema.get_arg('dilations')
+        if stride is None:
+            stride = 1
+        if dilation is None:
+            dilation = 1
+
+        if schema.arguments['padding'] == 'VALID':
+            pad_filter_dims = (fdims - 1) * dilation + 1
+            out = (idims - pad_filter_dims + 1).ceildiv(stride)
         else:
-            return op.dims('i') //^ op.arg('stride')
+            out = idims.ceildiv(stride)
+        return out.val
 
     op.add_dims_constraint('o', dcons)
-    """
 
 op.set_init(init_schema)
 
