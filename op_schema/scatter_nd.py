@@ -1,7 +1,7 @@
 import opcheck
 op = opcheck.register('tf.scatter_nd')
 
-def init_schema(op, pars):
+def init_schema(op):
     op.add_index('r', 'read address')
     op.add_index('c', 'write address component')
     op.add_index('e', 'slice element')
@@ -9,15 +9,17 @@ def init_schema(op, pars):
     op.add_input_tensor('indices', 'rc')
     op.add_input_tensor('updates', 're')
     op.add_input_shape('shape', 'we')  
-    op.append_output_tensor('output', 'we')
+    op.append_output_tensor('we')
 
-    op.set_rank_range('r', range(1, 4))
-    op.set_rank_range('e', range(0, 4))
+    op.set_index_rank('c', 1)
+    op.set_index_rank_range('w', range(1, 4))
+    op.set_index_rank_range('r', range(1, 4))
+    op.set_index_rank_range('e', range(0, 4))
 
-    # TensorFlow's policy may be to set the rank of w based on
-    # indices.shape[-1].  Is it?
-    index_depth = pars['indices'].shape[-1]
-    op.set_rank_range('w', range(index_depth, index_depth+1))
+    # set the dimension of index c to rank(w) 
+    def dimsc(_op):
+        return [_op.get_index('w').rank()]
+    op.set_index_dims_constraint('c', dimsc)
 
 op.set_init(init_schema)
 

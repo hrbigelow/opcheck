@@ -3,7 +3,6 @@ import inspect
 import traceback
 from types import SimpleNamespace
 from schema import Schema
-from broadcast_op import Broadcastable
 
 # singleton global config object
 config = SimpleNamespace(validate = False) 
@@ -22,29 +21,30 @@ def register(op_path):
         bind_obj = sig.bind(*args, **kwargs)
         bind_obj.apply_defaults()
         bound_args = bind_obj.arguments
-        op.init(bound_args)
+        op.p.init(op, bound_args)
 
         framework_ex = None
 
-        opcheck_valid = op.evaluate()
+        opcheck_valid = op.p.evaluate()
         if opcheck_valid:
-            print(f'Opcheck {op.op_path} input validation passed.\n')
+            print(f'Opcheck {op.p.op_path} input validation passed.\n')
         else:
-            print(f'Opcheck {op.op_path} input validation failed.\n\n'
-                    f'{op.report()}\n')
+            print(f'Opcheck {op.p.op_path} input validation failed.\n\n'
+                    f'{op.p.report()}\n')
         try:
             ret_val = func(*args, **kwargs)
         except Exception as ex:
             print(f'Framework op raised exception.\n\n{ex}\n')
             framework_ex = ex
         else:
+            op.p.set_outputs(ret_val)
             if config.validate:
-                err, msg = op.validate(ret_val)
+                err, msg = op.p.validate(ret_val)
                 if err != '':
-                    print(f'Opcheck {op.op_path} output validation failed.\n\n')
+                    print(f'Opcheck {op.p.op_path} output validation failed.\n\n')
                     print(err)
                 if msg != '':
-                    print(f'Opcheck {op.op_path} output validation passed.\n\n')
+                    print(f'Opcheck {op.p.op_path} output validation passed.\n\n')
                     print(msg)
         finally:
             if framework_ex is not None:

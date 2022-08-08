@@ -1,78 +1,6 @@
 import itertools
 from collections import OrderedDict
-from error import *
-
-class RankInput(object):
-    # An input which defines the rank of some signature
-    def __init__(self, schema, name, rank, sig):
-        self.schema = schema
-        self.name = name
-        self._rank = rank
-        self.sig = sig
-
-    def __repr__(self):
-        return f'RankInput({self.name}[{self._rank}]({self.sig})'
-
-    def rank(self):
-        return self._rank
-
-    def valid_rank(self):
-        return self.schema.sig_rank(self.sig) == self.rank()
-
-class ShapeInput(object):
-    def __init__(self, schema, name, kind, shape, sig):
-        self.schema = schema
-        self.name = name
-        self.kind = kind
-        self.shape = shape
-        self.sig = sig
-
-    def __repr__(self):
-        return f'ShapeInput({self.name},{self.kind})[{self.shape}]({self.sig})'
-
-    # return whether the actual rank and rank predicted by the indices
-    # are the same
-    def valid_rank(self):
-        return self.schema.sig_rank(self.sig) == self.rank()
-
-    def dims(self):
-        return self.shape
-
-    def rank(self):
-        return len(self.dims())
-
-    def sub_dims(self, letter_idx):
-        b, e = self.schema.sig_range(letter_idx, self.sig)
-        return self.shape[b:e]
-
-    # called for output
-    def set_dims(self, shape):
-        self.shape = list(shape)
-
-    # return a 3-member array, for example:
-    # 'input[ b,  i1,  i2, k]',
-    # '     [10, 100, 100, 3]',
-    # '                    ^ '
-    # shows the signature interpretation (b, i1, i2, k), the actual shape
-    # (10, 100, 100, 3), and the highlighted usage of the sig_letter (k)
-    # This is useful for highlighting shape constraint violations to the user
-    def index_usage(self, highlight_letter=None):
-        rows = [ self.schema.sig_list(self.sig), self.dims() ]
-        table, coords = tabulate(rows, ', ', left_justify=False) 
-        out1 = f'{self.name}[{table[0]}]'
-        out2 = f'[{table[1]}]'
-        out = [ [out1], [out2] ]
-        width = len(table[0])
-
-        if highlight_letter is not None:
-            b, e = self.schema.sig_range(highlight_letter, self.sig)
-            rng = range(coords[b][0], coords[e-1][1])
-            highlight = ''.join('^' if i in rng else ' ' for i in range(width))
-            out3 = f'{highlight} ' # trailing space aligns with closing bracket
-            out.append([out3])
-
-        justify, _ = tabulate( out, '', left_justify=False)
-        return justify
+from .error import *
 
 class SchemaInternal(object):
     """
@@ -102,6 +30,10 @@ class SchemaInternal(object):
 
         # arguments given to the op
         self.arguments = None
+
+        # outputs, set after 
+        self.outputs = None 
+
         # map of EinTups, letter -> tup (with tup.name a description)
         self.index = OrderedDict()
 
@@ -116,11 +48,10 @@ class SchemaInternal(object):
 
         # Function provided for initializing the schema
         self.init_schema = None
+        self.calltime_config = lambda op: None 
 
         # Errors
         self.errors = []
-
-        self.has_outputs = False
 
     def __repr__(self):
         ind = 'Index: \n' 
@@ -140,17 +71,16 @@ class SchemaInternal(object):
         self.input_ranks.clear()
         self.output_shapes.clear()
         self.errors.clear()
-        self.has_outputs = False
 
     # fails if any letters in signature don't exist in self.index
-    def _check_sig(self, arg_name, signature):
+    def check_sig(self, signature, name):
         if any(s not in self.index.keys() for s in signature):
             raise RuntimeError(
-                f'Signature "{signature}" given for input argument '
-                f'"{arg_name}" contains one or more unregistered '
-                f'letter codes.  Currently registered letter codes are: '
+                f'Signature "{signature}" associated with \'{name}\' '
+                f'contains one or more unregistered indices. '
+                f'Current known indices are: '
                 f"{','.join(self.index.keys())}"
-                f'Call OpSchema::add_index with the missing letter code.')
+                f'Call OpSchema::add_index with the missing index.')
 
 
     def sig_dims(self, sig):
@@ -165,17 +95,45 @@ class SchemaInternal(object):
                 f'No index with letter name \'{letter_name}\' exists')
         return self.index[letter_name]
 
+    def get_arg(self, arg_name, default=None):
+        if arg_name not in self.arguments:
+            raise RuntimeError(
+                f'\'{arg_name}\' not found in call arguments. '
+                f'Arguments are: {self.arguments.keys()}')
+        arg = self.arguments[arg_name]
+        if arg is None:
+            arg = default
+        return arg
 
-    def _init(self, bound_args):
+    def get_output(self, idx):
+        try:
+            return self.outputs[idx]
+        except IndexError:
+            raise RuntimeError(
+                f'get_output({idx}) called but only {len(self.outputs)} '
+                f'outputs')
+
+    def init(self, op, bound_args):
         self.clear()
         self.arguments = bound_args
-        self.init_schema(self, bound_args)
-        for tup in self.index.values():
+        self.init_schema(op)
+        self.calltime_config(op)
+        for idx, tup in self.index.items():
             if tup.rank_range is None and tup.rank_parent is None:
-                tup.set_rank_range(range(1, 2))
+                raise RuntimeError(
+                    f'Schema for {op.p.op_path} does not define any rank '
+                    f'constraint for index \'{idx}\' ({tup.name})')
             tup.lift_rank_range()
 
-    def _log_error(self, err):
+    def set_outputs(self, op_return):
+        """Register the op outputs {op_return} with the schema.  {op_return}
+        may be a single value or iterable"""
+        if isinstance(op_return_val_or_list, (list, tuple)):
+            self.outputs = list(op_return_val_or_list)
+        else:
+            self.outputs = [op_return_val_or_list]
+
+    def log_error(self, err):
         self.errors.append(err)
 
     def evaluate(self):
@@ -203,7 +161,7 @@ class SchemaInternal(object):
         if not ranks_found:
             # The rank combination was inconsistent.  Try harder to guess
             # what the user intended?
-            self._log_error(NoMatchingRanks())
+            self.log_error(NoMatchingRanks())
             return False
 
         # Found a rank combination matching the inputs.
@@ -215,7 +173,7 @@ class SchemaInternal(object):
                 sub_dims = shape.sub_dims(letter)
                 if tup.has_dims():
                     if tup.dims() != shape.sub_dims(letter):
-                        self._log_error(ShapeError(shape.name, letter, sub_dims))
+                        self.log_error(ShapeError(shape.name, letter, sub_dims))
                         dims_valid = False
                 else:
                     tup.set_dims(sub_dims)
@@ -258,7 +216,7 @@ class SchemaInternal(object):
         tab, _ = tabulate(rows, '   ', True)
         return '\n'.join(tab)
 
-    def _print_shapes(self, shapes, highlight):
+    def print_shapes(self, shapes, highlight):
         msg = ''
         for shape in shapes:
             msg += '\n'.join(shape.index_usage(highlight))
@@ -266,10 +224,10 @@ class SchemaInternal(object):
         return msg
 
     def print_inputs(self, highlight=None):
-        return self._print_shapes(self.input_shapes, highlight)
+        return self.print_shapes(self.input_shapes, highlight)
 
     def print_outputs(self, highlight=None):
-        return self._print_shapes(self.output_shapes, highlight)
+        return self.print_shapes(self.output_shapes, highlight)
 
     # check that the framework op output shapes match those predicted from
     # opcheck.
@@ -281,10 +239,9 @@ class SchemaInternal(object):
             ret_val = (ret_val,)
         if len(self.output_shapes) != len(ret_val):
             err += f'OpSchema({self.op_path}) expected '
-            f'{len(self.output_shapes)} outputs '
-            f'but framework returned {len(ret_val)}\n'
+            f'{len(self.output_shapes)} outputs but framework returned '
+            f'{len(ret_val)}\n'
         else:
-            self.has_outputs = True
             z = zip(self.output_shapes, ret_val, range(1, len(ret_val) + 1))
             for shape, ret, pos in z: 
                 sig_dims = self.sig_dims(shape.sig)

@@ -40,8 +40,8 @@ def test_scatter():
     output = tf.scatter_nd(indices, updates, shape=output_shape)
 
 if __name__ == '__main__':
-    test_conv1()
+    # test_conv1()
     # test_gather()
-    # test_scatter()
+    test_scatter()
 
 
