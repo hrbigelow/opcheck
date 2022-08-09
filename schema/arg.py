@@ -57,7 +57,7 @@ class Shape(object):
     # return whether the actual rank and rank predicted by the indices
     # are the same
     def valid_rank(self):
-        return self.p.sig_rank(self.sig) == self.rank()
+        return self.arg.p.sig_rank(self.sig) == self.rank()
 
     def dims(self):
         raise NotImplementedError
@@ -66,12 +66,8 @@ class Shape(object):
         return len(self.dims())
 
     def sub_dims(self, letter_idx):
-        b, e = self.p.sig_range(letter_idx, self.sig)
+        b, e = self.arg.p.sig_range(letter_idx, self.sig)
         return self.dims()[b:e]
-
-    # called for output
-    def set_dims(self, shape):
-        self.shape = list(shape)
 
     # return a 3-member array, for example:
     # 'input[ b,  i1,  i2, k]',
@@ -132,6 +128,7 @@ class TensorShapeOutput(ShapeOutput):
             raise RuntimeError(
                 f'{self.__class__.__name__} expected output \'{self.idx}\' to be '
                 f'a Tensor but it is a {type(ten)}')
+        return ten.shape.as_list()
 
 class ListShapeInput(ShapeInput):
     """Represents an integer list argument which defines a signature shape.

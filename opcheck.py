@@ -38,15 +38,17 @@ def register(op_path):
             framework_ex = ex
         else:
             op.p.set_outputs(ret_val)
-            if config.validate:
-                err, msg = op.p.validate(ret_val)
-                if err != '':
-                    print(f'Opcheck {op.p.op_path} output validation failed.\n\n')
-                    print(err)
-                if msg != '':
-                    print(f'Opcheck {op.p.op_path} output validation passed.\n\n')
-                    print(msg)
+            op.p.validate()
+            """
+            if err != '':
+                print(f'Opcheck {op.p.op_path} output validation failed.\n\n')
+                print(err)
+            if msg != '':
+                print(f'Opcheck {op.p.op_path} output validation passed.\n\n')
+                print(msg)
+            """
         finally:
+            op.p.report()
             if framework_ex is not None:
                 raise framework_ex
 

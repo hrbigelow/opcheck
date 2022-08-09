@@ -128,10 +128,11 @@ class SchemaInternal(object):
     def set_outputs(self, op_return):
         """Register the op outputs {op_return} with the schema.  {op_return}
         may be a single value or iterable"""
-        if isinstance(op_return_val_or_list, (list, tuple)):
-            self.outputs = list(op_return_val_or_list)
-        else:
-            self.outputs = [op_return_val_or_list]
+        if not isinstance(op_return, (list, tuple)):
+            op_return = (op_return,)
+        if len(self.output_shapes) != len(op_return):
+            self.log_error(OutputNumberMismatch(len(op_return)))
+        self.outputs = list(op_return)
 
     def log_error(self, err):
         self.errors.append(err)
@@ -231,27 +232,12 @@ class SchemaInternal(object):
 
     # check that the framework op output shapes match those predicted from
     # opcheck.
-    def validate(self, ret_val):
-        err = ''
-        msg = ''
-
-        if not isinstance(ret_val, tuple):
-            ret_val = (ret_val,)
-        if len(self.output_shapes) != len(ret_val):
-            err += f'OpSchema({self.op_path}) expected '
-            f'{len(self.output_shapes)} outputs but framework returned '
-            f'{len(ret_val)}\n'
-        else:
-            z = zip(self.output_shapes, ret_val, range(1, len(ret_val) + 1))
-            for shape, ret, pos in z: 
-                sig_dims = self.sig_dims(shape.sig)
-                ret_dims = ret.shape.as_list()
-                if sig_dims != ret_dims:
-                    err += (f'Output {pos} {name} shape mismatch: '
-                            f'opcheck expected {sig_dims} but framework returned '
-                            f'{ret_dims}\n')
-                shape.set_dims(ret_dims)
-
+    def validate(self):
+        for shape in self.output_shapes:
+            if self.sig_dims(shape.sig) != shape.dims():
+                err = OutputShapeError(shape.idx) 
+                self.log_error(err)
+        """
         if err == '':
             msg += 'Indices:\n'
             msg += self.print_indices()
@@ -259,14 +245,12 @@ class SchemaInternal(object):
             msg += 'Inferred Signature with actual shapes:\n\n'
             msg += self.print_inputs()
             msg += self.print_outputs() 
-
-        return err, msg
+        """
 
     def report(self):
         msg = ''
         for err in self.errors:
             if isinstance(err, ShapeError):
-                # msg += 'Indices:\n'
                 msg += self.print_indices()
                 msg += '\n\n'
                 msg += self.print_inputs(err.index_letter)
