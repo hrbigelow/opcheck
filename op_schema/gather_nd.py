@@ -1,5 +1,4 @@
 import opcheck
-op = opcheck.register('tf.gather_nd')
 
 def init_schema(op):
     op.index('b', 'batch')
@@ -26,14 +25,14 @@ def init_schema(op):
     op.arg_rank_func('indices', 'w', rankw)
 
     # output shape prediction
-    op.append_output_tensor('bwe')
+    op.append_return_tensor('bwe')
 
     # allowed dims combinations (see below)
     def dimsc(_op):
         return [_op.get_index_rank('r')]
     op.set_index_dims_constraint('c', dimsc)
     
-op.set_init(init_schema)
+opcheck.register('tf.gather_nd', init_schema)
 
 """
 rank inference constraints - necessary to infer the actual rank combos from a

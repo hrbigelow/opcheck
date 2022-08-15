@@ -1,7 +1,7 @@
 import itertools
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from .error import *
-import util
+from . import util
 
 class SchemaInternal(object):
     """
@@ -123,7 +123,7 @@ class SchemaInternal(object):
                 f'Can only call once per argument')
 
     def sig_indices(self, sig):
-        inds = self.index.keys()
+        inds = list(self.index.keys())
         return tuple(inds.index(idx) for idx in sig)
 
     def add_rank_limits(self, sig, min_val, max_val):
@@ -140,12 +140,6 @@ class SchemaInternal(object):
 
     def sig_rank(self, sig):
         return sum(self.index[s].rank() for s in sig)
-
-    def get_index(self, letter_name):
-        if letter_name not in self.index:
-            raise RuntimeError(
-                f'No index with letter name \'{letter_name}\' exists')
-        return self.index[letter_name]
 
     def get_arg(self, arg_name, default=None):
         """Retrieve the value of {arg_name} argument at call-time."""
@@ -181,20 +175,13 @@ class SchemaInternal(object):
                     f'as type {self.arg_types[arg_name]}')
         self.arg_types[arg_name] = arg_type
 
-    def get_output(self, idx):
+    def get_return(self, idx):
         try:
             return self.returns[idx]
         except IndexError:
             raise RuntimeError(
                 f'get_output({idx}) called but only {len(self.returns)} '
                 f'returns')
-
-    def init(self, op, func_signature):
-        """
-        Call during registration phase 
-        """
-        self.parameter_names = func_signature.parameters.keys()
-        self.init_schema(op)
 
     def prepare_call(self, op, bound_args):
         """Call during the framework call phase"""

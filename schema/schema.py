@@ -1,4 +1,3 @@
-from ast_nodes import EinTup, SchemaFunctionExpr
 from .arg import *
 from .schema_internal import SchemaInternal
 
@@ -7,24 +6,15 @@ class Schema(object):
     def __init__(self, op_path):
         self.p = SchemaInternal(op_path)
 
-    def set_init(self, init_func):
-        """Define the schema init function"""
-        self.p.init_schema = init_func
-
-    def set_calltime_config(self, config_func):
-        self.p.calltime_config = config_func
+    def init_schema(self, func_sig, init_schema_func, calltime_config_func):
+        self.p.parameter_names = func_sig.parameters.keys()
+        init_schema_func(self)
+        self.p.calltime_config = calltime_config_func
 
     def index(self, idx, description):
         """Add index {idx} with {description} to the schema.  {idx} must be a
         single letter and can be referred to in later signatures"""
         self.p.index[idx] = description
-
-    def get_index(self, idx):
-        if idx not in self.p.index:
-            raise RuntimeError(
-                f'Schema does not contain index \'{idx}\'. '
-                f'Available indices are {self.p.index.keys()}')
-        return self.p.index[idx]
 
     def get_index_dims(self, idx):
         """
@@ -54,29 +44,28 @@ class Schema(object):
     def arg_tensor(self, arg_name, signature):
         """Expect {arg_name} to be a Tensor with {signature}"""
         self.p.check_sig(signature, arg_name)
-        self.p.check_arg_added(arg_name, self.arg_shape)
-        typed_arg = self.p.maybe_add_arg(arg_name, Tensor)
+        self.p.check_arg_added(arg_name, self.p.arg_shape)
         self.p.arg_shape[arg_name] = TensorShapeArg(self, arg_name, signature) 
 
     def arg_shape(self, arg_name, signature):
         """Expect {arg_name} to be a list which defines the shape of {signature}
         """ 
         self.p.check_sig(signature, arg_name)
-        self.p.check_arg_added(arg_name, self.arg_shape)
+        self.p.check_arg_added(arg_name, self.p.arg_shape)
         self.p.arg_shape[arg_name] = ListShapeArg(self, arg_name, signature)
 
     def arg_rank(self, arg_name, signature):
         """Expect {arg_name} to be an integer that defines the rank of
         {signature}"""
         self.p.check_sig(signature, arg_name)
-        self.p.check_arg_added(arg_name, self.arg_rank)
+        self.p.check_arg_added(arg_name, self.p.arg_rank)
         self.p.arg_rank[arg_name] = RankArg(self, arg_name, signature) 
 
     def arg_rank_func(self, arg_name, signature, func):
         """Call {func} on the value of {arg_name}, and set the rank of
         {signature} to the return value."""
         self.p.check_sig(signature, arg_name)
-        self.p.check_arg_added(arg_name, self.arg_rank)
+        self.p.check_arg_added(arg_name, self.p.arg_rank)
         self.p.arg_rank[arg_name] = RankFuncArg(self, arg_name, signature,
                 func)
 
@@ -89,11 +78,11 @@ class Schema(object):
         elements in [{beg}, {end}).  For testing, produce {num_test} values"""
         pass
 
-    def append_output_tensor(self, signature):
-        idx = len(self.p.output_shapes) 
-        self.p.check_sig(signature, f'output {idx}')
+    def append_return_tensor(self, signature):
+        idx = len(self.p.return_shapes) 
+        self.p.check_sig(signature, f'return {idx}')
         # the shape gets populated during 'validate' call
-        self.p.output_shapes.append(TensorShapeOutput(self, idx, signature))
+        self.p.return_shapes.append(TensorShapeReturn(self, idx, signature))
 
     def limit_ranks(self, sig, min_val, max_val):
         """Declare that the valid ranks of {sig} lie in the interval
@@ -119,7 +108,7 @@ class Schema(object):
         {dims_func} is evaluated at the end of the Dims Resolution Phase. 
         {dims_func}(op) should return an integer list of length rank(idx) 
         """
-        self.index_dims_funcs[idx] = dims_func
+        self.p.index_dims_funcs[idx] = dims_func
 
     def set_shape_signature(self, arg_name, signature):
         """Hook to set the {signature} associated with {arg_name} at runtime """

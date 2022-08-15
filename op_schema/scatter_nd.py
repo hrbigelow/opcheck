@@ -1,5 +1,4 @@
 import opcheck
-op = opcheck.register('tf.scatter_nd')
 
 def init_schema(op):
     op.index('r', 'read address')
@@ -15,15 +14,14 @@ def init_schema(op):
     op.arg_tensor('indices', 'rc')
     op.arg_tensor('updates', 're')
     op.arg_shape('shape', 'we')  
-    op.append_output_tensor('we')
+    op.append_return_tensor('we')
 
     # set the dimension of index c to rank(w) 
     def dimsc(_op):
         return [_op.get_index_rank('w')]
     op.set_index_dims_constraint('c', dimsc)
 
-op.set_init(init_schema)
-
+opcheck.register('tf.scatter_nd', init_schema)
 
 """
 This schema determines index ranks and dims as follows:

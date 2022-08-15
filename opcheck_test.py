@@ -1,8 +1,6 @@
 import opcheck
 import tensorflow as tf
 
-opcheck.init()
-opcheck.validate_schema(True)
 
 def test_conv1():
     batch = [10]
@@ -40,8 +38,9 @@ def test_scatter():
     output = tf.scatter_nd(indices, updates, shape=output_shape)
 
 if __name__ == '__main__':
+    opcheck.init()
+    opcheck.validate_schema(True)
     # test_conv1()
-    # test_gather()
-    test_scatter()
-
+    test_gather()
+    # test_scatter()
 

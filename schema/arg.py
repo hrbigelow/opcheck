@@ -40,18 +40,20 @@ class RankFuncArg(object):
         return self.func(val)
 
 
-class ShapeArg(object):
+class ShapeVal(object):
     """Interprets {arg} to define the shape of {sig}"""
-    def __init__(self, schema, name, sig):
+    def __init__(self, schema, name, index, sig):
         self.p = schema.p
         self.name = name
+        self.index = index
         self.sig = sig
 
     def __repr__(self):
-        return f'{self.__class__.__name__}({self.arg})[{self.sig}]'
+        return f'{self.__class__.__name__}({self.name})[{self.sig}]'
 
     def val(self):
-        return self.p.get_arg(self.name)
+        """Retrieve the underlying value (either arg or return)"""
+        return NotImplementedError
 
     # return whether the actual rank and rank predicted by the indices
     # are the same
@@ -90,10 +92,24 @@ class ShapeArg(object):
         justify, _ = tabulate( out, '', left_justify=False)
         return justify
 
+class ShapeArg(ShapeVal):
+    def __init__(self, schema, name, sig):
+        super().__init__(schema, name, None, sig)
+
+    def val(self):
+        return self.p.get_arg(self.name)
+
+class ShapeReturn(ShapeVal):
+    def __init__(self, schema, index, sig):
+        super().__init__(schema, None, index, sig)
+
+    def val(self):
+        return self.get_return(self.index)
+
 class TensorShapeArg(ShapeArg):
     """Represents a Tensor argument called {name} whose shape defines signature
     {sig}"""
-    def __init__(self, name, sig):
+    def __init__(self, schema, name, sig):
         super().__init__(schema, name, sig)
 
     def dims(self):
@@ -116,33 +132,13 @@ class ListShapeArg(ShapeArg):
         shape = self.val()
         return shape
 
-class Output(object):
-    def __init__(self, schema, out_idx):
-        self.p = schema.p
-        self.idx = out_idx
-
-    def __repr__(self):
-        return f'{self.__class__.__name__}[{self.idx}]'
-
-    def get(self):
-        return self.p.get_output(self.idx)
-
-class ShapeOutput(Shape):
-    """Output result {idx} interpreted with signature {sig}"""
-    def __init__(self, schema, idx, sig):
-        arg = Output(schema, idx)
-        super().__init__(arg, sig)
-
-class TensorShapeOutput(ShapeOutput):
-    def __init__(self, schema, out_idx, sig):
-        super().__init__(schema, out_idx, sig)
+class TensorShapeReturn(ShapeReturn):
+    """Represents a Tensor return value at {index} with signature {sig}"""
+    def __init__(self, schema, index, sig):
+        super().__init__(schema, index, sig)
 
     def dims(self):
-        ten = self.arg.get()
-        if not isinstance(ten, Tensor):
-            raise RuntimeError(
-                f'{self.__class__.__name__} expected output \'{self.idx}\' to be '
-                f'a Tensor but it is a {type(ten)}')
+        ten = self.val()
         return ten.shape.as_list()
 
 class ArgCheck(object):

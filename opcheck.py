@@ -10,14 +10,14 @@ config = SimpleNamespace(validate = False)
 def validate_schema(do_validate):
     config.validate = do_validate
 
-def register(op_path):
+def register(op_path, init_schema_func, calltime_config_func=None):
     # This section is called 'registration phase'
     mod_path, func_name = op_path.rsplit('.', 1)
     mod = eval(mod_path)
     func = getattr(mod, func_name)
     sig = inspect.signature(func)
     op = Schema(op_path)
-    op.p.init(op, sig)
+    op.init_schema(sig, init_schema_func, calltime_config_func)
 
     def wrapper(*args, **kwargs):
         # executes during 'framework call phase'
@@ -57,11 +57,8 @@ def register(op_path):
                 raise framework_ex
 
         return ret_val
-    
     setattr(mod, func_name, wrapper)
-    return op
 
 def init():
     import op_schema
-
 

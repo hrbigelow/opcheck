@@ -1,8 +1,6 @@
 import opcheck
 from schema import Broadcastable
 
-op = opcheck.register('tf.nn.convolution')
-
 def init_schema(op):
     op.index('b', 'batch')
     op.index('i', 'input spatial')
@@ -20,7 +18,7 @@ def init_schema(op):
     op.add_input_sigrank('dilations', 'i', 1, 10, 2)
 
     # outputs
-    op.append_output_tensor('bol')
+    op.append_return_tensor('bol')
 
     # constraints
     op.limit_ranks('b', 1, 1)
@@ -53,8 +51,6 @@ def process_data_format(_op):
         in_sig = 'bki'
     _op.set_tensor_signature('input', in_sig)
 
-
-op.set_init(init_schema)
-op.set_calltime_config(process_data_format)
+opcheck.register('tf.nn.convolution', init_schema, process_data_format)
 
 
