@@ -2,23 +2,24 @@ import opcheck
 op = opcheck.register('tf.scatter_nd')
 
 def init_schema(op):
-    op.add_index('r', 'read address')
-    op.add_index('c', 'write address component')
-    op.add_index('e', 'slice element')
-    op.add_index('w', 'write address')
-    op.add_input_tensor('indices', 'rc')
-    op.add_input_tensor('updates', 're')
-    op.add_input_shape('shape', 'we')  
-    op.append_output_tensor('we')
+    op.index('r', 'read address')
+    op.index('c', 'write address component')
+    op.index('e', 'slice element')
+    op.index('w', 'write address')
 
-    op.set_index_rank('c', 1)
-    op.set_index_rank_range('w', range(1, 4))
-    op.set_index_rank_range('r', range(1, 4))
-    op.set_index_rank_range('e', range(0, 4))
+    op.limit_ranks('r', 1, 3)
+    op.limit_ranks('c', 1, 1)
+    op.limit_ranks('e', 0, 4)
+    op.limit_ranks('w', 1, 3)
+
+    op.arg_tensor('indices', 'rc')
+    op.arg_tensor('updates', 're')
+    op.arg_shape('shape', 'we')  
+    op.append_output_tensor('we')
 
     # set the dimension of index c to rank(w) 
     def dimsc(_op):
-        return [_op.get_index('w').rank()]
+        return [_op.get_index_rank('w')]
     op.set_index_dims_constraint('c', dimsc)
 
 op.set_init(init_schema)

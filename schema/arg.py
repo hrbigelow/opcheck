@@ -1,73 +1,69 @@
 from tensorflow import Tensor
 import random
+import error
 
-class RankInput(object):
-    # An input which defines the rank of some signature
+class RankArg(object):
+    """
+    An integer-valued argument named {name} which defines the rank of {sig}
+    """
     def __init__(self, schema, name, sig):
         self.p = schema.p
         self.name = name
         self.sig = sig
 
     def __repr__(self):
-        return f'RankInput({self.name}({self.sig})'
+        return f'{self.__class__.__name__}({self.name}({self.sig})'
 
-    def rank(self):
-        rank = self.p.get_arg(self.name)
-        if not isinstance(rank, int):
-            raise RuntimeError(
-                f'Expected argument \'{self.name}\' to be an integer '
-                f'but it is a {type(rank)}')
+    def rank(self, schema_internal):
+        rank = self.p.get_arg(self.name) 
         return rank
 
     def valid_rank(self):
         return self.p.sig_rank(self.sig) == self.rank()
 
-class InputArg(object):
-    def __init__(self, schema, name):
+class RankFuncArg(object):
+    """
+    Represents an argument named {name}, and associated {func} to extract an
+    integer value from it, to define the rank of {sig}
+    """
+    def __init__(self, schema, name, sig, func):
         self.p = schema.p
         self.name = name
+        self.sig = sig
+        self.func = func
 
     def __repr__(self):
-        return f'{self.__class__.__name__}({self.name})'
+        return f'{self.__class__.__name__}({self.name}({self.sig})'
 
-    def get(self):
-        return self.p.get_arg(self.name)
+    def rank(self):
+        val = self.p.get_arg(self.name)
+        return self.func(val)
 
-class Output(object):
-    def __init__(self, schema, out_idx):
+
+class ShapeArg(object):
+    """Interprets {arg} to define the shape of {sig}"""
+    def __init__(self, schema, name, sig):
         self.p = schema.p
-        self.idx = out_idx
-
-    def __repr__(self):
-        return f'{self.__class__.__name__}[{self.idx}]'
-
-    def get(self):
-        return self.p.get_output(self.idx)
-    
-
-class Shape(object):
-    """Interprets an input or output {arg} to have signature {sig}"""
-    def __init__(self, arg, sig):
-        self.arg = arg
+        self.name = name
         self.sig = sig
 
     def __repr__(self):
         return f'{self.__class__.__name__}({self.arg})[{self.sig}]'
 
+    def val(self):
+        return self.p.get_arg(self.name)
+
     # return whether the actual rank and rank predicted by the indices
     # are the same
     def valid_rank(self):
-        return self.arg.p.sig_rank(self.sig) == self.rank()
+        raise NotImplementedError
+        # return self.arg.p.sig_rank(self.sig) == self.rank()
 
     def dims(self):
         raise NotImplementedError
 
     def rank(self):
         return len(self.dims())
-
-    def sub_dims(self, letter_idx):
-        b, e = self.arg.p.sig_range(letter_idx, self.sig)
-        return self.dims()[b:e]
 
     # return a 3-member array, for example:
     # 'input[ b,  i1,  i2, k]',
@@ -94,29 +90,48 @@ class Shape(object):
         justify, _ = tabulate( out, '', left_justify=False)
         return justify
 
-class ShapeInput(Shape):
-    """Input argument {name} interpreted with signature {sig}"""
+class TensorShapeArg(ShapeArg):
+    """Represents a Tensor argument called {name} whose shape defines signature
+    {sig}"""
+    def __init__(self, name, sig):
+        super().__init__(schema, name, sig)
+
+    def dims(self):
+        ten = self.val()
+        return ten.shape.as_list()
+
+class ListShapeArg(ShapeArg):
+    """Represents an integer list argument called {name} which defines
+    signature {sig}.
+    For example:
+
+    # For tf.scatter_nd (shape parameter defines w plus e (write address plus
+    # slice element) index shape)
+    ListShapeArg(schema, 'shape', 'we')
+    """
     def __init__(self, schema, name, sig):
-        arg = InputArg(schema, name)
-        super().__init__(arg, sig)
+        super().__init__(schema, name, sig)
+
+    def dims(self):
+        shape = self.val()
+        return shape
+
+class Output(object):
+    def __init__(self, schema, out_idx):
+        self.p = schema.p
+        self.idx = out_idx
+
+    def __repr__(self):
+        return f'{self.__class__.__name__}[{self.idx}]'
+
+    def get(self):
+        return self.p.get_output(self.idx)
 
 class ShapeOutput(Shape):
     """Output result {idx} interpreted with signature {sig}"""
     def __init__(self, schema, idx, sig):
         arg = Output(schema, idx)
         super().__init__(arg, sig)
-
-class TensorShapeInput(ShapeInput):
-    def __init__(self, schema, name, sig):
-        super().__init__(schema, name, sig)
-
-    def dims(self):
-        ten = self.arg.get()
-        if not isinstance(ten, Tensor):
-            raise RuntimeError(
-                f'TensorShapeInput: expected argument \'{self.name}\' to be '
-                f'a Tensor but it is a {type(ten)}')
-        return ten.shape.as_list()
 
 class TensorShapeOutput(ShapeOutput):
     def __init__(self, schema, out_idx, sig):
@@ -129,26 +144,6 @@ class TensorShapeOutput(ShapeOutput):
                 f'{self.__class__.__name__} expected output \'{self.idx}\' to be '
                 f'a Tensor but it is a {type(ten)}')
         return ten.shape.as_list()
-
-class ListShapeInput(ShapeInput):
-    """Represents an integer list argument which defines a signature shape.
-    For example:
-
-    # For tf.scatter_nd (shape parameter defines w plus e (write address plus
-    # slice element) index shape)
-    ListShapeInput(schema, 'shape', 'we')
-    """
-    def __init__(self, schema, name, sig):
-        super().__init__(schema, name, sig)
-
-    def dims(self):
-        shape = self.arg.get()
-        if not isinstance(shape, list):
-            raise RuntimeError(
-                f'{self.__class__.__name__}: expected argument \'{self.name}\' '
-                f'to be a list but it is a {type(shape)}')
-        return shape
-
 
 class ArgCheck(object):
     """Base class for representing checked arguments.

@@ -13,6 +13,10 @@ class NoMatchingRanks(SchemaError):
         msg = 'No matching ranks found'
         return msg
 
+class ArgTypeError(SchemaError):
+    def __init__(self, arg_name):
+        self.arg_name = arg_name
+
 class ShapeError(SchemaError):
     def __init__(self, ten_name, index_letter, ten_sub_dims):
         self.ten_name = ten_name

@@ -1,11 +1,10 @@
 import itertools
 from collections import OrderedDict
 from .error import *
+import util
 
 class SchemaInternal(object):
     """
-    Internal workings of the Schema object
-
     An object which represents the 'Shape API' of one framework operation.
     The lifecycle of the OpSchema is as follows:
 
@@ -28,23 +27,57 @@ class SchemaInternal(object):
     def __init__(self, op_path):
         self.op_path = op_path
 
-        # arguments given to the op
+        # framework op parameter names 
+        self.parameter_names = None
+
+        # arguments given to the op.  these change for each call
         self.arguments = None
 
-        # outputs, set after 
-        self.outputs = None 
+        # returns, set after the framework operation returns.  changes with
+        # each call 
+        self.returns = []
+
+        # these are set to different values during call-time
+        self.index_ranks = {}
+        self.index_dims = {} 
+
+        # these members are set during schema initialization and do not change
+        # during calls to the framework
 
         # map of EinTups, letter -> tup (with tup.name a description)
         self.index = OrderedDict()
 
-        # Array of ShapeInput
-        self.input_shapes = []
+        # Constraints on the allowed combinations of ranks 
+        # Possible TODO: rewrite these to use actual index names rather than
+        # index positions
+        self.rank_maxs = defaultdict(lambda: 10000)
+        self.rank_mins = defaultdict(lambda: 0) 
+        self.rank_equiv = [] # [(sig1, sig2), ...] sig1 and sig2 equal ranks
 
-        # Array of RankInput 
-        self.input_ranks = []
+        # map of arg_name => TypedArg
+        # this will be populated with all arguments.  arg_shape, arg_rank,
+        # arg_rank_func and arg_option refer to these arguments and provide
+        # further interpretation.  There may be more than one interpretation of
+        # a TypedArg
+        self.arg_types = {}
 
-        # Ordered (and named) Signatures for outputs 
-        self.output_shapes = []
+        # map of arg_name => ShapeArg
+        self.arg_shape = {}
+
+        # map of arg_name => RankArg
+        self.arg_rank = {}
+
+        # map of arg_name => RankFuncArg
+        self.arg_rank_func = {}
+
+        # map of arg_name => OptionArg
+        self.arg_option = {}
+
+        # Ordered (and named) Signatures for returns 
+        self.return_shapes = []
+
+        # map of idx => func.  func(op) called at end of Dims Resolution Phase
+        self.index_dims_funcs = {}
 
         # Function provided for initializing the schema
         self.init_schema = None
@@ -60,16 +93,16 @@ class SchemaInternal(object):
         sig = 'Input signatures: \n'
         sig += '\n'.join(f'{sig}' for sig in self.input_shapes)
         out = 'Output signatures: \n'
-        out += '\n'.join(f'{sig}' for sig in self.output_shapes)
+        out += '\n'.join(f'{sig}' for sig in self.return_shapes)
         err = 'Errors: \n'
         err += '\n'.join(repr(e) for e in self.errors) 
         return '\n\n'.join((ind, sig, out, err))
 
-    def clear(self):
-        self.index.clear()
-        self.input_shapes.clear()
-        self.input_ranks.clear()
-        self.output_shapes.clear()
+    def clear_call_state(self):
+        """Clear the data members which hold data from a framework call"""
+        self.index_ranks.clear()
+        self.index_dims.clear()
+        self.returns.clear()
         self.errors.clear()
 
     # fails if any letters in signature don't exist in self.index
@@ -82,9 +115,28 @@ class SchemaInternal(object):
                 f"{','.join(self.index.keys())}"
                 f'Call OpSchema::add_index with the missing index.')
 
+    def check_arg_added(self, arg_name, domain):
+        """Check whether {arg_name} already added to {domain}"""
+        if arg_name in domain:
+            raise RuntimeError(
+                f'{self.__qualname__} was previously called with {arg_name}.'
+                f'Can only call once per argument')
+
+    def sig_indices(self, sig):
+        inds = self.index.keys()
+        return tuple(inds.index(idx) for idx in sig)
+
+    def add_rank_limits(self, sig, min_val, max_val):
+        sig_inds = self.sig_indices(sig)
+        if min_val is not None:
+            prev_min_val = self.rank_mins[sig_inds] 
+            self.rank_mins[sig_inds] = max(prev_min_val, min_val)
+        if max_val is not None:
+            prev_max_val = self.rank_maxs[sig_inds] 
+            self.rank_maxs[sig_inds] = min(prev_max_val, max_val)
 
     def sig_dims(self, sig):
-        return [dim for s in sig for dim in self.index[s].dims()]
+        return [dim for s in sig for dim in self.index_dims[s]]
 
     def sig_rank(self, sig):
         return sum(self.index[s].rank() for s in sig)
@@ -96,96 +148,183 @@ class SchemaInternal(object):
         return self.index[letter_name]
 
     def get_arg(self, arg_name, default=None):
-        if arg_name not in self.arguments:
+        """Retrieve the value of {arg_name} argument at call-time."""
+        if arg_name not in self.arg_types:
             raise RuntimeError(
-                f'\'{arg_name}\' not found in call arguments. '
-                f'Arguments are: {self.arguments.keys()}')
-        arg = self.arguments[arg_name]
-        if arg is None:
-            arg = default
-        return arg
+                f'\'{arg_name}\' not found in registered arguments. '
+                f'Arguments are: {self.arg_types.keys()}')
+
+        if arg_name not in self.parameter_names:
+            raise RuntimeError(
+                f'\'{arg_name}\' not a known parameter. '
+                f'Known parameters are: {self.parameter_names}')
+        return self.arguments[arg_name]
+
+    def valid_arg_type(self, arg_name):
+        """Type check argument at call-time"""
+        val = self.get_arg(arg_name)
+        expected_type = self.arg_types[arg_name]
+        return isinstance(val, expected_type)
+
+    def set_arg_type(self, arg_name, arg_type):
+        """Expect {arg_name} to have type {arg_type}"""
+        if arg_name not in self.parameter_names:
+            raise RuntimeError(
+                f'{self.__qualname__}: Attempted to add {arg_name} parameter '
+                f'but it is not found in the framework op parameters. '
+                f'Valid parameters are: {self.parameter_names}')
+        if arg_name in self.arg_types:
+            if self.arg_types[arg_name] != arg_type:
+                raise RuntimeError(
+                    f'{self.__qualname__}: Attempted to add {arg_name} as type '
+                    f'{arg_type} to the registry, but it is already registered '
+                    f'as type {self.arg_types[arg_name]}')
+        self.arg_types[arg_name] = arg_type
 
     def get_output(self, idx):
         try:
-            return self.outputs[idx]
+            return self.returns[idx]
         except IndexError:
             raise RuntimeError(
-                f'get_output({idx}) called but only {len(self.outputs)} '
-                f'outputs')
+                f'get_output({idx}) called but only {len(self.returns)} '
+                f'returns')
 
-    def init(self, op, bound_args):
-        self.clear()
-        self.arguments = bound_args
+    def init(self, op, func_signature):
+        """
+        Call during registration phase 
+        """
+        self.parameter_names = func_signature.parameters.keys()
         self.init_schema(op)
-        self.calltime_config(op)
-        for idx, tup in self.index.items():
-            if tup.rank_range is None and tup.rank_parent is None:
-                raise RuntimeError(
-                    f'Schema for {op.p.op_path} does not define any rank '
-                    f'constraint for index \'{idx}\' ({tup.name})')
-            tup.lift_rank_range()
 
-    def set_outputs(self, op_return):
-        """Register the op outputs {op_return} with the schema.  {op_return}
+    def prepare_call(self, op, bound_args):
+        """Call during the framework call phase"""
+        self.clear_call_state()
+        self.arguments = bound_args
+        self.calltime_config(op)
+
+    def set_returns(self, op_return):
+        """Register the {op_return} values with the schema.  {op_return}
         may be a single value or iterable"""
         if not isinstance(op_return, (list, tuple)):
             op_return = (op_return,)
-        if len(self.output_shapes) != len(op_return):
+        if len(self.return_shapes) != len(op_return):
             self.log_error(OutputNumberMismatch(len(op_return)))
-        self.outputs = list(op_return)
+        self.returns = list(op_return)
 
     def log_error(self, err):
         self.errors.append(err)
 
-    def evaluate(self):
-        # loop through all valid ranks
-        tups = self.index.values()
-        range_tups = [ t for t in tups if t.rank_range is not None ]
-        range_list = [ t.rank_range for t in range_tups ]
-        combos = itertools.product(*range_list)
+    def compute_index_dims(self):
+        """
+        Call this at the end of the Dims Resolution Phase to compute any index
+        dims which have registered functions.
+        """
+        for idx, func in self.index_dims_funcs.items():
+            self.index_dims[idx] = func(self)
 
-        ranks_found = False
-        for ranks in combos:
-            for tup in self.index.values():
-                tup.clear()
-            for t, r in zip(range_tups, ranks):
-                t.set_rank(r)
-            for t in tups:
-                t.calc_rank()
+    def resolve_ranks(self):
+        """
+        Using the rank allowed combinations and rank inference constraints,
+        resolve the ranks to a single combination
+        """
+        # create an additional set of const constraint functions from the
+        # arguments
+        const_map = {}
+        for _, arg in self.arg_shape + self.arg_rank:
+            sig_inds = self.sig_indices(arg.sig)
+            const_map[sig_inds] = arg.rank()
+        k = len(self.index)
 
-            # check if input ranks match signature ranks
-            if all(s.valid_rank() for s in self.input_shapes +
-                    self.input_ranks):
-                ranks_found = True
-                break
-        
-        if not ranks_found:
-            # The rank combination was inconsistent.  Try harder to guess
-            # what the user intended?
-            self.log_error(NoMatchingRanks())
+        rank_combos = list(util.feasible_region(k, self.rank_mins,
+            self.rank_maxs, const_map))
+        return rank_combos
+
+    def generate_ranks(self):
+        """Generate all allowed rank combinations"""
+        k = len(self.index)
+        yield from util.feasible_region(k, self.rank_mins, self.rank_maxs,
+                self.rank_equiv, {})
+
+    def check_args(self):
+        """
+        Evaluate the current argument values, logging any errors found.  Return
+        True if no errors, False otherwise.
+        """
+        # Type Check Phase: Check that all arguments have valid type
+        valid_types = True
+        for arg_name in self.arguments:
+            if not self.vald_arg_type(arg_name):
+                err = ArgTypeError(arg_name)
+                self.log_error(err)
+                valid_types = False
+
+        if not valid_types:
             return False
 
-        # Found a rank combination matching the inputs.
-        # Check all index shape <=> input shape consistency
-        dims_valid = True
-        for shape in self.input_shapes:
-            for letter in shape.sig:
-                tup = self.index[letter]
-                sub_dims = shape.sub_dims(letter)
-                if tup.has_dims():
-                    if tup.dims() != shape.sub_dims(letter):
-                        self.log_error(ShapeError(shape.name, letter, sub_dims))
-                        dims_valid = False
-                else:
-                    tup.set_dims(sub_dims)
+        # Rank Resolution Phase: Can we resolve the ranks of indices unambiguously? 
+        inferred_ranks = None
+        rank_list = self.resolve_ranks()
+        if len(rank_list) == 0:
+            self.log_error(error.NoMatchingRanks())
+        elif len(rank_list) > 1:
+            self.log_error(error.AmbiguousRanks())
+        else:
+            inferred_ranks = rank_list[0]
 
-        # Any remaining tups without dims are by definition output-only.
-        # They must have a gen_expr
-        for tup in self.index.values():
-            if not tup.has_dims():
-                tup.gen_dims()
+        if inferred_ranks is None:
+            return False
 
-        return dims_valid
+        # Set the index ranks to inferred
+        # TODO: make this safer
+        self.index_ranks = zip(self.index.keys(), inferred_ranks)
+        self.index_dims = {}
+
+        # Dims Resolution Phase:
+        # Are the indices used consistently?
+        idx_usage_valid = True
+        for idx in self.index.keys():
+            # find all usages of idx
+            idx_shapes = set()
+            for arg in self.arg_shape.values():
+                if idx not in arg.sig:
+                    continue
+                shape = arg.dims()
+                sub_range = self.sig_range(idx, arg.sig)
+                idx_shape = shape[slice(*sub_range)]
+                idx_shapes.add(tuple(idx_shape))
+
+            if len(idx_shapes) != 1:
+                self.log_error(error.IndexUsageError(idx))
+                idx_usage_valid = False
+            else:
+                self.index_dims[idx] = idx_shapes.pop()
+
+        # Now, calculate any dimensions which have registered functions
+        self.compute_index_dims()
+
+        # Are the tensor types valid?
+        # TODO
+
+        return idx_usage_valid
+
+    def check_return(self):
+        """
+        Check the return tensors' shapes and types against those predicted by
+        the framework
+        """
+        for shape in self.return_shapes:
+            if self.sig_dims(shape.sig) != shape.dims():
+                err = OutputShapeError(shape.idx) 
+                self.log_error(err)
+        """
+        if err == '':
+            msg += 'Indices:\n'
+            msg += self.print_indices()
+            msg += '\n\n'
+            msg += 'Inferred Signature with actual shapes:\n\n'
+            msg += self.print_inputs()
+            msg += self.print_outputs() 
+        """
 
     # produce ['i1', 'i2', 'i3'] from 'i' for example
     def index_list(self, letter):
@@ -201,10 +340,10 @@ class SchemaInternal(object):
 
     # produce [1,4] from letter='i', sig='bik' (assuming rank 3 for i) for
     # example
-    def sig_range(self, letter, sig):
-        ind = sig.index(letter)
-        start = sum(self.index[l].rank() for l in sig[:ind])
-        rank = self.index[letter].rank()
+    def sig_range(self, idx, sig):
+        ind = sig.index(idx)
+        start = sum(self.index_ranks[l] for l in sig[:ind])
+        rank = self.index_ranks[idx]
         return [start, start + rank]
 
     def print_indices(self):
@@ -228,24 +367,7 @@ class SchemaInternal(object):
         return self.print_shapes(self.input_shapes, highlight)
 
     def print_outputs(self, highlight=None):
-        return self.print_shapes(self.output_shapes, highlight)
-
-    # check that the framework op output shapes match those predicted from
-    # opcheck.
-    def validate(self):
-        for shape in self.output_shapes:
-            if self.sig_dims(shape.sig) != shape.dims():
-                err = OutputShapeError(shape.idx) 
-                self.log_error(err)
-        """
-        if err == '':
-            msg += 'Indices:\n'
-            msg += self.print_indices()
-            msg += '\n\n'
-            msg += 'Inferred Signature with actual shapes:\n\n'
-            msg += self.print_inputs()
-            msg += self.print_outputs() 
-        """
+        return self.print_shapes(self.return_shapes, highlight)
 
     def report(self):
         msg = ''
@@ -258,5 +380,4 @@ class SchemaInternal(object):
                 msg += err.message(self)
 
         return msg
-
 

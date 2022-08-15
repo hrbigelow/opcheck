@@ -4,32 +4,35 @@ from schema import Broadcastable
 op = opcheck.register('tf.nn.convolution')
 
 def init_schema(op):
-    op.add_index('b', 'batch')
-    op.add_index('i', 'input spatial')
-    op.add_index('f', 'filter spatial')
-    op.add_index('o', 'output spatial')
-    op.add_index('k', 'input channel')
-    op.add_index('l', 'output channel')
+    op.index('b', 'batch')
+    op.index('i', 'input spatial')
+    op.index('f', 'filter spatial')
+    op.index('o', 'output spatial')
+    op.index('k', 'input channel')
+    op.index('l', 'output channel')
 
     # inputs
-    op.add_input_tensor('input', 'bik')
-    op.add_input_tensor('filters', 'fkl')
+    op.arg_tensor('input', 'bik')
+    op.arg_tensor('filters', 'fkl')
     op.add_input_sigrank('strides', 'i', 1, 10, 2)
-    op.add_input_static('padding', ('VALID', 'SAME'))
-    op.add_input_static('data_format', ('NWC', 'NHWC', 'NDHWC', 'NCW', 'NCHW', 'NCDHW'))
+    op.arg_option('padding', ('VALID', 'SAME'))
+    op.arg_option('data_format', ('NWC', 'NHWC', 'NDHWC', 'NCW', 'NCHW', 'NCDHW'))
     op.add_input_sigrank('dilations', 'i', 1, 10, 2)
 
     # outputs
     op.append_output_tensor('bol')
 
     # constraints
-    op.set_rank_range('i', range(1, 4))
-    op.equate_index_ranks('i', 'f')
-    op.equate_index_ranks('i', 'o')
+    op.limit_ranks('b', 1, 1)
+    op.limit_ranks('i', 1, 3)
+    op.equate_ranks('i', 'f')
+    op.equate_ranks('i', 'o')
+    op.limit_ranks('k', 1, 1)
+    op.limit_ranks('l', 1, 1)
     
     def dcons(_op):
-        idims = Broadcastable(_op.get_index('i').dims())
-        fdims = Broadcastable(_op.get_index('f').dims())
+        idims = Broadcastable(_op.get_index_dims('i'))
+        fdims = Broadcastable(_op.get_index_dims('f'))
         stride = _op.get_arg('strides', default=1) 
         dilation = _op.get_arg('dilations', default=1)
 
@@ -42,13 +45,13 @@ def init_schema(op):
 
     op.set_index_dims_constraint('o', dcons)
 
-def process_data_format(op):
-    df = op.get_arg('data_format', default='NWC')
+def process_data_format(_op):
+    df = _op.get_arg('data_format', default='NWC')
     if df in ('NWC', 'NHWC', 'NDHWC'):
         in_sig = 'bik'
     else:
         in_sig = 'bki'
-    op.set_tensor_signature('input', in_sig)
+    _op.set_tensor_signature('input', in_sig)
 
 
 op.set_init(init_schema)
