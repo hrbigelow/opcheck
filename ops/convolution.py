@@ -41,15 +41,15 @@ def init_schema(op):
             out = idims.ceildiv(stride)
         return out.val
 
-    op.set_index_dims_constraint('o', dcons)
+    op.index_dims_func('o', dcons)
 
-def process_data_format(_op):
-    df = _op.get_arg('data_format', default='NWC')
+def process_data_format(op):
+    df = op.get_arg('data_format', default='NWC')
     if df in ('NWC', 'NHWC', 'NDHWC'):
         in_sig = 'bik'
     else:
         in_sig = 'bki'
-    _op.set_tensor_signature('input', in_sig)
+    op.set_shape_signature('input', in_sig)
 
 opcheck.register('tf.nn.convolution', init_schema, process_data_format)
 

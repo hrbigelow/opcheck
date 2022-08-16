@@ -39,8 +39,7 @@ def test_scatter():
 
 if __name__ == '__main__':
     opcheck.init()
-    opcheck.validate_schema(True)
-    # test_conv1()
-    test_gather()
+    opcheck.validate('tf.gather_nd')
+    # test_gather()
     # test_scatter()
 

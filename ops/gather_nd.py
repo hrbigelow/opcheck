@@ -9,7 +9,6 @@ def init_schema(op):
 
     # allowed rank combinations
     op.limit_ranks('c', 1, 1)
-    op.limit_ranks('b', 1, None)
     op.limit_ranks('r', 1, None)
     op.limit_ranks('w', 1, None)
     op.limit_ranks('bre', None, 7)
@@ -19,10 +18,11 @@ def init_schema(op):
     op.arg_tensor('indices', 'bwc')
     op.arg_tensor('params', 'bre')
     op.arg_rank('batch_dims', 'b')
+    op.arg_unchecked('name')
 
-    def rankw(indices):
+    def rankr(indices):
         return indices.shape[-1]
-    op.arg_rank_func('indices', 'w', rankw)
+    op.arg_rank_func('indices', 'r', rankr)
 
     # output shape prediction
     op.append_return_tensor('bwe')
@@ -30,11 +30,17 @@ def init_schema(op):
     # allowed dims combinations (see below)
     def dimsc(_op):
         return [_op.get_index_rank('r')]
-    op.set_index_dims_constraint('c', dimsc)
+    op.index_dims_func('c', dimsc)
     
 opcheck.register('tf.gather_nd', init_schema)
 
 """
+Rank Inference is unambiguous:
+rank(c) = 1
+rank(b) = batch_dims
+rank(w) = rank(indices) - rank(c) - rank(b)
+rank(r) = dims(c)[0]
+
 rank inference constraints - necessary to infer the actual rank combos from a
 given call
 

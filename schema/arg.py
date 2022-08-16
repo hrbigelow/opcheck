@@ -12,9 +12,9 @@ class RankArg(object):
         self.sig = sig
 
     def __repr__(self):
-        return f'{self.__class__.__name__}({self.name}({self.sig})'
+        return f'{self.__class__.__name__}({self.name})({self.sig})'
 
-    def rank(self, schema_internal):
+    def rank(self):
         rank = self.p.get_arg(self.name) 
         return rank
 
@@ -33,12 +33,11 @@ class RankFuncArg(object):
         self.func = func
 
     def __repr__(self):
-        return f'{self.__class__.__name__}({self.name}({self.sig})'
+        return f'{self.__class__.__name__}({self.name})({self.sig})'
 
     def rank(self):
         val = self.p.get_arg(self.name)
         return self.func(val)
-
 
 class ShapeVal(object):
     """Interprets {arg} to define the shape of {sig}"""
@@ -103,8 +102,11 @@ class ShapeReturn(ShapeVal):
     def __init__(self, schema, index, sig):
         super().__init__(schema, None, index, sig)
 
+    def __repr__(self):
+        return f'{self.__class__.__name__}[{self.index}]({self.sig})'
+
     def val(self):
-        return self.get_return(self.index)
+        return self.p.get_return(self.index)
 
 class TensorShapeArg(ShapeArg):
     """Represents a Tensor argument called {name} whose shape defines signature

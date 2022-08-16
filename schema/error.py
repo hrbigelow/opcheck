@@ -25,7 +25,6 @@ class ShapeError(SchemaError):
                 f'but expected {expect_dims}')
         return msg
 
-
 # convert rows of arbitrary objects to tabular row strings
 def tabulate(rows, sep, left_justify=True):
     n = len(rows[0])

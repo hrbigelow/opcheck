@@ -1,16 +1,17 @@
+# tf import is needed for 'eval(mod_path)' 
 import tensorflow as tf
 import inspect
-import traceback
-from types import SimpleNamespace
 from schema import Schema
 
-# singleton global config object
-config = SimpleNamespace(validate = False) 
-
-def validate_schema(do_validate):
-    config.validate = do_validate
+REGISTRY = {}
 
 def register(op_path, init_schema_func, calltime_config_func=None):
+    """
+    Wrap the framework operation at {op_path} for OpCheck checking.
+    {init_schema_func} defines constraints on the input relationships.
+    {calltime_config_func} is a function that can be run at call time if
+    constraints depend on the inputs.
+    """
     # This section is called 'registration phase'
     mod_path, func_name = op_path.rsplit('.', 1)
     mod = eval(mod_path)
@@ -19,46 +20,41 @@ def register(op_path, init_schema_func, calltime_config_func=None):
     op = Schema(op_path)
     op.init_schema(sig, init_schema_func, calltime_config_func)
 
-    def wrapper(*args, **kwargs):
+    def wrapped_op(*args, **kwargs):
         # executes during 'framework call phase'
         sig = inspect.signature(func)
         bind_obj = sig.bind(*args, **kwargs)
         bind_obj.apply_defaults()
-        bound_args = bind_obj.arguments
-        op.p.prepare_call(op, bound_args)
-
-        framework_ex = None
-
-        opcheck_valid = op.p.check_args()
-        if opcheck_valid:
-            print(f'Opcheck {op.p.op_path} input validation passed.\n')
-        else:
-            print(f'Opcheck {op.p.op_path} input validation failed.\n\n'
-                    f'{op.p.report()}\n')
+        op.p.prepare_call(op, bind_obj.arguments)
+        op.p.check_args()
         try:
             ret_val = func(*args, **kwargs)
         except Exception as ex:
-            print(f'Framework op raised exception.\n\n{ex}\n')
-            framework_ex = ex
+            op.p.log_framework_error(ex)
         else:
-            op.p.set_outputs(ret_val)
-            op.p.check_return()
-            """
-            if err != '':
-                print(f'Opcheck {op.p.op_path} output validation failed.\n\n')
-                print(err)
-            if msg != '':
-                print(f'Opcheck {op.p.op_path} output validation passed.\n\n')
-                print(msg)
-            """
+            op.p.check_return(ret_val)
         finally:
             op.p.report()
-            if framework_ex is not None:
-                raise framework_ex
+            if op.p.framework_error is not None:
+                raise op.p.framework_error
 
         return ret_val
-    setattr(mod, func_name, wrapper)
+    op.p.wrapped_op = wrapped_op
+    setattr(mod, func_name, wrapped_op)
+    REGISTRY[op_path] = op
+
+def validate(op_path):
+    """
+    Run generated test configurations and confirm opcheck flags errors
+    appropriately.
+    """
+    if op_path not in REGISTRY:
+        raise RuntimeError(
+            f'A tensor op named \'{op_path}\' is not registered with OpCheck. '
+            f'Cannot validate.')
+    op = REGISTRY[op_path]
+    op.p.validate_schema()
 
 def init():
-    import op_schema
+    import ops
 

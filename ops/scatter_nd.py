@@ -19,7 +19,7 @@ def init_schema(op):
     # set the dimension of index c to rank(w) 
     def dimsc(_op):
         return [_op.get_index_rank('w')]
-    op.set_index_dims_constraint('c', dimsc)
+    op.index_dims_func('c', dimsc)
 
 opcheck.register('tf.scatter_nd', init_schema)
 

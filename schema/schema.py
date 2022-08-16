@@ -9,6 +9,8 @@ class Schema(object):
     def init_schema(self, func_sig, init_schema_func, calltime_config_func):
         self.p.parameter_names = func_sig.parameters.keys()
         init_schema_func(self)
+        if calltime_config_func is None:
+            calltime_config_func = lambda op: None
         self.p.calltime_config = calltime_config_func
 
     def index(self, idx, description):
@@ -44,6 +46,7 @@ class Schema(object):
     def arg_tensor(self, arg_name, signature):
         """Expect {arg_name} to be a Tensor with {signature}"""
         self.p.check_sig(signature, arg_name)
+        self.p.set_arg_type(arg_name, Tensor)
         self.p.check_arg_added(arg_name, self.p.arg_shape)
         self.p.arg_shape[arg_name] = TensorShapeArg(self, arg_name, signature) 
 
@@ -51,6 +54,7 @@ class Schema(object):
         """Expect {arg_name} to be a list which defines the shape of {signature}
         """ 
         self.p.check_sig(signature, arg_name)
+        self.p.set_arg_type(arg_name, list)
         self.p.check_arg_added(arg_name, self.p.arg_shape)
         self.p.arg_shape[arg_name] = ListShapeArg(self, arg_name, signature)
 
@@ -58,12 +62,14 @@ class Schema(object):
         """Expect {arg_name} to be an integer that defines the rank of
         {signature}"""
         self.p.check_sig(signature, arg_name)
+        self.p.set_arg_type(arg_name, int)
         self.p.check_arg_added(arg_name, self.p.arg_rank)
         self.p.arg_rank[arg_name] = RankArg(self, arg_name, signature) 
 
     def arg_rank_func(self, arg_name, signature, func):
         """Call {func} on the value of {arg_name}, and set the rank of
-        {signature} to the return value."""
+        {signature} to the return value.  Additionally, expect {arg_name}
+        to have type {arg_type}"""
         self.p.check_sig(signature, arg_name)
         self.p.check_arg_added(arg_name, self.p.arg_rank)
         self.p.arg_rank[arg_name] = RankFuncArg(self, arg_name, signature,
@@ -72,6 +78,11 @@ class Schema(object):
     def arg_option(self, arg_name, options):
         """Expect {arg_name} to take on one of the values in {options}"""
         pass
+
+    def arg_unchecked(self, arg_name):
+        """Declare {arg_name} to be an argument that OpCheck doesn't perform
+        any checking for"""
+        self.p.set_arg_type(arg_name, None)
 
     def add_input_sigrank(self, arg_name, signature, beg, end, num_test):
         """Expect {arg_name} to be a list of length rank({signature}), with
@@ -102,13 +113,12 @@ class Schema(object):
         during the rank inference phase"""
         pass
         
-    # constraint is a function accepting self 
-    def set_index_dims_constraint(self, idx, dims_func):
+    def index_dims_func(self, idx, dims_func):
         """Constrain the dims of {idx} to the function value {dims_func}(op).
         {dims_func} is evaluated at the end of the Dims Resolution Phase. 
-        {dims_func}(op) should return an integer list of length rank(idx) 
+        {dims_func}(op) must return an integer list of length rank(idx) 
         """
-        self.p.index_dims_funcs[idx] = dims_func
+        self.p.index_dims_funcs[idx] = lambda: dims_func(self)
 
     def set_shape_signature(self, arg_name, signature):
         """Hook to set the {signature} associated with {arg_name} at runtime """
@@ -121,7 +131,6 @@ class Schema(object):
                 f'called \'{arg_name}\'.  Shapes are registered with '
                 f'add_input_tensor() or add_input_shape()')
         shape.sig = signature
-
 
     def equate_element_type(self, tensor_name1, tensor_name2):
         """Declare that two tensor inputs must have the same element type"""
