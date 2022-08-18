@@ -1,6 +1,6 @@
 from tensorflow import Tensor
 import random
-import error
+from . import error
 
 class RankArg(object):
     """
@@ -144,7 +144,7 @@ class TensorShapeReturn(ShapeReturn):
         return ten.shape.as_list()
 
 class ArgCheck(object):
-    """Base class for representing checked arguments.
+    """Base class for representing arguments.  
     """
     def __init__(self, schema, arg_name):
         self.schema = schema
@@ -155,25 +155,31 @@ class ArgCheck(object):
         return self.schema.get_arg(self.name)
 
     def valid_call(self):
-        """Judge whether the call value is valid within the constraints
-        defined in this ArgCheck object"""
+        """
+        Judge whether the call value is valid.  The check may depend on the
+        schema state, in particular the current dimensions or ranks of indices
+        """
         raise NotImplementedError
 
     def test_values(self):
-        """Generate a list of test values to run the test harness.  May or may
-        not be an exhaustive list"""
+        """
+        Generate a list of test values to run the test harness.  
+        May or may not be an exhaustive list
+        """
         pass
 
-    def error_message(self):
-        """A message to return to the user if valid_call() returns False"""
+    def log_error(self):
+        """
+        TODO: what to do when 
+        """
         raise NotImplementedError
 
-class StaticArg(ArgCheck):
+class OptionArg(ArgCheck):
     """ArgCheck that represents an argument that can take on a fixed set of
     values.  For example:
 
-    StaticArg(schema, 'padding', ['VALID', 'SAME'])
-    StaticArg(schema, 'indexing', ['ij', 'xy'])
+    OptionArg(schema, 'padding', ['VALID', 'SAME'])
+    OptionArg(schema, 'indexing', ['ij', 'xy'])
     """
     def __init__(self, schema, arg_name, options_list):
         super().__init__(schema, arg_name)

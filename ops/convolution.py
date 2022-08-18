@@ -28,20 +28,16 @@ def init_schema(op):
     op.limit_ranks('k', 1, 1)
     op.limit_ranks('l', 1, 1)
     
-    def dcons(_op):
-        idims = Broadcastable(_op.get_index_dims('i'))
-        fdims = Broadcastable(_op.get_index_dims('f'))
-        stride = _op.get_arg('strides', default=1) 
-        dilation = _op.get_arg('dilations', default=1)
-
-        if _op.get_arg('padding') == 'VALID':
-            pad_filter_dims = (fdims - 1) * dilation + 1
-            out = (idims - pad_filter_dims + 1).ceildiv(stride)
+    # compute output spatial dimension 
+    def odims(_op, idims, fdims, strides, dilations, padding):
+        if padding == 'VALID':
+            pad_filter_dims = (fdims - 1) * dilations + 1
+            out = (idims - pad_filter_dims + 1).ceildiv(strides)
         else:
             out = idims.ceildiv(stride)
         return out.val
 
-    op.index_dims_func('o', dcons)
+    op.index_dims_func('o', odims, 'i', 'f', 'strides', 'dilations', 'padding')
 
 def process_data_format(op):
     df = op.get_arg('data_format', default='NWC')

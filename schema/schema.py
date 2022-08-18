@@ -1,3 +1,4 @@
+import tensorflow as tf
 from .arg import *
 from .schema_internal import SchemaInternal
 
@@ -84,6 +85,58 @@ class Schema(object):
         any checking for"""
         self.p.set_arg_type(arg_name, None)
 
+    def arg_valid_dtypes(self, tensor_name, type_list):
+        """
+        Declare {tensor_name} can have any of the dtype strings in {type_list}.
+        Names in {type_list} are converted via tf.dtypes.as_dtype(name).
+        e.g. names like 'int32', 'int64', 'float32'
+        """
+        arg_type = self.p.get_arg_type(tensor_name)
+        if arg_type != tf.Tensor:
+            raise RuntimeError(
+                f'{type(self).__name__}: Parameter \'{tensor_name}\' is '
+                f'registered as type {arg_type}.  Can only call on tf.Tensor')
+        if tensor_name in self.p.dtype_valid:
+            raise RuntimeError(
+                f'{self.__qualname__}: Tensor \'{tensor_name}\' is already '
+                f'registered with valid dtypes')
+
+        dtypes = []
+        for t in type_list:
+            try:
+                dt = tf.dtypes.as_dtype(t)
+                dtypes.append(dt)
+            except TypeError:
+                raise RuntimeError(
+                    f'{self.__qualname__}: Type string \'{t}\' is not a valid '
+                    f'tf.dtype representation')
+        self.p.dtype_valid[tensor_name] = tuple(dtypes)
+
+    def arg_equate_dtypes(self, src_tensor, trg_tensor):
+        """
+        Declare that {trg_tensor} have the same dtype as {src_tensor}.
+        Must first call arg_valid_dtypes(src_tensor, ...).
+        trg_tensor must not be called in arg_valid_dtypes if it is called
+        here.
+        """
+        src_type = self.get_arg_type(src_tensor)
+        trg_type = self.get_arg_type(trg_tensor)
+        if src_type != tf.Tensor or trg_type != tf.Tensor:
+            raise RuntimeError(
+                f'{type(self).__name__}: Can only be called on two tensors. '
+                f'Parameters \'{src_tensor}\' and \'{trg_tensor}\' are types '
+                f'{src_type} and {trg_type}')
+        if src_tensor not in self.p.dtype_valid:
+            raise RuntimeError(
+                f'{self.__qualname__}: Must first register valid types for '
+                f'src_tensor (\'{src_tensor}\'')
+        if trg_tensor in self.p.dtype_valid:
+            raise RuntimeError(
+                f'{self.__qualname__}: trg_tensor (\'{trg_tensor}\') '
+                f'was already called in arg_valid_dtypes so cannot be called '
+                f'here')
+        self.p.dtype_equiv.append((src_tensor, trg_tensor))
+
     def add_input_sigrank(self, arg_name, signature, beg, end, num_test):
         """Expect {arg_name} to be a list of length rank({signature}), with
         elements in [{beg}, {end}).  For testing, produce {num_test} values"""
@@ -113,12 +166,26 @@ class Schema(object):
         during the rank inference phase"""
         pass
         
-    def index_dims_func(self, idx, dims_func):
-        """Constrain the dims of {idx} to the function value {dims_func}(op).
-        {dims_func} is evaluated at the end of the Dims Resolution Phase. 
-        {dims_func}(op) must return an integer list of length rank(idx) 
+    def index_dims_func(self, idx, dims_func, *args):
+        """Constrain the dims of {idx} to the function value {dims_func}(args).
+        {dims_func}(args) must return an integer list of length rank(idx).
+        {args} are any additional names.  They may be names of the framework op
+        arguments, or one-letter names of the registered indices.  The values
+        of the named arguments are resolved at runtimen and the 
         """
-        self.p.index_dims_funcs[idx] = lambda: dims_func(self)
+        for name in args:
+            if name not in self.p.index and name not in self.p.parameter_names:
+                raise RuntimeError(
+                    f'{type(self).__name__}: Could not find name \'{name}\' '
+                    f'in the list of parameters or indices')
+        def map_fn(name):
+            if name in self.index:
+                return self.get_index_dims(name)
+            else:
+                return self.get_arg(name)
+        def wrap(*args):
+            return dims_func(*(map_fn(name) for name in args))
+        self.p.index_dims_funcs[idx] = wrap 
 
     def set_shape_signature(self, arg_name, signature):
         """Hook to set the {signature} associated with {arg_name} at runtime """

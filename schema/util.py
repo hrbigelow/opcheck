@@ -1,3 +1,6 @@
+import random
+import math
+
 def feasible_region(k, sum_min_map, sum_max_map, sum_equiv_list, sum_const_map):
     """
     Enumerate all k-integer tuples with non-negative integers.
@@ -38,19 +41,21 @@ def feasible_region(k, sum_min_map, sum_max_map, sum_equiv_list, sum_const_map):
 
 def bsearch_integers(k, min_val, max_val, val_func):
     """
-    Conduct binary search over a space of {k} integers until {val_func}(i1, ...,
+    Conduct binary search over a space of {k} real numbers until {val_func}(i1, ...,
     ik) is between min_val and max_val.  val_func is strictly increasing in all
     arguments.
     """
-    ints = [random.randint(3, 10) for _ in range(k)]
+    space = [random.randint(3, 10) for _ in range(k)]
     while True:
-        val = val_func(*ints)
+        ints = [math.floor(s) for s in space]
+        val = val_func(ints)
         if val < min_val:
-            min_ind = ints.index(min(ints))
-            ints[min_ind] *= 2
+            ind = random.randint(0, k-1)
+            space[ind] *= 1.05 
         elif val > max_val:
-            max_ind = ints.index(max(ints))
-            ints[max_ind] //= 2
+            ind = random.randint(0, k-1)
+            space[ind] /= 1.05 
+            space[ind] = max(1.0, space[ind])
         else:
             break
-    return ints
+    return space

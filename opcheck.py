@@ -46,7 +46,7 @@ def register(op_path, init_schema_func, calltime_config_func=None):
 def validate(op_path):
     """
     Run generated test configurations and confirm opcheck flags errors
-    appropriately.
+    appropriately, and does not flag errors where none exist.
     """
     if op_path not in REGISTRY:
         raise RuntimeError(

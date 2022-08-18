@@ -20,17 +20,22 @@ def init_schema(op):
     op.arg_rank('batch_dims', 'b')
     op.arg_unchecked('name')
 
+    # dtypes
+    op.arg_valid_dtypes('indices', ('int32', 'int64'))
+    op.arg_valid_dtypes('params', ('int32', 'float32'))
+
     def rankr(indices):
         return indices.shape[-1]
     op.arg_rank_func('indices', 'r', rankr)
-
-    # output shape prediction
-    op.append_return_tensor('bwe')
 
     # allowed dims combinations (see below)
     def dimsc(_op):
         return [_op.get_index_rank('r')]
     op.index_dims_func('c', dimsc)
+
+    # output shape prediction
+    op.append_return_tensor('bwe')
+
     
 opcheck.register('tf.gather_nd', init_schema)
 
