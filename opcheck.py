@@ -18,7 +18,7 @@ def register(op_path, init_schema_func, calltime_config_func=None):
     func = getattr(mod, func_name)
     sig = inspect.signature(func)
     op = Schema(op_path)
-    op.init_schema(sig, init_schema_func, calltime_config_func)
+    op.p.init_schema(op, sig, init_schema_func, calltime_config_func)
 
     def wrapped_op(*args, **kwargs):
         # executes during 'framework call phase'

@@ -21,9 +21,6 @@ class AmbiguousRanks(SchemaError):
     def __init__(self):
         pass
 
-    def message(self, op):
-        return ''
-
 class ArgTypeError(SchemaError):
     def __init__(self, arg_name):
         self.arg_name = arg_name
@@ -35,6 +32,17 @@ class TensorDTypeError(SchemaError):
 class IndexUsageError(SchemaError):
     def __init__(self, idx):
         self.idx = idx
+
+class NonOptionError(SchemaError):
+    def __init__(self, arg_name, arg_val):
+        self.arg_name = arg_name
+        self.arg_val = arg_val
+
+class SigRankError(SchemaError):
+    def __init__(self, arg_name, expected_length, actual_length):
+        self.arg_name = arg_name
+        self.expected_length = expected_length
+        self.actual_length = actual_length
 
 class ShapeError(SchemaError):
     def __init__(self, ten_name, index_letter, ten_sub_dims):

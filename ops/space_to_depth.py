@@ -21,22 +21,21 @@ def init_schema(op):
     op.limit_ranks('f', 1, 1)
     op.limit_ranks('c', 1, 1)
 
-    def output_dims(_op):
-        block_size = Broadcastable(_op.get_arg('block_size'))
-        idims = _op.get_index_dims('i')
+    def output_dims(dims_map, block_size):
+        block_size = Broadcastable(block_size)
+        idims = dims_map['i']
         return idims // block_size
+    op.index_dims_func('o', output_dims, 'block_size')
 
-    op.index_dims_func('o', output_dims)
-
-    def flattened_dims(_op):
-        block_size = Broadcastable(_op.get_arg('block_size'))
-        idims = _op.get_index_dims('i')
-        kdims = _op.get_index_dims('k')
+    def flattened_dims(dims_map, block_size):
+        block_size = Broadcastable(block_size)
+        idims = dims_map['i']
+        kdims = dims_map['k']
         block = idims % block_size
         return np.prod(block.getval() + kdims)
 
-    op.index_dims_func('f', flattened_dims)
-    op.index_dims_func('c', lambda op: 4)
+    op.index_dims_func('f', flattened_dims, 'block_size')
+    op.index_dims_func('c', lambda dims_map: [4])
 
 def calltime_func(op):
     data_format = op.get_arg('data_format', default='NHWC')

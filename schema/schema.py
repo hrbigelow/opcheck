@@ -1,5 +1,7 @@
 import tensorflow as tf
+from numpy.random import randint
 from .arg import *
+from .fgraph import GenNode, PredNode
 from .schema_internal import SchemaInternal
 
 class Schema(object):
@@ -7,37 +9,10 @@ class Schema(object):
     def __init__(self, op_path):
         self.p = SchemaInternal(op_path)
 
-    def init_schema(self, func_sig, init_schema_func, calltime_config_func):
-        self.p.parameter_names = func_sig.parameters.keys()
-        init_schema_func(self)
-        if calltime_config_func is None:
-            calltime_config_func = lambda op: None
-        self.p.calltime_config = calltime_config_func
-
     def index(self, idx, description):
         """Add index {idx} with {description} to the schema.  {idx} must be a
         single letter and can be referred to in later signatures"""
         self.p.index[idx] = description
-
-    def get_index_dims(self, idx):
-        """
-        Get the current dims inferred for {idx}.  Must be called after the Dims
-        Resolution Phase
-        """
-        if idx not in self.p.index_dims:
-            raise RuntimeError(
-                f'Index dims for \'{idx}\' not available. '
-                f'Available dims are {self.p.index_dims.keys()}')
-        return self.p.index_dims[idx]
-
-    def get_index_rank(self, idx):
-        """Get the current rank inferred for {idx}.  Cannot be called until 
-        after the Dims Resolution Phase"""
-        if idx not in self.p.index_ranks:
-            raise RuntimeError(
-                f'Index rank for \'{idx}\' not available. '
-                f'Available dims are {self.p.index_ranks.keys()}')
-        return self.p.index_ranks[idx]
 
     def get_arg(self, arg_name, default=None):
         """Get the call-time argument provided to the framework function, or
@@ -48,44 +23,95 @@ class Schema(object):
         """Expect {arg_name} to be a Tensor with {signature}"""
         self.p.check_sig(signature, arg_name)
         self.p.set_arg_type(arg_name, Tensor)
-        self.p.check_arg_added(arg_name, self.p.arg_shape)
-        self.p.arg_shape[arg_name] = TensorShapeArg(self, arg_name, signature) 
+        # self.p.arg_shape[arg_name] = TensorShapeArg(self, arg_name, signature) 
+        def gen(dims, dtypes):
+            return schema_internal.generate_tensor(arg_name, signature, dims,
+                    dtypes)
+        GenNode.add_node(arg_name, gen, DIMS, DTYPES)
+        # Info for validating signature shape
+        self.p.check_arg_added(arg_name, self.p.sig_dims)
+        def dims_func(op):
+            ten = op.get_arg(arg_name)
+            return ten.shape.as_list()
+        self.p.sig_dims[arg_name] = dims_func
 
     def arg_shape(self, arg_name, signature):
-        """Expect {arg_name} to be a list which defines the shape of {signature}
+        """
+        Expect {arg_name} to be a list which defines the shape of {signature}
         """ 
         self.p.check_sig(signature, arg_name)
         self.p.set_arg_type(arg_name, list)
-        self.p.check_arg_added(arg_name, self.p.arg_shape)
-        self.p.arg_shape[arg_name] = ListShapeArg(self, arg_name, signature)
+        # self.p.arg_shape[arg_name] = ListShapeArg(self, arg_name, signature)
+        def gen(dims):
+            shape = schema_internal.sig_dims(dims, signature)
+            return [shape]
+        GenNode.add_node(arg_name, gen, DIMS)
+        # Info for validating signature shape
+        self.p.check_arg_added(arg_name, self.p.sig_dims)
+        def dims_func(op):
+            return op.get_arg(arg_name)
+        self.p.sig_dims[arg_name] = dims_func
 
     def arg_rank(self, arg_name, signature):
-        """Expect {arg_name} to be an integer that defines the rank of
-        {signature}"""
+        """
+        Expect {arg_name} to be an integer that defines the rank of {signature}
+        """
         self.p.check_sig(signature, arg_name)
         self.p.set_arg_type(arg_name, int)
-        self.p.check_arg_added(arg_name, self.p.arg_rank)
-        self.p.arg_rank[arg_name] = RankArg(self, arg_name, signature) 
+        # self.p.check_arg_added(arg_name, self.p.arg_rank)
+        def gen(ranks):
+            rank = sum(r for idx,r in ranks if idx in signature)
+            return [rank]
+        GenNode.add_node(arg_name, gen, RANK)
+        # Info for validating signature rank
+        self.p.check_arg_added(arg_name, self.p.sig_ranks)
+        def rank_func(op):
+            return op.get_arg(arg_name)
+        self.p.sig_ranks[arg_name] = rank_func
+        # self.p.arg_rank[arg_name] = RankArg(self, arg_name, signature) 
 
-    def arg_rank_func(self, arg_name, signature, func):
-        """Call {func} on the value of {arg_name}, and set the rank of
-        {signature} to the return value.  Additionally, expect {arg_name}
-        to have type {arg_type}"""
-        self.p.check_sig(signature, arg_name)
-        self.p.check_arg_added(arg_name, self.p.arg_rank)
-        self.p.arg_rank[arg_name] = RankFuncArg(self, arg_name, signature,
-                func)
+    def arg_rank_func(self, signature, func, *arg_names):
+        """
+        Register {func} to define the rank of {signature}.  Called as
+        func(*arg_vals), where arg_vals are derived from arg_names.  arg_names
+        must appear as parameters in the framework op.
+        """
+        self.p.check_sig(signature, 'arg_rank_func')
+        for name in arg_names:
+            self.p.check_arg_name(name)
+        self.p.check_arg_added(arg_name, self.p.sig_ranks)
+
+        def rank_func(op):
+            args = tuple(op.get_arg(n) for n in arg_names)
+            return func(*args)
+        self.p.sig_ranks[arg_name] = rank_func
 
     def arg_option(self, arg_name, options):
         """Expect {arg_name} to take on one of the values in {options}"""
-        pass
+        try:
+            iter(options)
+        except TypeError:
+            raise RuntimeError(
+                f'{type(self).__qualname__}: \'options\' argument must be '
+                f'iterable.  Got {type(options)}')
+        def gen():
+            return options
+        GenNode.add_node(arg_name, gen)
+        def pred(op):
+            arg_val = op.get_arg(arg_name)
+            if arg_val in options:
+                return True, arg_val
+            else:
+                return False, NonOptionError(arg_name, arg_val) 
+        PredNode.add_node(arg_name, pred, OP)
 
     def arg_unchecked(self, arg_name):
-        """Declare {arg_name} to be an argument that OpCheck doesn't perform
-        any checking for"""
+        """
+        Declare {arg_name} to be an argument unchecked by OpCheck 
+        """
         self.p.set_arg_type(arg_name, None)
 
-    def arg_valid_dtypes(self, tensor_name, type_list):
+    def tensor_valid_dtypes(self, tensor_name, type_list):
         """
         Declare {tensor_name} can have any of the dtype strings in {type_list}.
         Names in {type_list} are converted via tf.dtypes.as_dtype(name).
@@ -112,7 +138,7 @@ class Schema(object):
                     f'tf.dtype representation')
         self.p.dtype_valid[tensor_name] = tuple(dtypes)
 
-    def arg_equate_dtypes(self, src_tensor, trg_tensor):
+    def tensor_equate_dtypes(self, src_tensor, trg_tensor):
         """
         Declare that {trg_tensor} have the same dtype as {src_tensor}.
         Must first call arg_valid_dtypes(src_tensor, ...).
@@ -137,20 +163,40 @@ class Schema(object):
                 f'here')
         self.p.dtype_equiv.append((src_tensor, trg_tensor))
 
-    def add_input_sigrank(self, arg_name, signature, beg, end, num_test):
-        """Expect {arg_name} to be a list of length rank({signature}), with
-        elements in [{beg}, {end}).  For testing, produce {num_test} values"""
-        pass
+    def add_input_sigrank(self, arg_name, signature, beg, end):
+        """
+        Expect {arg_name} to be a list of length rank({signature}), with
+        elements in [{beg}, {end})
+        """
+        def gen(ranks):
+            rank = sum(ranks[s] for s in signature)
+            val = [randint(beg, end) for _ in range(rank)]
+            return [val]
+        GenNode.add_node(arg_name, gen, RANK)
+        def pred(op, ranks):
+            arg_val = op.get_arg(arg_name)
+            rank = sum(ranks[s] for s in signature)
+            if len(arg_val) != rank:
+                return False, SigRankError(arg_name, rank, len(arg_val))
+            else:
+                return True, arg_val
+        PredNode.add_node(arg_name, pred, OP, RANK)
 
     def append_return_tensor(self, signature):
+        """
+        Append a return tensor to the list of expected return tensors and
+        expect it to have {signature}.
+        """
         idx = len(self.p.return_shapes) 
         self.p.check_sig(signature, f'return {idx}')
         # the shape gets populated during 'validate' call
         self.p.return_shapes.append(TensorShapeReturn(self, idx, signature))
 
     def limit_ranks(self, sig, min_val, max_val):
-        """Declare that the valid ranks of {sig} lie in the interval
-        [{min_val}, {max_val}]"""
+        """
+        Declare that the valid ranks of {sig} lie in the interval [{min_val},
+        {max_val}]
+        """
         self.p.check_sig(sig, 'rank limits')
         self.p.add_rank_limits(sig, min_val, max_val)
 
@@ -160,50 +206,29 @@ class Schema(object):
         self.p.check_sig(sig2, 'equate ranks')
         self.p.rank_equiv.append((sig1, sig2))
 
-    def set_rank(self, idx, rank_func):
-        """Set the rank of {idx} to the output of {rank_func}(op).  Note that
-        {rank_func} cannot access other ranks or dimensions, since it executes
-        during the rank inference phase"""
-        pass
-        
-    def index_dims_func(self, idx, dims_func, *args):
-        """Constrain the dims of {idx} to the function value {dims_func}(args).
-        {dims_func}(args) must return an integer list of length rank(idx).
-        {args} are any additional names.  They may be names of the framework op
-        arguments, or one-letter names of the registered indices.  The values
-        of the named arguments are resolved at runtimen and the 
+    def index_dims_func(self, idx, dims_func, *arg_names):
         """
-        for name in args:
-            if name not in self.p.index and name not in self.p.parameter_names:
-                raise RuntimeError(
-                    f'{type(self).__name__}: Could not find name \'{name}\' '
-                    f'in the list of parameters or indices')
-        def map_fn(name):
-            if name in self.index:
-                return self.get_index_dims(name)
-            else:
-                return self.get_arg(name)
-        def wrap(*args):
-            return dims_func(*(map_fn(name) for name in args))
-        self.p.index_dims_funcs[idx] = wrap 
+        Register a custom function {dims_func} to define the dims of {idx}.
+        dims_func will be called as dims_func(dims_map, *arg_vals) where
+        arg_vals are produced from {arg_names} at runtime.  {arg_names} may be
+        any names of the framework op arguments.  dims_map is a map of idx =>
+        dims for the currently resolved index dimensions.
+        """
+        for name in arg_names:
+            self.p.check_arg_name(name)
+        self.p.check_arg_added(idx, self.p.dims_from_dims)
+        self.p.dims_from_dims[idx] = (dims_func, arg_names)
 
-    def set_shape_signature(self, arg_name, signature):
-        """Hook to set the {signature} associated with {arg_name} at runtime """
-        self.p.check_sig(signature, arg_name)
-        shape = next((sh for sh in self.p.input_shapes if sh.name == arg_name), 
-                None)
-        if shape is None:
-            raise RuntimeError(
-                f'set_shape_signature: could not find any shape '
-                f'called \'{arg_name}\'.  Shapes are registered with '
-                f'add_input_tensor() or add_input_shape()')
-        shape.sig = signature
-
-    def equate_element_type(self, tensor_name1, tensor_name2):
-        """Declare that two tensor inputs must have the same element type"""
-        pass
-
-    def allowed_element_types(self, tensor_name, type_list):
-        """Declare that tensor can only have certain element types"""
-        pass
+    def index_rank_func(self, idx, rank_func, *arg_names):
+        """
+        Register a custom function {rank_func} to define the dims of {idx}.
+        Will be called as rank_func(rank_map, *arg_vals), where arg_vals are
+        produced from {arg_names} at runtime.  {arg_names} must be argument
+        names appearing in the framework op signature.  rank_map is a map of
+        idx => rank for the currently resolved index dimensions.
+        """
+        for name in arg_names:
+            self.p.check_arg_name(name)
+        self.p.check_arg_added(idx, self.p.dims_from_rank)
+        self.p.dims_from_rank[idx] = (rank_func, arg_names)
 

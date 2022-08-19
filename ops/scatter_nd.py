@@ -17,9 +17,9 @@ def init_schema(op):
     op.append_return_tensor('we')
 
     # set the dimension of index c to rank(w) 
-    def dimsc(_op):
-        return [_op.get_index_rank('w')]
-    op.index_dims_func('c', dimsc)
+    def dimsc(rank_map):
+        return [rank_map['w']]
+    op.index_rank_func('c', dimsc)
 
 opcheck.register('tf.scatter_nd', init_schema)
 

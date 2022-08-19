@@ -26,12 +26,12 @@ def init_schema(op):
 
     def rankr(indices):
         return indices.shape[-1]
-    op.arg_rank_func('indices', 'r', rankr)
+    op.arg_rank_func('r', rankr, 'indices')
 
     # allowed dims combinations (see below)
-    def dimsc(_op):
-        return [_op.get_index_rank('r')]
-    op.index_dims_func('c', dimsc)
+    def dimsc(rank_map):
+        return rank_map['r']
+    op.index_rank_func('c', dimsc)
 
     # output shape prediction
     op.append_return_tensor('bwe')
