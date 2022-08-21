@@ -58,4 +58,12 @@ def bsearch_integers(k, min_val, max_val, val_func):
             space[ind] = max(1.0, space[ind])
         else:
             break
-    return space
+    return ints
+
+def is_iterable(obj):
+    try:
+        iter(obj)
+    except TypeError:
+        return False
+    return True
+

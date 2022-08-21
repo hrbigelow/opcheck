@@ -4,32 +4,17 @@ import numpy as np
 from collections import OrderedDict, defaultdict
 from functools import partial
 from .error import *
-from .arg import *
 from . import fgraph
 from .fgraph import GenNode, PredNode
 from . import util
 
 class SchemaInternal(object):
-    """
-    An object which represents the 'Shape API' of one framework operation.
-    The lifecycle of the OpSchema is as follows:
 
-    1. When opcheck.register(framework_op_name) is called, a new OpSchema is
-       instantiated and enclosed in a wrapper function for the framekwork
-       operation.
-
-    2. The OpSchema is initialized with an associated init callback function
-       provided to OpSchema.set_init.  
-
-    3. When the user invokes that framework function, the wrapper is called,
-       and calls OpSchema.init, which calls the enclosed callback, providing it
-       with the same arguments as the framework function receives.
-
-    4. Usually, only parameters which affect the Shape API logic itself will 
-       be used during this call.
-
-    TODO: complete docs
-    """
+    OP = '__op'
+    DIMS = '__dims'
+    DTYPES = '__dtypes'
+    RANK = '__rank'
+    RETURN = '__return'
 
     def __init__(self, op_path):
         self.op_path = op_path
@@ -58,7 +43,7 @@ class SchemaInternal(object):
         # sig => rank_func, where rank_func(op) provides the rank at op runtime 
         self.sig_ranks = {}
 
-        # map of arg_name => TypedArg
+        # map of arg_name => type
         self.arg_types = {}
         self.return_shapes = []  # Ordered (and named) Signatures for returns
 
@@ -85,8 +70,9 @@ class SchemaInternal(object):
         self.wrapped_op = None
 
         # Errors
+        self.opcheck_input_error = None
         self.framework_error = None
-        self.can_check_return = False
+        self.opcheck_return_error = None
 
     def __repr__(self):
         rep = 'Index: \n'
@@ -105,6 +91,12 @@ class SchemaInternal(object):
         self.build_gen_graph()
         init_schema_func(op)
         self.finalize_graphs()
+
+        # print('\n\n')
+        # print('Operation: ', op.p.op_path)
+        # for k, val in GenNode.registry.items():
+        #     print(val)
+        
         if calltime_config_func is None:
             calltime_config_func = lambda op: None
         self.calltime_config = calltime_config_func
@@ -112,7 +104,9 @@ class SchemaInternal(object):
     def clear_call_state(self):
         """Clear the data members which hold data from a framework call"""
         self.returns.clear()
+        self.opcheck_input_error = None
         self.framework_error = None
+        self.opcheck_return_error = None
 
     # fails if any letters in signature don't exist in self.index
     def check_sig(self, signature, name):
@@ -146,9 +140,6 @@ class SchemaInternal(object):
 
     def sig_dims(self, sig):
         return [dim for s in sig for dim in self.index_dims[s]]
-
-    def sig_rank(self, sig):
-        return sum(self.index[s].rank() for s in sig)
 
     def check_arg_name(self, arg_name):
         """Ensure {arg_name} is a valid argument name"""
@@ -239,18 +230,11 @@ class SchemaInternal(object):
 
         PredNode.clear_registry()
         types = PredNode.add_node('__types', wrap(valid_types))
-        dtypes = PredNode.add_node('__dtypes', wrap(valid_dtypes))
-        ranks = PredNode.add_node('__ranks', wrap(valid_ranks))
-        rank_hooks = PredNode.add_node('__r-hooks', lambda __ranks:
-                self.valid_rank_hooks(), '__ranks')
-        dims = PredNode.add_node('__dims', wrap(valid_dims), '__ranks')
-        dims_hooks = PredNode.add_node('__d-hooks', wrap(valid_dims_hooks))
-
+        dtypes = PredNode.add_node(self.DTYPES, wrap(valid_dtypes))
+        ranks = PredNode.add_node(self.RANK, wrap(valid_ranks))
+        dims = PredNode.add_node(self.DIMS, wrap(valid_dims), self.RANK)
         ranks.add_predicate_parent(types)
         dtypes.add_predicate_parent(types)
-        rank_hooks.add_predicate_parent(ranks)
-        dims_hooks.add_predicate_parent(rank_hooks)
-        dims.add_predicate_parent(rank_hooks)
 
     def finalize_graphs(self):
         """
@@ -258,35 +242,34 @@ class SchemaInternal(object):
         The Schema API will create more PredNodes and GenNodes on the registry,
         and some will be roots.
         """
-        self.pred_graph_roots = PredNode.get_roots()
-        self.gen_graph_roots = GenNode.get_roots()
+        pred_nodes = PredNode.get_ordered_nodes()
+        self.input_pred_graph = [n for n in pred_nodes if not
+                n.name.startswith(self.RETURN)]
+        self.return_pred_graph = [n for n in pred_nodes if
+                n.name.startswith(self.RETURN) or n.name == self.DIMS]
+        self.gen_graph = GenNode.get_ordered_nodes()
 
     def check_args(self):
         """
         The main function to check all input arguments for all constraints
         registered on the schema
         """
-        inputs_valid = fgraph.pred_graph_evaluate(self.pred_graph_roots)
-        self.can_check_return = inputs_valid
+        error = fgraph.pred_graph_evaluate(self.input_pred_graph)
+        self.opcheck_input_error = error
 
     def check_return(self, op_return):
         """
         Check the return tensors' shapes and types against those predicted by
         the framework
         """
-        if not self.can_check_return:
+        if self.opcheck_input_error is not None:
             return
 
         if not isinstance(op_return, (list, tuple)):
             op_return = (op_return,)
-        if len(self.return_shapes) != len(op_return):
-            self.log_error(OutputNumberMismatch(len(op_return)))
         self.returns = list(op_return)
-
-        for shape in self.return_shapes:
-            if self.sig_dims(shape.sig) != shape.dims():
-                err = OutputShapeError(shape.idx)
-                self.log_error(err)
+        error = fgraph.pred_graph_evaluate(self.return_pred_graph)
+        self.opcheck_return_error = error
 
     def generate_ranks(self):
         """
@@ -294,7 +277,7 @@ class SchemaInternal(object):
         Each map has index => rank for each index in self.index
         """
         k = len(self.index)
-        index_order = self.index.keys()
+        index_order = list(self.index.keys())
         gen = util.feasible_region(k, self.rank_mins, self.rank_maxs,
                                         self.rank_equiv, {})
         return [dict(zip(index_order, ranks)) for ranks in gen]
@@ -311,7 +294,7 @@ class SchemaInternal(object):
         equiv_map.update({v: i for i, v in enumerate(src_ten)})
 
         combos = []
-        for combo in itertools.product(*basis):
+        for combo in itertools.product(*allowed_dtypes):
             el = { name: combo[ind] for name,ind in equiv_map.items() }
             combos.append(el)
         return combos
@@ -319,25 +302,20 @@ class SchemaInternal(object):
     def build_gen_graph(self):
         # Reserved names for the nodes, so they don't conflict with argument
         # names of ops
-        RANKS = '__ranks'
-        DIMS = '__dims'
-        DTYPES = '__dtypes'
-
         GenNode.clear_registry()
-        GenNode.add_node(RANKS, lambda: self.generate_ranks())
-        GenNode.add_node(DTYPES, lambda: self.generate_dtypes())
+        GenNode.add_node(self.RANK, lambda: self.generate_ranks())
+        GenNode.add_node(self.DTYPES, lambda: self.generate_dtypes())
 
-        # find the dependencies
+        # find the dependencies for the enclosed functions
         dims_parents = set()
         for _, arg_names in self.dims_from_dims.values():
             dims_parents.update(arg_names)
         for _, arg_names in self.dims_from_rank.values():
             dims_parents.update(arg_names)
 
-        def func(**kwargs):
-            return self.generate_dims(**kwargs)
-        GenNode.add_node(DIMS, func, *dims_parents)
-
+        def func(ranks, **kwargs):
+            return generate_dims(self, ranks, **kwargs)
+        GenNode.add_node(self.DIMS, func, self.RANK, *dims_parents)
 
     def validate_schema(self):
         """
@@ -353,12 +331,17 @@ class SchemaInternal(object):
         generative model with a set of hidden variables (index dims and ranks,
         and others) and observed variables (values of arguments)
         """
-        self.test_arguments.clear()
-        for vals in fgraph.gen_graph_iterate(self.gen_graph_roots):
+        for vals in fgraph.gen_graph_iterate(self.gen_graph):
             # extract the values from the argument nodes of the graph
+            # print(vals)
             arg_dict = { k: v for k, v in vals.items() if k in
                     self.parameter_names }
-            self.wrapped_op(*arg_dict)
+            # print(arg_dict.keys())
+            try:
+                print(vals[self.DIMS])
+                self.wrapped_op(**arg_dict)
+            except:
+                pass
 
     # produce ['i1', 'i2', 'i3'] from 'i' for example
     def index_list(self, idx):
@@ -404,26 +387,31 @@ class SchemaInternal(object):
         return self.print_shapes(self.return_shapes, highlight)
 
     def report(self):
+        print(f'OpCheck Input Error: {self.opcheck_input_error}')
+        print(f'Framework Error: {self.framework_error}')
+        print(f'OpCheck Output Error: {self.opcheck_return_error}')
+        """
         msg = ''
-        for err in self.errors:
-            if isinstance(err, ShapeError):
-                msg += self.print_indices()
-                msg += '\n\n'
-                msg += self.print_inputs(err.index_letter)
-            elif isinstance(err, NoMatchingRanks):
-                msg += err.message(self)
+        err = self.arg_check_error
+        if isinstance(err, ShapeError):
+            msg += self.print_indices()
+            msg += '\n\n'
+            msg += self.print_inputs(err.index_letter)
+        elif isinstance(err, NoMatchingRanks):
+            msg += err.message(self)
         if msg != '':
             print(msg)
         # return msg
+        """
 
 
-def sig_range(rank_map, idx, sig):
+def calc_sig_range(rank_map, idx, sig):
     ind = sig.index(idx)
     start = sum(rank_map[l] for l in sig[:ind])
     rank = rank_map[idx] 
     return [start, start + rank]
 
-def sig_dims(dims_map, sig):
+def calc_sig_dims(dims_map, sig):
     return [d for s in sig for d in dims_map[s]]
 
 def valid_types(op):
@@ -459,9 +447,14 @@ def valid_ranks(op):
     resolve the ranks to a single combination
     """
     const_map = {}
-    for sig, rank_func in self.sig_ranks.items():
+    for sig, rank_func in op.sig_ranks.items():
         sig_inds = op.sig_indices(sig)
         const_map[sig_inds] = rank_func(op)
+
+    for sig, dims_func in op.sig_dims.items():
+        sig_inds = op.sig_indices(sig)
+        dims = dims_func(op)
+        const_map[sig_inds] = len(dims) 
 
     k = len(op.index)
 
@@ -476,7 +469,6 @@ def valid_ranks(op):
         index_ranks = dict(zip(op.index.keys(), rank_list[0]))
         return True, index_ranks
 
-
 def valid_dims(op, rank_map):
     """
     Infer index dims from Tensor shapes, and shape-parameter values,
@@ -490,7 +482,7 @@ def valid_dims(op, rank_map):
             if idx not in sig:
                 continue
             shape = dims_func(op)
-            sub_range = sig_range(idx, sig)
+            sub_range = calc_sig_range(idx, sig)
             idx_shape = shape[slice(*sub_range)]
             idx_shapes.add(tuple(idx_shape))
 
@@ -500,44 +492,67 @@ def valid_dims(op, rank_map):
             index_dims[idx] = idx_shapes.pop()
     return True, index_dims
 
-def valid_first_phase_hooks(op):
+def valid_return_dims(op, dims_map, out_index):
+    """
+    Validate tensor output shape at {out_index}
+    """
+    if len(self.returns) != len(self.return_shapes):
+        return False, OutputNumberMismatch(len(self.returns))
+    ten = op.returns[out_index]
+    if not isinstance(ten, tf.Tensor):
+        return False, ReturnTypeError(tf.Tensor, type(ten))
+    shape = ten.shape.as_list()
+    sig = op.return_shapes[out_index]
+    for idx in sig:
+        sub_range = calc_sig_range(idx, sig)
+        idx_shape = shape[slice(*sub_range)]
+        expected_idx_shape = dims_map[idx]
+        if idx_shape != expected_idx_shape:
+            return False, ShapeError(f'return[{out_index}]', idx, idx_shape)
     return True, None
 
-def valid_dims_hooks(op):
-    return True, None
-
-def generate_dims(__op, __partial_dims, __ranks, **kwargs):
+def generate_dims(op, ranks, **kwargs):
     """
     Generates all remaining dims for indexes, such that the total number of
-    elements of all tensors is between certain limits.  {__partial_dims} is a map
-    of idx => dims which are calculated from ranks only. {__ranks} is a map of
+    elements of all tensors is between certain limits.  {partial_dims} is a map
+    of idx => dims which are calculated from ranks only. {ranks} is a map of
     idx => rank.  {kwargs} is the union of all arguments needed for the
-    __op.dims_from_dims functions.
-
-    The reasons the other arguments are protected is to guarantee they don't
-    conflict with the kwargs, which come from framework operations.
+    op.dims_from_dims functions.
     """
-    calc_dims = list(__partial_dims.keys()) + list(__op.dims_from_dims.keys())
-    free_inds = [ i for i in __ranks.keys() if i not in calc_dims ]
-    sigs = self.sig_dims.keys()
-    sigs.extend(ret.sig for ret in __op.return_shapes)
+
+    # calculate the rank-dependent dims
+    partial_dims = {}
+    for idx, info in op.dims_from_rank.items():
+        func, arg_names = info
+        call_args = { n:kwargs[n] for n in arg_names }
+        dims = func(ranks, **call_args)
+        if not util.is_iterable(dims):
+            raise RuntimeError(
+                f'dims_from_rank \'{func}\' from '
+                f'schema \'{op.op_path}\' returned a non-iterable.')
+        partial_dims[idx] = dims
+
+    calc_dims = list(partial_dims.keys()) + list(op.dims_from_dims.keys())
+    free_inds = [ i for i in ranks.keys() if i not in calc_dims ]
+    sigs = list(op.sig_dims.keys())
+    sigs.extend(op.return_shapes)
 
     def dims_map(dims):
         # construct known dims map
         known_dims = {}
         offset = 0
         for i, idx in enumerate(free_inds):
-            rank = __ranks[idx] 
+            rank = ranks[idx] 
             known_dims[idx] = dims[offset:offset+rank]
             offset += rank
-        known_dims.update(__partial_dims)
+        known_dims.update(partial_dims)
         return known_dims
 
     def nelem(dims):
         known_dims = dims_map(dims)
 
         # compute all dependent dims
-        for idx, info in __op.dims_from_dims.items():
+        for idx, info in op.dims_from_dims.items():
             func, arg_names = info
             call_args = { n:kwargs[n] for n in arg_names }
             dims = func(known_dims, **call_args)
@@ -545,18 +560,19 @@ def generate_dims(__op, __partial_dims, __ranks, **kwargs):
 
         sum_nelem = 0
         for sig in sigs:
-            shape = self.sig_dims(sig)
+            shape = calc_sig_dims(known_dims, sig)
             sum_nelem += np.prod(shape)
         return sum_nelem
 
+    k = len(free_inds)
     min_nelem = 100000
     max_nelem = 200000
-    dims = util.bsearch_integers(k, min_nelem, max_nelem, func)
-    return dims_map(dims)
+    dims = util.bsearch_integers(k, min_nelem, max_nelem, nelem)
+    return [dims_map(dims)]
 
 def generate_tensor(name, signature, dims_map, dtype_map):
-    shape = sig_dims(dims_map, signature)
-    ten_dtype = dtypes[name]
+    shape = calc_sig_dims(dims_map, signature)
+    ten_dtype = dtype_map[name]
     if ten_dtype.is_integer:
         ten = tf.random.uniform(shape, minval=-10, maxval=10,
                 dtype=ten_dtype)
@@ -564,7 +580,7 @@ def generate_tensor(name, signature, dims_map, dtype_map):
         ten = tf.random.normal(shape, dtype=ten_dtype)
     return [ten] 
 
-def generate_shape(self, signature, dims):
-    shape = sig_dims(dims_map, signature)
+def generate_shape(signature, dims):
+    shape = calc_sig_dims(dims_map, signature)
     return [shape]
 

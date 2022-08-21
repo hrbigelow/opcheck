@@ -1,7 +1,9 @@
 import tensorflow as tf
+import functools
 from numpy.random import randint
 from .arg import *
 from .fgraph import GenNode, PredNode
+from . import schema_internal
 from .schema_internal import SchemaInternal
 
 class Schema(object):
@@ -23,17 +25,16 @@ class Schema(object):
         """Expect {arg_name} to be a Tensor with {signature}"""
         self.p.check_sig(signature, arg_name)
         self.p.set_arg_type(arg_name, Tensor)
-        # self.p.arg_shape[arg_name] = TensorShapeArg(self, arg_name, signature) 
         def gen(dims, dtypes):
             return schema_internal.generate_tensor(arg_name, signature, dims,
                     dtypes)
-        GenNode.add_node(arg_name, gen, DIMS, DTYPES)
+        GenNode.add_node(arg_name, gen, self.p.DIMS, self.p.DTYPES)
         # Info for validating signature shape
-        self.p.check_arg_added(arg_name, self.p.sig_dims)
+        self.p.check_arg_added(signature, self.p.sig_dims)
         def dims_func(op):
             ten = op.get_arg(arg_name)
             return ten.shape.as_list()
-        self.p.sig_dims[arg_name] = dims_func
+        self.p.sig_dims[signature] = dims_func
 
     def arg_shape(self, arg_name, signature):
         """
@@ -41,13 +42,12 @@ class Schema(object):
         """ 
         self.p.check_sig(signature, arg_name)
         self.p.set_arg_type(arg_name, list)
-        # self.p.arg_shape[arg_name] = ListShapeArg(self, arg_name, signature)
         def gen(dims):
             shape = schema_internal.sig_dims(dims, signature)
             return [shape]
-        GenNode.add_node(arg_name, gen, DIMS)
+        GenNode.add_node(arg_name, gen, self.p.DIMS)
         # Info for validating signature shape
-        self.p.check_arg_added(arg_name, self.p.sig_dims)
+        self.p.check_arg_added(signature, self.p.sig_dims)
         def dims_func(op):
             return op.get_arg(arg_name)
         self.p.sig_dims[arg_name] = dims_func
@@ -58,17 +58,15 @@ class Schema(object):
         """
         self.p.check_sig(signature, arg_name)
         self.p.set_arg_type(arg_name, int)
-        # self.p.check_arg_added(arg_name, self.p.arg_rank)
         def gen(ranks):
-            rank = sum(r for idx,r in ranks if idx in signature)
+            rank = sum(r for idx,r in ranks.items() if idx in signature)
             return [rank]
-        GenNode.add_node(arg_name, gen, RANK)
+        GenNode.add_node(arg_name, gen, self.p.RANK)
         # Info for validating signature rank
-        self.p.check_arg_added(arg_name, self.p.sig_ranks)
+        self.p.check_arg_added(signature, self.p.sig_ranks)
         def rank_func(op):
             return op.get_arg(arg_name)
-        self.p.sig_ranks[arg_name] = rank_func
-        # self.p.arg_rank[arg_name] = RankArg(self, arg_name, signature) 
+        self.p.sig_ranks[signature] = rank_func
 
     def arg_rank_func(self, signature, func, *arg_names):
         """
@@ -79,12 +77,12 @@ class Schema(object):
         self.p.check_sig(signature, 'arg_rank_func')
         for name in arg_names:
             self.p.check_arg_name(name)
-        self.p.check_arg_added(arg_name, self.p.sig_ranks)
+        self.p.check_arg_added(signature, self.p.sig_ranks)
 
         def rank_func(op):
             args = tuple(op.get_arg(n) for n in arg_names)
             return func(*args)
-        self.p.sig_ranks[arg_name] = rank_func
+        self.p.sig_ranks[signature] = rank_func
 
     def arg_option(self, arg_name, options):
         """Expect {arg_name} to take on one of the values in {options}"""
@@ -97,13 +95,13 @@ class Schema(object):
         def gen():
             return options
         GenNode.add_node(arg_name, gen)
-        def pred(op):
-            arg_val = op.get_arg(arg_name)
+        def pred():
+            arg_val = self.get_arg(arg_name)
             if arg_val in options:
                 return True, arg_val
             else:
                 return False, NonOptionError(arg_name, arg_val) 
-        PredNode.add_node(arg_name, pred, OP)
+        PredNode.add_node(arg_name, pred)
 
     def arg_unchecked(self, arg_name):
         """
@@ -172,15 +170,15 @@ class Schema(object):
             rank = sum(ranks[s] for s in signature)
             val = [randint(beg, end) for _ in range(rank)]
             return [val]
-        GenNode.add_node(arg_name, gen, RANK)
-        def pred(op, ranks):
-            arg_val = op.get_arg(arg_name)
+        GenNode.add_node(arg_name, gen, self.p.RANK)
+        def pred(ranks):
+            arg_val = self.get_arg(arg_name)
             rank = sum(ranks[s] for s in signature)
             if len(arg_val) != rank:
                 return False, SigRankError(arg_name, rank, len(arg_val))
             else:
                 return True, arg_val
-        PredNode.add_node(arg_name, pred, OP, RANK)
+        PredNode.add_node(arg_name, pred, self.p.RANK)
 
     def append_return_tensor(self, signature):
         """
@@ -188,9 +186,12 @@ class Schema(object):
         expect it to have {signature}.
         """
         idx = len(self.p.return_shapes) 
-        self.p.check_sig(signature, f'return {idx}')
-        # the shape gets populated during 'validate' call
-        self.p.return_shapes.append(TensorShapeReturn(self, idx, signature))
+        name = f'{self.p.RETURN}[{idx}]'
+        self.p.check_sig(signature, name)
+        self.p.return_shapes.append(signature)
+        def wrap(dims_map):
+            return schema_internal.valid_return_dims(self, dims_map, idx)
+        PredNode.add_node(name, wrap, self.p.DIMS)
 
     def limit_ranks(self, sig, min_val, max_val):
         """

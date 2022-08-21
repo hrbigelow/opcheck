@@ -21,8 +21,8 @@ def init_schema(op):
     op.arg_unchecked('name')
 
     # dtypes
-    op.arg_valid_dtypes('indices', ('int32', 'int64'))
-    op.arg_valid_dtypes('params', ('int32', 'float32'))
+    op.tensor_valid_dtypes('indices', ('int32', 'int64'))
+    op.tensor_valid_dtypes('params', ('int32', 'float32'))
 
     def rankr(indices):
         return indices.shape[-1]
@@ -30,7 +30,7 @@ def init_schema(op):
 
     # allowed dims combinations (see below)
     def dimsc(rank_map):
-        return rank_map['r']
+        return [rank_map['r']]
     op.index_rank_func('c', dimsc)
 
     # output shape prediction

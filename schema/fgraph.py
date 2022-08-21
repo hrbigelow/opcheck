@@ -1,5 +1,6 @@
 import itertools
 import inspect
+import enum
 
 """
 FuncNode represents a computation graph.  Each node has a {name} and {func}
@@ -13,12 +14,19 @@ class FuncNode(object):
     # stores all created nodes
     registry = {}
 
-    def __init__(self, name, func):
+    def __init__(self, name, func, num_positional, vararg_type):
+        """
+        num_positional is the number of positional arguments that func takes.
+        vararg_type is the type of variable arg it has (*args, **kwargs, or
+        neither)
+        """
         self.name = name
         self.func = func
         self.parents = []
         self.children = []
         self.cached_val = None
+        self.num_positional = num_positional
+        self.vararg_type = vararg_type 
 
     def __repr__(self):
         return (f'{type(self).__name__}({self.name})'
@@ -62,6 +70,13 @@ class FuncNode(object):
                     f'{type(cls).__qualname__}: function takes {len(pos_pars)} '
                     f'positional arguments but only {len(arg_names)} parents '
                     f'provided.')
+        num_pos_pars = len(pos_pars)
+        if wildcard is None:
+            vararg_type = VarArgs.Empty
+        elif wildcard == args_par:
+            vararg_type = VarArgs.Positional
+        else:
+            vararg_type = VarArgs.Keyword
 
         first_missing = next((n for n in arg_names if n not in cls.registry), None)
         if first_missing is not None:
@@ -70,7 +85,7 @@ class FuncNode(object):
                 f'\'{first_missing}\' but no node by that name exists in '
                 f'the registry')
         
-        node = cls(name, func)
+        node = cls(name, func, num_pos_pars, vararg_type)
         for arg_name in arg_names:
             pa = cls.registry[arg_name]
             node.append_parent(pa)
@@ -78,19 +93,12 @@ class FuncNode(object):
         return node
 
     @classmethod
-    def get_roots(cls):
-        return [ n for n in cls.registry.values() if len(n.parents) == 0 ]
+    def get_ordered_nodes(cls):
+        return _topo_sort(cls.registry.values())
 
     @classmethod
     def clear_registry(cls):
         cls.registry.clear()
-
-    @staticmethod
-    def progeny(nodes):
-        """Return all nodes whose parents are a subset of nodes"""
-        all_ch = { ch for n in nodes for ch in n.children }
-        progeny = [ n for n in all_ch if all(p in nodes for p in n.parents) ]
-        return progeny 
 
     def add_child(self, node):
         self.children.append(node)
@@ -100,9 +108,51 @@ class FuncNode(object):
         self.parents.append(node)
         node.children.append(self)
 
+    def all_children(self):
+        return self.children
+
+    def value(self):
+        """Evaluate the current node based on cached values of the parents"""
+        all_args = [(n.name, n.get_cached_value()) for n in self.parents]
+        pos_args = [v for n,v in all_args[:self.num_positional]]
+        if self.vararg_type == VarArgs.Positional:
+            args = tuple(v for n,v in all_args[self.num_positional:])
+            return self.func(*pos_args, *args)
+        elif self.vararg_type == VarArgs.Keyword:
+            kwargs = {n:v for n,v in all_args[self.num_positional:]}
+            return self.func(*pos_args, **kwargs)
+        else:
+            return self.func(*pos_args)
+
     def get_cached_value(self):
         """Retrieve the cached function evaluation value"""
         return self.cached_val
+
+    def set_cached_value(self, val):
+        """Set the cached function evaluation value"""
+        self.cached_val = val
+
+class VarArgs(enum.Enum):
+    Positional = 0 # *args
+    Keyword = 1    # **kwargs
+    Empty = 2         # neither
+
+def _topo_sort(nodes):
+    """Sort nodes with ancestors first"""
+    order = []
+    todo = set(n.name for n in nodes)
+    # done = set()
+    def dfs(node):
+        if node.name not in todo:
+            return
+        todo.remove(node.name)
+        for ch in node.children:
+            dfs(ch)
+        order.append(node)
+    for n in nodes:
+        dfs(n)
+    return order[::-1]
+
 """
 Generation Graph API - a list-valued computation graph
 
@@ -121,12 +171,13 @@ set of values, one per node).  Further details:
 
 """
 class GenNode(FuncNode):
-    def __init__(self, name, func):
-        super().__init__(name, func)
+    registry = {}
+
+    def __init__(self, *args):
+        super().__init__(*args)
 
     def values(self):
-        kwargs = { p.name: p.get_cached_value() for p in self.parents }
-        vals = self.func(**kwargs)
+        vals = super().value()
         try:
             iter(vals)
         except TypeError:
@@ -146,16 +197,12 @@ evaluate.  This way, they enforce an evaluation order.
 Expect func to return a pair (success, value)
 """
 class PredNode(FuncNode):
-    def __init__(self, name, func):
-        super().__init__(name, func)
+    registry = {}
+
+    def __init__(self, *args):
+        super().__init__(*args)
         self.pred_parents = []
         self.pred_children = []
-
-    @staticmethod
-    def progeny(nodes):
-        all_ch = { ch for n in nodes for ch in n.pred_children + n.children}
-        return [ n for n in all_ch if all(p in nodes for p in n.pred_parents
-            + n.parents) ]
 
     def add_predicate_parent(self, node):
         """
@@ -166,45 +213,42 @@ class PredNode(FuncNode):
         node.pred_children.append(self)
 
     def evaluate(self):
+        """
+        Return whether this predicate (and all of its pre-requisites) passed.
+        """
         if not all(pp.evaluate() for pp in self.pred_parents):
             return False
         if not all(p.evaluate() for p in self.parents):
             return False
-        kwargs = { p.name: p.get_cached_value() for p in self.parents }
-        success, value = self.func(**kwargs)
-        if success:
-            self.cached_val = value
+        success, value = self.value()
+        self.set_cached_value(value)
         return success
 
+    def all_children(self):
+        return self.pred_children + self.children
 
-def get_roots(nodes):
-    """Find the subset of nodes having no parents"""
-    return [ n for n in nodes if len(n.parents) == 0 ]
-
-def gen_graph_iterate(nodes, val_map={}):
+def gen_graph_iterate(topo_nodes):
     """Produce all possible settings of the graph"""
-    if len(nodes) == 0:
-        yield dict(val_map)
-        return
-
-    next_nodes = FuncNode.progeny(nodes)
-    node_value_lists = tuple(n.values() for n in nodes)
-    for vals in itertools.product(*node_value_lists):
-        for node, val in zip(nodes, vals):
-            node.set_current_value(val)
+    # print('gen_graph_iterate: ', ','.join(n.name for n in visited_nodes))
+    val_map = {}
+    def gen_rec(i):
+        if i == len(topo_nodes):
+            yield dict(val_map)
+            return
+        node = topo_nodes[i]
+        values = node.values()
+        for val in values:
+            node.set_cached_value(val)
             val_map[node.name] = val
-        yield from iterate(next_nodes, val_map)
+            yield from gen_rec(i+1)
+    yield from gen_rec(0)
 
-def pred_graph_evaluate(nodes):
+def pred_graph_evaluate(topo_nodes):
     """Evaluate PredNodes in dependency order until a predicate fails"""
-    if len(nodes) == 0:
-        return True
-    elif not all(n.evaluate() for n in nodes):
-        return False
-    else:
-        next_nodes = PredNode.progeny(nodes)
-        return pred_graph_evaluate(next_nodes)
-
+    for n in topo_nodes:
+        if not n.evaluate():
+            return n.get_cached_value()
+    return None
 
 if __name__ == '__main__':
     def unit():
@@ -212,10 +256,27 @@ if __name__ == '__main__':
     def mul(a, b):
         return [a * b]
         # return a * b
-    a = GenNode('a', unit)
-    b = GenNode('b', unit)
-    c = GenNode('c', mul)
-    c.add_parent(a)
-    c.add_parent(b)
-    print(list(iterate([a, b])))
+    def pr(*args):
+        return '\,'.join(args)
+
+    PredNode.clear_registry()
+    PredNode.add_node('undershorts', pr)
+    PredNode.add_node('pants', pr, 'undershorts')
+    PredNode.add_node('socks', pr)
+    PredNode.add_node('shoes', pr, 'pants', 'undershorts', 'socks')
+    PredNode.add_node('watch', pr)
+    PredNode.add_node('shirt', pr)
+    PredNode.add_node('belt', pr, 'shirt', 'pants')
+    PredNode.add_node('tie', pr, 'shirt')
+    PredNode.add_node('jacket', pr, 'belt', 'tie')
+
+    topo_order = PredNode.get_ordered_nodes()
+    for n in topo_order:
+        print(n.name)
+
+    a = GenNode.add_node('a', unit)
+    b = GenNode.add_node('b', unit)
+    c = GenNode.add_node('c', mul, 'a', 'b')
+    topo_order = GenNode.get_ordered_nodes()
+    print(list(gen_graph_iterate(topo_order)))
 

@@ -67,6 +67,12 @@ class OutputNumberMismatch(SchemaError):
     def __init__(self, num_actual_outputs):
         self.num_actual_outputs = num_actual_outputs
 
+class ReturnTypeError(SchemaError):
+    """The type of the return object was not as expected"""
+    def __init__(self, expected_type, actual_type):
+        self.expected_type = expected_type
+        self.actual_type = actual_type
+
 
 # convert rows of arbitrary objects to tabular row strings
 def tabulate(rows, sep, left_justify=True):
