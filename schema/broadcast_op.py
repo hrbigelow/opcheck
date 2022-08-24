@@ -1,5 +1,6 @@
 import operator
 import math
+from .error import SchemaError
 
 class Broadcastable(object):
     """
@@ -17,6 +18,8 @@ class Broadcastable(object):
     is done element-wise.
     """
     def __init__(self, int_or_intlist):
+        if isinstance(int_or_intlist, tuple):
+            int_or_intlist = list(int_or_intlist)
         self.val = int_or_intlist
 
     def __repr__(self):
@@ -50,7 +53,7 @@ class Broadcastable(object):
         bval = Broadcastable.getval(o)
         if a_is_list and b_is_list:
             if len(aval) != len(bval):
-                raise RuntimeError(
+                raise SchemaError(
                     f'Broadcastable got unequal length lists '
                     f'{aval} and {bval}')
             else:

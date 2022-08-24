@@ -1,24 +1,23 @@
 # tf import is needed for 'eval(mod_path)' 
 import tensorflow as tf
 import inspect
-from schema import Schema
+from schema import SchemaApi
+from schema.error import FrameworkError, Success, NotApplicable
 
 REGISTRY = {}
 
-def register(op_path, init_schema_func, calltime_config_func=None):
+def register(op_path, init_schema_func):
     """
     Wrap the framework operation at {op_path} for OpCheck checking.
     {init_schema_func} defines constraints on the input relationships.
-    {calltime_config_func} is a function that can be run at call time if
-    constraints depend on the inputs.
     """
     # This section is called 'registration phase'
     mod_path, func_name = op_path.rsplit('.', 1)
     mod = eval(mod_path)
     func = getattr(mod, func_name)
     sig = inspect.signature(func)
-    op = Schema(op_path)
-    op.p.init_schema(op, sig, init_schema_func, calltime_config_func)
+    op = SchemaApi(op_path)
+    op.p.init_schema(op, sig, init_schema_func)
 
     def wrapped_op(*args, **kwargs):
         # executes during 'framework call phase'
@@ -28,17 +27,21 @@ def register(op_path, init_schema_func, calltime_config_func=None):
         op.p.prepare_call(op, bind_obj.arguments)
         op.p.check_args()
         try:
-            ret_val = func(*args, **kwargs)
+            ret_val = func(**bind_obj.arguments)
         except Exception as ex:
-            op.p.log_framework_error(ex)
+            op.p.log_framework_status(ex)
+            op.p.return_status = NotApplicable()
         else:
+            op.p.framework_status = Success()
             op.p.check_return(ret_val)
         finally:
+            print('in finally:  framework status: ',
+                    op.p.framework_status.message(op.p))
+            # assert(op.p.framework_status is not None)
             op.p.report()
-            if op.p.framework_error is not None:
-                raise op.p.framework_error
-
-        return ret_val
+            if isinstance(op.p.framework_status, FrameworkError):
+                raise op.p.framework_status.ex
+            return ret_val
     op.p.wrapped_op = wrapped_op
     setattr(mod, func_name, wrapped_op)
     REGISTRY[op_path] = op

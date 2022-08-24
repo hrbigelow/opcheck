@@ -21,6 +21,9 @@ def init_schema(op):
         return [rank_map['w']]
     op.index_rank_func('c', dimsc)
 
+    op.tensor_valid_dtypes('indices', ('int32',))
+    op.tensor_valid_dtypes('updates', ('int32', 'float32'))
+
 opcheck.register('tf.scatter_nd', init_schema)
 
 """

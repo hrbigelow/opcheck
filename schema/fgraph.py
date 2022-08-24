@@ -1,6 +1,7 @@
 import itertools
 import inspect
 import enum
+from .error import SchemaError
 
 """
 FuncNode represents a computation graph.  Each node has a {name} and {func}
@@ -44,7 +45,7 @@ class FuncNode(object):
         dictionary, using the parent node names as the keys of the dictionary.
         """
         if name in cls.registry:
-            raise RuntimeError(
+            raise SchemaError(
                 f'{type(cls).__qualname__}: node name \'{name}\' already '
                 f'exists in the registry.  Node names must be unique')
         
@@ -53,7 +54,7 @@ class FuncNode(object):
         kwds_par = next((p for p in pars if p.kind == p.VAR_KEYWORD), None)
         
         if args_par is not None and kwds_par is not None:
-            raise RuntimeError(
+            raise SchemaError(
                 f'{type(cls).__name__}: Function cannot have both **args and '
                 f'**kwargs in its signature')
         wildcard = args_par or kwds_par
@@ -61,12 +62,12 @@ class FuncNode(object):
 
         if wildcard is None: 
             if len(arg_names) != len(pos_pars):
-                raise RuntimeError(
+                raise SchemaError(
                     f'{type(cls).__qualname__}: function takes {len(pos_pars)} '
                     f'arguments, but {len(arg_names)} arg_names provided ')
         else:
             if len(arg_names) < len(pos_pars):
-                raise RuntimeError(
+                raise SchemaError(
                     f'{type(cls).__qualname__}: function takes {len(pos_pars)} '
                     f'positional arguments but only {len(arg_names)} parents '
                     f'provided.')
@@ -78,16 +79,14 @@ class FuncNode(object):
         else:
             vararg_type = VarArgs.Keyword
 
-        first_missing = next((n for n in arg_names if n not in cls.registry), None)
-        if first_missing is not None:
-            raise RuntimeError(
-                f'{type(cls).__qualname__}: arg_names contained '
-                f'\'{first_missing}\' but no node by that name exists in '
-                f'the registry')
-        
         node = cls(name, func, num_pos_pars, vararg_type)
         for arg_name in arg_names:
-            pa = cls.registry[arg_name]
+            pa = cls.maybe_get_node(arg_name)
+            if pa is None:
+                raise SchemaError(
+                    f'{type(cls).__qualname__}: arg_names contained '
+                    f'\'{arg_name}\' but no node by that name exists in '
+                    f'the registry')
             node.append_parent(pa)
         cls.registry[name] = node
         return node
@@ -100,6 +99,19 @@ class FuncNode(object):
     def clear_registry(cls):
         cls.registry.clear()
 
+    @classmethod
+    def maybe_get_node(cls, name):
+        return cls.registry.get(name, None)
+
+    @classmethod
+    def get_node(cls, name):
+        node = cls.registry.get(name, None)
+        if node is None:
+            raise SchemaError(
+                f'{type(cls).__qualname__}: Node \'{name}\' does not exist '
+                f'in the registry.')
+        return node
+
     def add_child(self, node):
         self.children.append(node)
         node.parents.append(self)
@@ -107,6 +119,23 @@ class FuncNode(object):
     def append_parent(self, node):
         self.parents.append(node)
         node.children.append(self)
+
+    def maybe_append_parent(self, name):
+        """
+        Append {name} as a parent of this node if the node by that name doesn't
+        already exist.  It is assumed that the node called {name} already
+        exists.
+        """
+        pa = next((n for n in self.parents if n.name == name), None)
+        if pa is not None:
+            return
+        pa = self.maybe_get_node(name)
+        if pa is None:
+            raise SchemaError(
+                f'{type(self).__qualname__}: Attempting to append a '
+                f'non-existent node named \'{name} as a parent of node '
+                f'\'{self.name}\'')
+        self.append_parent(pa)
 
     def all_children(self):
         return self.children
@@ -181,7 +210,7 @@ class GenNode(FuncNode):
         try:
             iter(vals)
         except TypeError:
-            raise RuntimeError(f'{self}: function does not return an iterable') 
+            raise SchemaError(f'{self}: function does not return an iterable') 
         return vals
 """
 Predicate Graph API - a computation graph for predicates

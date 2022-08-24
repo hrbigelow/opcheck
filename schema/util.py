@@ -1,7 +1,7 @@
 import random
 import math
 
-def feasible_region(k, sum_min_map, sum_max_map, sum_equiv_list, sum_const_map):
+def feasible_region(k, sum_min_map, sum_max_map, sum_equiv_map, sum_const_map):
     """
     Enumerate all k-integer tuples with non-negative integers.
     {sum_max_map} and {sum_min_map} are maps with integer tuple keys.  Each key
@@ -10,27 +10,30 @@ def feasible_region(k, sum_min_map, sum_max_map, sum_equiv_list, sum_const_map):
     {sum_equiv_list} is a list of pairs of indices, whose sums must be equal
     {sum_const_map} is a map of integer tuple => value
     """
-    def sum_digits(inds):
+    def sum_digits(d, inds):
         return sum(digits[i] for i in inds)
 
-    def upper_bound_valid():
-        return all(sum_digits(inds) <= ub for inds, ub in sum_max_map.items())
+    def upper_bound_valid(d):
+        return all(sum_digits(d, inds) <= ub for inds, ub in
+                sum_max_map.items())
 
-    def other_valid():
-        return (
-                all(sum_digits(inds) >= lb 
-                    for inds, lb in sum_min_map.items()) and
-                all(sum_digits(inds1) == sum_digits(inds2) 
-                    for inds1, inds2 in sum_equiv_list) and
-                all(sum_digits(inds) == val for inds, val in
-                    sum_const_map.items())
-                )
+    def lb_valid(d):
+        return all(sum_digits(d, inds) >= lb for inds, lb in
+                sum_min_map.items())
+
+    def eq_valid(d):
+        return all(sum_digits(d, inds1) == sum_digits(d, inds2) for inds1,
+                inds2 in sum_equiv_map.items()) 
+
+    def const_valid(d):
+        return all(sum_digits(d, inds) == val for inds, val in
+                sum_const_map.items())
     t = 0
     digits = [0] * k 
     while True:
-        if upper_bound_valid():
+        if upper_bound_valid(digits):
             t = 0
-            if other_valid():
+            if lb_valid(digits) and eq_valid(digits) and const_valid(digits):
                 yield list(digits)
         else:
             digits[t] = 0

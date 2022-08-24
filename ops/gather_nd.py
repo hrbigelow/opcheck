@@ -11,6 +11,9 @@ def init_schema(op):
     op.limit_ranks('c', 1, 1)
     op.limit_ranks('r', 1, None)
     op.limit_ranks('w', 1, None)
+    # op.limit_ranks('bre', None, 3)
+    # op.limit_ranks('bwc', None, 3)
+
     op.limit_ranks('bre', None, 7)
     op.limit_ranks('bwc', None, 7)
 
