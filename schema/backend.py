@@ -526,20 +526,6 @@ def valid_types(op):
             return False, ArgTypeError(arg_name)
     return valid, None
 
-def valid_dtypes(op):
-    """Check that all tensor arguments have valid dtypes"""
-    for ten_name, dtypes in op.dtype_valid.items():
-        arg = op.get_arg(ten_name)
-        assert(isinstance(arg, tf.Tensor))
-        if arg.dtype not in dtypes:
-            return False, DTypeNotAllowed(ten_name, arg.dtype)
-    for trg_name, src_name in op.dtype_equiv.items():
-        src = op.get_arg(src_name)
-        trg = op.get_arg(trg_name)
-        if trg.dtype != src.dtype:
-            return False, DTypeNotEqual(src_name, trg_name)
-    return True, None
-
 def input_arg_dims_parents(op):
     """
     Return all dependencies of the shape-related arguments (excluding return

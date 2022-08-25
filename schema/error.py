@@ -83,6 +83,16 @@ class IndexUsageError(SchemaStatus):
     def message(self, op):
         return f'Index {self.idx} inconsistent'
 
+class NegativeDimsError(SchemaStatus):
+    def __init__(self, idx, dims):
+        self.idx = idx
+        self.dims = list(dims)
+
+    def message(self, op):
+        msg = f'Dimensions of index \'{self.idx}\' contain negative values: '
+        msg += f'{self.dims}'
+        return msg
+
 class NonOptionError(SchemaStatus):
     def __init__(self, arg_name, arg_val):
         self.arg_name = arg_name
