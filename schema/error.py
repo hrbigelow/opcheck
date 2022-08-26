@@ -138,7 +138,7 @@ class ShapeError(SchemaStatus):
         msg += f'{self.ten_sub_dims} but expected {expect_dims}'
         return msg
 
-class OutputShapeError(SchemaStatus):
+class ReturnShapeError(SchemaStatus):
     """The output at {out_idx} does not match the shape implied by its
     signature"""
     def __init__(self, out_idx):

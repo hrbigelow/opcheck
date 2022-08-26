@@ -1,4 +1,4 @@
 from .api import SchemaApi
-from .backend import IName
+from .base import Kind, kname
 from .broadcast_op import Broadcastable
 

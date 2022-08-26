@@ -1,11 +1,12 @@
 import opcheck
+from schema import Kind, kname 
 
 def init_schema(op):
-    op.index('b', 'batch')
-    op.index('r', 'read location')
-    op.index('w', 'write location')
-    op.index('e', 'slice element')
-    op.index('c', 'read address component')
+    op.add_index('b', 'batch')
+    op.add_index('r', 'read location')
+    op.add_index('w', 'write location')
+    op.add_index('e', 'slice element')
+    op.add_index('c', 'read address component')
 
     # allowed rank combinations
     op.limit_ranks('c', 1, 1)
@@ -24,20 +25,21 @@ def init_schema(op):
     op.arg_unchecked('name')
 
     # dtypes
-    op.tensor_valid_dtypes('indices', ('int32', 'int64'))
-    op.tensor_valid_dtypes('params', ('int32', 'float32'))
+    op.valid_dtypes('indices', ('int32', 'int64'))
+    op.valid_dtypes('params', ('int32', 'float32'))
 
-    def rankr(indices):
-        return indices.shape[-1]
-    op.arg_rank_func('r', rankr, 'indices')
+    def rankr(indices_shape):
+        return indices_shape[-1]
+    inds_kname = kname('indices', Kind.SHAPE) 
+    op.rank_constraint('r', rankr, inds_kname)
 
     # allowed dims combinations (see below)
     def dimsc(rank_map):
         return [rank_map['r']]
-    op.index_rank_func('c', dimsc)
+    op.computed_dims('c', dimsc, Kind.RANKS)
 
     # output shape prediction
-    op.append_return_tensor('bwe')
+    op.return_tensor('bwe')
 
     
 opcheck.register('tf.gather_nd', init_schema)

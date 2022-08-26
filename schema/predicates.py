@@ -1,76 +1,117 @@
 from .error import *
 from . import util
+from .base import Kind
 
 """
-Functions or function objects to be used in PredNodes
+Functions or function objects to be used in PredNodes.  Implement the __call__
+method which is expected to return one of:
+    True, <value>
+    False, SchemaError
+
+where <value> is used by the function object in each child node.
 """
-def get_prefix(node_name):
-    return split(':', node_name)[0]
-
-def get_kind(node_name):
-    return split(':', node_name)[1]
-
-def name(prefix, kind):
-    return f'{prefix}:{kind}'
-
-class Kind(object):
-    SCHEMA = 'schema'
-    TENSOR = 'tensor'
-    DTYPE = 'dtype'
-    SHAPE = 'shape'
-    SIG = 'sig'
-    DTYPES = 'dtypes'
-    IRANKS = 'index_ranks'
-    IDIMS = 'input_index_dims'
-    CDIMS = 'computed_dims'
-    DIMS = 'all_dims'
-    PSEUDO = 'pseudo'
-    PSHAPE = 'predicated_shape'
-    CONS = 'constraint'
-    ARG = 'arg'
-
 class GetTensor(object):
     def __init__(self, arg_name):
         self.arg_name = arg_name
 
     def __call__(self, op):
-        ten = op.get_arg(self.arg_name)
+        ten = op._get_arg(self.arg_name)
         if not isinstance(ten, tf.Tensor):
             return False, ArgTypeError(self.arg_name)
         else:
             return True, ten
 
+class GetReturnTensor(object):
+    def __init__(self, index):
+        self.index = index
+
+    def __call__(self, op):
+        ten = op._get_returns(self.index)
+        if not isinstance(ten, tf.Tensor):
+            return False, ArgTypeError(f'Return Tensor {self.index}')
+        else:
+            return True, ten
+
+class ValidReturnShape(object):
+    def __init__(self, index):
+        self.index = index
+
+    def __call__(self, tensor, predicted_shape):
+        actual_shape = tensor.shape.as_list()
+        if actual_shape == predicted_shape:
+            return True, None
+        else:
+            return False, ReturnShapeError(self.index) 
+
 class Sig(object):
     """
     Compute a signature using {sig_func} and optionally additional arguments.
-    Always succeeds
+    Argument names of sig_func are ignored and it is called with positional
+    arguments.  Always succeeds.
     """
     def __init__(self, sig_func):
         self.sig_func = sig_func
 
-    def __call__(self, **kwargs):
-        return True, self.sig_func(**kwargs)
+    def __call__(self, *args):
+        return True, self.sig_func(*args)
 
 class ArgFunc(object):
     """
     Retrieve and validate the value of {arg_name} with {pred_func}.
-    {pred_func} also accepts additional inputs
+    {pred_func} also accepts additional inputs.
+    Kind.SCHEMA must be included as the first parent.
     """
     def __init__(self, arg_name, pred_func):
         self.arg_name = arg_name
         self.pred_func = pred_func
 
-    def __call__(self, op, **kwargs):
+    def __call__(self, op, *args):
         arg_val = op.get_arg(self.arg_name)
-        return self.pred_func(arg_val, **kwargs)
+        return self.pred_func(arg_val, *args)
+
+class ArgInt(object):
+    """
+    Retrieve the value for {arg_name} and validate that it is an integer
+    """
+    def __init__(self, arg_name):
+        self.arg_name = arg_name
+
+    def __call__(self, op):
+        arg_val = op.get_arg(self.arg_name)
+        if isinstance(arg_val, int):
+            return True, arg_val
+        else:
+            return False, ArgValueError(self.arg_name, arg_val) 
+
+class ArgString(object):
+    """
+    Retrieve the value for {arg_name} and validate that it is a string
+    """
+    def __init__(self, arg_name):
+        self.arg_name = arg_name
+
+    def __call__(self, op):
+        arg_val = op.get_arg(self.arg_name)
+        if isinstance(arg_val, str):
+            return True, arg_val
+        else:
+            return False, ArgValueError(self.arg_name, arg_val)
 
 def dtype(tensor):
     return True, tensor.dtype
 
-def shape(tensor):
+def tensor_shape(tensor):
     return True, tensor.shape.as_list()
 
+def predicted_shape(idims_map, cdims_map, sig):
+    dims_map = { **idims_map, **cdims_map }
+    shape = [ d for s in sig for d in dims_map[s] ]
+    return True, shape
+
 class ArgShape(ArgFunc):
+    """
+    Retrieve the value for {arg_name} and validate it as a shape
+    """
     def __init__(self, arg_name):
         self.arg_name = arg_name
 
@@ -104,30 +145,18 @@ class ValidDTypes(object):
                 return False, DTypeNotEqual(src_name, trg_name)
         return True, None
 
-def get_sig_shape_map(kwargs):
-    # convert a map of: pfx:sig => sig, pfx:shape => shape to
-    # sig => shape
-    pfxs = { get_prefix(k) for k in kwargs.keys() }
-    ss_map = { d[f'{p}:{Kind.SIG}'] : d[f'{p}:{Kind.SHAPE}'] for p in pfxs }
-    return ss_map
-
 class IndexRanks(object):
     def __init__(self, op, rank_cons):
         self.op = op
         self.rcons = rank_cons
 
     def __call__(self, **kwargs):
-        sig_shape_map = get_sig_shape_map(kwargs)
-        const_map = {}
-        for sig, shape in sig_shape_map.items():
-            sig_inds = self.op.sig_indices(sig)
-            const_map[sig_inds] = len(shape)
-
         k = len(self.op.index)
-        rmins = self.rcons.rmins_inds()
-        rmaxs = self.rcons.rmaxs_inds()
-        req = self.rcons.req_inds()
-        rank_list = list(util.feasible_region(k, rmins, rmaxs, req, const_map))
+        mins = self.rcons.mins_inds()
+        maxs = self.rcons.maxs_inds()
+        equiv = self.rcons.equiv_inds()
+        const = self.rcons.const_inds(kwargs)
+        rank_list = list(util.feasible_region(k, mins, maxs, equiv, const))
 
         if len(rank_list) == 0:
             return False, NoMatchingRanks()
@@ -142,6 +171,13 @@ def calc_sig_range(rank_map, idx, sig):
     start = sum(rank_map[l] for l in sig[:ind])
     rank = rank_map[idx] 
     return [start, start + rank]
+
+def get_sig_shape_map(kwargs):
+    # convert a map containing: pfx:sig => sig, pfx:shape => shape to
+    # sig => shape
+    pfxs = { get_prefix(k) for k in kwargs.keys() }
+    ss_map = { d[f'{p}:{Kind.SIG}'] : d[f'{p}:{Kind.SHAPE}'] for p in pfxs }
+    return ss_map
 
 def input_index_dims(rank_map, **kwargs):
     sig_shape = get_sig_shape_map(kwargs)
@@ -164,14 +200,31 @@ def input_index_dims(rank_map, **kwargs):
     return True, index_dims
 
 class ComputedDims(object):
-    def __init__(self, target_index, func):
-        self.index = target_index
-        self.func = func
+    def __init__(self, comp_dims):
+        self.comp_dims = comp_dims
 
-    def __call__(self, dims_map, **kwargs):
-        comp_dims = self.func(dims_map, **kwargs)
-        if all(c >= 0 for c in comp_dims):
-            return True, { self.index: comp_dims }
+    def __call__(self, idims_map, **kwargs):
+        comp_dims_map = self.comp_dims(idims_map, **kwargs)
+        for idx, dims in comp_dims_map.items():
+            if any(c < 0 for c in dims):
+                return False, NegativeDimsError(idx, dims)
+        return True, comp_dims_map
+
+class SigRank(object):
+    """
+    Expect the value of {arg_name} to be a list of length equal to the rank of
+    {sig}
+    """
+    def __init__(self, arg_name, sig):
+        self.arg_name = arg_name
+        self.sig = sig
+
+    def __call__(self, op, rank_map):
+        arg_val = op.get_arg(self.arg_name)
+        rank = sum(rank_map[s] for s in self.sig)
+        if len(arg_val) != rank:
+            return False, SigRankError(arg_name, rank, len(arg_val))
         else:
-            return False, NegativeDimsError(self.index, comp_dims)
+            return True, arg_val
 
+        

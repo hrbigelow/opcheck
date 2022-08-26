@@ -1,13 +1,13 @@
 import opcheck
-from schema import Broadcastable, IName
+from schema import Broadcastable, Kind
 
 def init_schema(op):
-    op.index('b', 'batch')
-    op.index('i', 'input spatial')
-    op.index('f', 'filter spatial')
-    op.index('o', 'output spatial')
-    op.index('k', 'input channel')
-    op.index('l', 'output channel')
+    op.add_index('b', 'batch')
+    op.add_index('i', 'input spatial')
+    op.add_index('f', 'filter spatial')
+    op.add_index('o', 'output spatial')
+    op.add_index('k', 'input channel')
+    op.add_index('l', 'output channel')
 
     # keys are rank, channel_first
     data_formats = { 
@@ -21,38 +21,31 @@ def init_schema(op):
 
     def gen_layout():
         return [True, False]
-    def val_layout(data_format):
-        return data_format[:2] == 'NC'
-    op.arg_pseudo('channel_first', gen_layout, val_layout, 'data_format')
-
+    def pred_layout(data_format):
+        return True, data_format[:2] == 'NC'
+    
+    op.arg_pseudo('channel_first', pred_layout, gen_layout, 'data_format')
     def input_sig(channel_first):
         if channel_first:
             return 'bki'
         else:
             return 'bik'
-    op.arg_tensor_func('input', input_sig, 'channel_first')
-
-    def df_gen(rank_map, channel_first):
-        return [data_formats[rank_map['i'],channel_first]]
+    op.arg_tensor('input', input_sig, 'channel_first')
 
     def df_pred(arg_val, rank_map, channel_first):
         return arg_val == data_formats[rank_map['i'],channel_first]
-    op.arg_func('data_format', df_gen, df_pred, IName.RANKS, 'channel_first')
 
-    def return_sig(channel_first):
-        if channel_first:
-            return 'blo'
-        else:
-            return 'bol'
-    op.append_return_tensor_func(return_sig, 'channel_first')
+    def df_gen(rank_map, channel_first):
+        return [data_formats[rank_map['i'],channel_first]]
+    op.arg_func('data_format', df_pred, df_gen, Kind.RANKS, 'channel_first')
 
-    op.arg_tensor('filters', 'fkl')
-    op.add_input_sigrank('strides', 'i', 1, 10)
+    op.arg_tensor('filters', lambda: 'fkl')
     op.arg_option('padding', ('VALID', 'SAME'))
-    op.add_input_sigrank('dilations', 'i', 1, 1)
+    op.arg_sigrank('strides', 'i', 1, 10)
+    op.arg_sigrank('dilations', 'i', 1, 1)
 
-    op.tensor_valid_dtypes('input', ('int32', 'float32'))
-    op.tensor_equate_dtypes('filters', 'input')
+    op.valid_dtypes('input', ('int32', 'float32'))
+    op.equate_dtypes('filters', 'input')
 
     # constraints
     op.limit_ranks('b', 1, 1)
@@ -61,7 +54,6 @@ def init_schema(op):
     op.equate_ranks('o', 'i')
     op.limit_ranks('k', 1, 1)
     op.limit_ranks('l', 1, 1)
-
     
     # compute output spatial dimension 
     def odims(dims_map, strides, dilations, padding):
@@ -74,7 +66,14 @@ def init_schema(op):
             out = idims.ceildiv(strides)
         return out.val
 
-    op.index_dims_func('o', odims, 'strides', 'dilations', 'padding')
+    op.computed_dims('o', odims, 'strides', 'dilations', 'padding')
+
+    def return_sig(channel_first):
+        if channel_first:
+            return 'blo'
+        else:
+            return 'bol'
+    op.return_tensor(return_sig, 'channel_first')
 
 opcheck.register('tf.nn.convolution', init_schema)
 

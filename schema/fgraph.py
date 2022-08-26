@@ -85,8 +85,7 @@ class FuncNode(object):
             if pa is None:
                 raise SchemaError(
                     f'{type(cls).__qualname__}: arg_names contained '
-                    f'\'{arg_name}\' but no node by that name exists in '
-                    f'the registry')
+                    f'\'{arg_name}\' but does not exist in the registry')
             node.append_parent(pa)
         cls.registry[name] = node
         return node
@@ -111,6 +110,25 @@ class FuncNode(object):
                 f'{type(cls).__qualname__}: Node \'{name}\' does not exist '
                 f'in the registry.')
         return node
+
+    @classmethod
+    def find_unique_name(cls, prefix):
+        names = { n for n in cls.registry.keys() if n.startswith(prefix) }
+        if len(names) == 1:
+            return names.pop()
+        else:
+            return None
+
+    @classmethod
+    def find_unique(cls, prefix):
+        found = []
+        for name, node in cls.registry.items():
+            if name.startswith(prefix):
+                found.append(node)
+        if len(found) == 1:
+            return found[0]
+        else:
+            return None
 
     def add_child(self, node):
         self.children.append(node)

@@ -1,10 +1,11 @@
 import opcheck
+from schema import Kind
 
 def init_schema(op):
-    op.index('r', 'read address')
-    op.index('c', 'write address component')
-    op.index('e', 'slice element')
-    op.index('w', 'write address')
+    op.add_index('r', 'read address')
+    op.add_index('c', 'write address component')
+    op.add_index('e', 'slice element')
+    op.add_index('w', 'write address')
 
     op.limit_ranks('r', 1, 3)
     op.limit_ranks('c', 1, 1)
@@ -14,15 +15,15 @@ def init_schema(op):
     op.arg_tensor('indices', 'rc')
     op.arg_tensor('updates', 're')
     op.arg_shape('shape', 'we')  
-    op.append_return_tensor('we')
+    op.return_tensor('we')
 
     # set the dimension of index c to rank(w) 
     def dimsc(rank_map):
         return [rank_map['w']]
-    op.index_rank_func('c', dimsc)
+    op.computed_dims('c', dimsc, Kind.RANKS)
 
-    op.tensor_valid_dtypes('indices', ('int32',))
-    op.tensor_valid_dtypes('updates', ('int32', 'float32'))
+    op.valid_dtypes('indices', ('int32',))
+    op.valid_dtypes('updates', ('int32', 'float32'))
 
 opcheck.register('tf.scatter_nd', init_schema)
 

@@ -17,32 +17,32 @@ def register(op_path, init_schema_func):
     func = getattr(mod, func_name)
     sig = inspect.signature(func)
     op = SchemaApi(op_path)
-    op.p.init_schema(op, sig, init_schema_func)
+    op._init_schema(sig, init_schema_func)
 
     def wrapped_op(*args, **kwargs):
         # executes during 'framework call phase'
         sig = inspect.signature(func)
         bind_obj = sig.bind(*args, **kwargs)
         bind_obj.apply_defaults()
-        op.p.prepare_call(op, bind_obj.arguments)
-        op.p.check_args()
+        op._prepare_call(bind_obj.arguments)
+        op._check_args()
         try:
             ret_val = func(**bind_obj.arguments)
         except Exception as ex:
-            op.p.log_framework_status(ex)
-            op.p.return_status = NotApplicable()
+            op._log_framework_status(ex)
+            op.return_status = NotApplicable()
         else:
-            op.p.framework_status = Success()
-            op.p.check_return(ret_val)
+            op.framework_status = Success()
+            op._check_return(ret_val)
         finally:
             print('in finally:  framework status: ',
-                    op.p.framework_status.message(op.p))
+                    op.framework_status.message(op))
             # assert(op.p.framework_status is not None)
-            op.p.report()
-            if isinstance(op.p.framework_status, FrameworkError):
-                raise op.p.framework_status.ex
+            op._report()
+            if isinstance(op.framework_status, FrameworkError):
+                raise op.framework_status.ex
             return ret_val
-    op.p.wrapped_op = wrapped_op
+    op.wrapped_op = wrapped_op
     setattr(mod, func_name, wrapped_op)
     REGISTRY[op_path] = op
 
@@ -56,7 +56,7 @@ def validate(op_path):
             f'A tensor op named \'{op_path}\' is not registered with OpCheck. '
             f'Cannot validate.')
     op = REGISTRY[op_path]
-    op.p.validate_schema()
+    op._validate_schema()
 
 def init():
     import ops
