@@ -293,12 +293,31 @@ class SchemaApi(object):
                 limits[max_sig] = max_rank
             self.rank_cons.maxs[trg_sig] = sum(limits.values())
 
+    @staticmethod
+    def _convert_str(call_func, func_or_str, arg_names):
+        if isinstance(func_or_str, str):
+            if len(arg_names) != 0:
+                raise SchemaError(
+                    f'{type(call_func).__qualname__}: A string-valued '
+                    f'arg \'{func_or_str}\' cannot have arguments. '
+                    f'Got arguments \'{arg_names}\'')
+            return lambda: func_or_str 
+        else:
+            return func_or_str
+
     # ============ PUBLIC API ====================
     def add_index(self, idx, description):
+        """
+        Add index {idx} with {description} to the schema.  {idx} must be a
+        single letter and can be referred to in later signatures
+        """
         self.index[idx] = description
 
     def arg_rank(self, arg_name, sig):
-        # self._set_arg_type(arg_name, int)
+        """
+        Register {arg_name} to be an integer argument which defines the rank of
+        {sig}
+        """
         self.rank_cons.add_arg_rank(arg_name, sig)
         arg_kname = base.kname(arg_name, Kind.ARG)
         self._set_arg_kname(arg_name, arg_kname)
@@ -309,6 +328,12 @@ class SchemaApi(object):
         rank_node.maybe_append_parent(Kind.SCHEMA)
 
     def rank_constraint(self, sig, rank_func, *arg_names):
+        """
+        Constrain the rank of signature {sig} to the value of
+        rank_func(*arg_vals).
+
+        arg_vals are the resolved values of {arg_names}.
+        """
         arg_knames = self._resolve_arg_names(self, P, arg_names)
         self.rank_cons.add_sig_func(sig, rank_func, arg_knames)
         rank_node = P.get_node(Kind.RANKS)
@@ -320,12 +345,6 @@ class SchemaApi(object):
         Declare {arg_name} to be an argument unchecked by OpCheck 
         """
         pass
-
-    """
-    def constraint(self, constraint_name, pred_func, *pred_arg_names):
-        cons_name = base.kname(constraint_name, Kind.CONS)
-        P.add_node(cons_name, pred_func, *pred_arg_names) 
-    """
 
     def computed_dims(self, index, comp_func, *comp_arg_names):
         """
@@ -342,11 +361,19 @@ class SchemaApi(object):
                 dims_gnode.maybe_append_parent(kname)
 
     def equate_ranks(self, target_sig, source_sig):
+        """
+        Declare that the rank of {target_sig} be equal to {source_sig}.
+        It is required that all indices in {source_sig} appear in some
+        signature in a limit_ranks call.
+        """
         self._check_sig(target_sig, 'equate ranks')
         self._check_sig(source_sig, 'equate ranks')
         self.rank_cons.equate_ranks(target_sig, source_sig)
 
     def limit_ranks(self, sig, min_val, max_val):
+        """
+        Declare that the rank of {sig} be in [{min_val}, {max_val}]
+        """
         self._check_sig(sig, 'rank limits')
         self.rank_cons.add_rank_limits(sig, min_val, max_val)
 
@@ -403,6 +430,17 @@ class SchemaApi(object):
         pass
 
     def arg_pseudo(self, pseudo_name, pred_func, gen_func, arg_name):
+        """
+        Creates a pseudo-input argument called {pseudo_name}, which is used to
+        break a dependency cycle in nodes of the Generation Graph or Predicate
+        graph.
+
+        {gen_func}() generates all legal values for the pseudo argument during
+        the schema validation phase.
+
+        {pred_func} is a predicate function - that is, it must return a tuple
+        of either (True, <value>) or (False, SchemaError).
+        """
         arg_kname = base.kname(pseudo_name, Kind.PSEUDO)
         pfunc_obj = pr.ArgFunc(arg_name, pred_func)
         P.add_node(arg_kname, pfunc_obj, Kind.SCHEMA) 
@@ -410,6 +448,16 @@ class SchemaApi(object):
 
     def arg_func(self, arg_name, pred_func, gen_func, *func_arg_names):
         """
+        Validates {arg_name} with a call to the predicate as:
+        {pred_func}(arg_val, *arg_vals)
+
+        Generates testing values for {arg_name} with a call to the generator
+        function as: {gen_func}(*arg_vals)
+
+        arg_vals are the values resolved at call-time from {arg_names}.
+        arg_names may contain any names defined by this Schema API.
+        Additionally, arg_names may contain knames of kinds
+        Kind.{SCHEMA,DTYPES,RANKS,DTYPE,SIG,ARG,PSEUDO,TENSOR,SHAPE}
         """
         knames = self._resolve_arg_names(self, P, func_arg_names)
         arg_kname = base.kname(arg_name, Kind.ARG)
@@ -443,19 +491,16 @@ class SchemaApi(object):
         pred_obj = pr.ArgFunc(arg_name, pred)
         P.add_node(arg_kname, pred_obj, Kind.SCHEMA)
 
-    @staticmethod
-    def _convert_str(call_func, func_or_str, arg_names):
-        if isinstance(func_or_str, str):
-            if len(arg_names) != 0:
-                raise SchemaError(
-                    f'{type(call_func).__qualname__}: A string-valued '
-                    f'arg \'{func_or_str}\' cannot have arguments. '
-                    f'Got arguments \'{arg_names}\'')
-            return lambda: func_or_str 
-        else:
-            return func_or_str
-
     def arg_tensor(self, arg_name, sig_func, *sig_arg_names):
+        """
+        Register {arg_name} as a tensor.  Its signature is computed at
+        call-time as {sig_func}(*sig_arg_vals). 
+
+        sig_arg_vals are the resolved values of {sig_arg_names}.
+
+        sig_arg_names must be names of operation argments or pseudo-arguments
+        declared with arg_pseudo.
+        """
         sig_func = self._convert_str(self, sig_func, sig_arg_names)
         sig_arg_knames = self._resolve_arg_names(self, P, sig_arg_names)
         tensor_kname = base.kname(arg_name, Kind.TENSOR) 
@@ -488,6 +533,16 @@ class SchemaApi(object):
         idims_pnode.append_parent(sig_pnode)
 
     def arg_shape(self, arg_name, sig_func, *sig_arg_names):
+        """
+        Register {arg_name} as :shape parameter which defines the shape of a
+        signature.  The signature is defined by the call to
+        {sig_func}(*sig_arg_vals).
+
+        sig_arg_vals are the resolved values of {sig_arg_names}.
+
+        sig_arg_names must be names of operation argments or pseudo-arguments
+        declared with arg_pseudo.
+        """
         sig_func = self._convert_str(self, sig_func, sig_arg_names)
         sig_arg_knames = self._resolve_arg_names(self, P, sig_arg_names)
         # self._set_arg_type(arg_name, list)
@@ -502,6 +557,10 @@ class SchemaApi(object):
         dims_gnode.append_parent(sig_node)
 
     def arg_sigrank(self, arg_name, sig, lo, hi):
+        """
+        Register {arg_name} as an integer list of length rank({sig}), with
+        elements that must be in [{lo}, {hi}].
+        """
         arg_kname = base.kname(arg_name, Kind.ARG) 
         P.add_node(arg_kname, pr.SigRank(arg_name, sig), Kind.SCHEMA,
                 Kind.RANKS)
@@ -509,6 +568,12 @@ class SchemaApi(object):
         self._set_arg_kname(arg_name, arg_kname)
         
     def return_tensor(self, sig_func, *arg_names):
+        """
+        Append a return tensor to the list of expected return tensors and
+        expect it to have a signature defined by {sig_func}(*arg_vals).
+
+        arg_vals are the resolved values of {arg_names}.
+        """
         sig_func = self._convert_str(self, sig_func, arg_names)
         arg_knames = self._resolve_arg_names(self, P, arg_names)
         index = self.num_returns
