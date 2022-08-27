@@ -1,6 +1,7 @@
+import tensorflow as tf
 from .error import *
 from . import util
-from .base import Kind
+from .base import Kind, pfx, kname
 
 """
 Functions or function objects to be used in PredNodes.  Implement the __call__
@@ -26,7 +27,7 @@ class GetReturnTensor(object):
         self.index = index
 
     def __call__(self, op):
-        ten = op._get_returns(self.index)
+        ten = op._get_return(self.index)
         if not isinstance(ten, tf.Tensor):
             return False, ArgTypeError(f'Return Tensor {self.index}')
         else:
@@ -66,7 +67,7 @@ class ArgFunc(object):
         self.pred_func = pred_func
 
     def __call__(self, op, *args):
-        arg_val = op.get_arg(self.arg_name)
+        arg_val = op._get_arg(self.arg_name)
         return self.pred_func(arg_val, *args)
 
 class ArgInt(object):
@@ -77,7 +78,7 @@ class ArgInt(object):
         self.arg_name = arg_name
 
     def __call__(self, op):
-        arg_val = op.get_arg(self.arg_name)
+        arg_val = op._get_arg(self.arg_name)
         if isinstance(arg_val, int):
             return True, arg_val
         else:
@@ -91,7 +92,7 @@ class ArgString(object):
         self.arg_name = arg_name
 
     def __call__(self, op):
-        arg_val = op.get_arg(self.arg_name)
+        arg_val = op._get_arg(self.arg_name)
         if isinstance(arg_val, str):
             return True, arg_val
         else:
@@ -116,7 +117,7 @@ class ArgShape(ArgFunc):
         self.arg_name = arg_name
 
     def __call__(self, op):
-        shape = op.get_arg(self.arg_name)
+        shape = op._get_arg(self.arg_name)
         if not isinstance(shape, (tuple, list)):
             return False, ArgTypeError(self.arg_name, 'must be tuple or list')
         if not all(isinstance(v, int) for v in shape):
@@ -131,7 +132,7 @@ class ValidDTypes(object):
 
     def __call__(self, **kwargs):
         """Check that all tensor arguments have valid dtypes"""
-        dtype_map = { get_prefix(k): v for k,v in kwargs.items() }
+        dtype_map = { pfx(k): v for k,v in kwargs.items() }
         assert (len(dtype_map) == len(kwargs)), 'ValidDTypes internal error'
         
         for ten_name, valid_dtypes in self.dtype_cons.valid.items():
@@ -175,8 +176,9 @@ def calc_sig_range(rank_map, idx, sig):
 def get_sig_shape_map(kwargs):
     # convert a map containing: pfx:sig => sig, pfx:shape => shape to
     # sig => shape
-    pfxs = { get_prefix(k) for k in kwargs.keys() }
-    ss_map = { d[f'{p}:{Kind.SIG}'] : d[f'{p}:{Kind.SHAPE}'] for p in pfxs }
+    d = kwargs
+    pfxs = { pfx(k) for k in kwargs.keys() }
+    ss_map = { d[kname(p,Kind.SIG)] : d[kname(p,Kind.SHAPE)] for p in pfxs }
     return ss_map
 
 def input_index_dims(rank_map, **kwargs):
@@ -190,7 +192,7 @@ def input_index_dims(rank_map, **kwargs):
             if idx not in sig:
                 continue
             sub_range = calc_sig_range(rank_map, idx, sig)
-            idx_shape = dims[slice(*sub_range)]
+            idx_shape = shape[slice(*sub_range)]
             idx_shapes.add(tuple(idx_shape))
 
         if len(idx_shapes) != 1:
@@ -203,8 +205,8 @@ class ComputedDims(object):
     def __init__(self, comp_dims):
         self.comp_dims = comp_dims
 
-    def __call__(self, idims_map, **kwargs):
-        comp_dims_map = self.comp_dims(idims_map, **kwargs)
+    def __call__(self, **kwargs):
+        comp_dims_map = self.comp_dims(**kwargs)
         for idx, dims in comp_dims_map.items():
             if any(c < 0 for c in dims):
                 return False, NegativeDimsError(idx, dims)
@@ -220,7 +222,7 @@ class SigRank(object):
         self.sig = sig
 
     def __call__(self, op, rank_map):
-        arg_val = op.get_arg(self.arg_name)
+        arg_val = op._get_arg(self.arg_name)
         rank = sum(rank_map[s] for s in self.sig)
         if len(arg_val) != rank:
             return False, SigRankError(arg_name, rank, len(arg_val))

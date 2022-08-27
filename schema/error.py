@@ -32,7 +32,7 @@ class FrameworkError(SchemaStatus):
         self.ex = framework_error
 
     def message(self, op):
-        return f'{repr(self.ex.message)}'
+        return f'{repr(self.ex)}'
 
 class NoMatchingRanks(SchemaStatus):
     def __init__(self):

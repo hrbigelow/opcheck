@@ -63,10 +63,9 @@ class RankConstraints(object):
         self.shape_sig.add(prefix)
 
     def add_arg_rank(self, arg_name, sig):
-        def get_arg(arg_name, op):
-            return op._get_arg(arg_name)
-        node_name = kname(arg_name, Kind.ARG)
-        self.add_sig_func(sig, get_arg, (node_name, Kind.SCHEMA))
+        identity = lambda val: val
+        node_kname = kname(arg_name, Kind.ARG)
+        self.add_sig_func(sig, identity, (node_kname,))
 
     def add_sig_func(self, sig, func, arg_knames):
         self.sig_funcs[sig] = func
@@ -91,7 +90,7 @@ class RankConstraints(object):
             arg_names = self.sig_args[sig]
             call_args = tuple(kwargs[a] for a in arg_names)
             rank = func(*call_args)
-            inds = self.op.sig_inds(sig)
+            inds = self.op._sig_inds(sig)
             const_map[inds] = rank
 
         # process the shape_sig entries.
@@ -139,12 +138,12 @@ class CompDims(object):
     def get_args(self):
         return { a for l in self.args.values() for a in l }
 
-    def __call__(self, idims_map, **kwargs):
+    def __call__(self, **kwargs):
         comp_dims_map = {}
         for index, func in self.funcs.items():
             arg_names = self.args[index]
             call_args = tuple(kwargs[a] for a in arg_names)
-            comp_dims_map[index] = func(idims_map, *call_args)
+            comp_dims_map[index] = func(*call_args)
         return comp_dims_map
 
 

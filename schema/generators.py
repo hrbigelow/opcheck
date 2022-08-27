@@ -1,6 +1,9 @@
+import tensorflow as tf
+import numpy as np
+import itertools
 from random import randint
 from functools import partial
-from .base import Kind, kind
+from .base import Kind, kind, pfx
 from . import util
 
 class GenDTypes(object):
@@ -90,15 +93,21 @@ class GenIndexDims(object):
     def __init__(self, comp_dims):
         self.comp_dims = comp_dims
 
-    def calc_dims(self, dims_map, kwargs):
+    def calc_dims(self, idims_map, kwargs):
         arg_names = self.comp_dims.get_args()
-        call = { a: kwargs[a] for a in arg_names }
-        calc_dims_map = self.comp_dims(dims_map, **call)
+        call = {}
+        for a in arg_names:
+            if a == Kind.IDIMS:
+                call[a] = idims_map
+            else:
+                call[a] = kwargs[a]
+        calc_dims_map = self.comp_dims(**call)
         return calc_dims_map
 
-    def __call__(self, rank_map, **kwargs):
+    def __call__(self, **kwargs):
+        rank_map = kwargs[Kind.RANKS]
         sig_keys = [ k for k in kwargs.keys() if kind(k) == Kind.SIG ]
-        sigs_map = { get_prefix(k): kwargs[k] for k in sig_keys }
+        sigs_map = { pfx(k): kwargs[k] for k in sig_keys }
 
         def nelem(rank_map, free_inds, calc_inds, flat_dims):
             free_dims_map = pack_dims_map(rank_map, free_inds, flat_dims)
@@ -129,12 +138,12 @@ class GenTensor(object):
 
     def __call__(self, sig, dims_map, dtype_map):
         dtype = dtype_map[self.arg_name]
-        shape = calc_sig_dims(dims_map, signature)
+        shape = [ d for s in sig for d in dims_map[s] ]
         if dtype.is_integer:
             ten = tf.random.uniform(shape, minval=-10, maxval=10,
                     dtype=dtype)
         else:
-            ten = tf.randot.normal(shape, dtype=dtype)
+            ten = tf.random.normal(shape, dtype=dtype)
         return [ten] 
 
 class GenShape(object):

@@ -35,8 +35,8 @@ def register(op_path, init_schema_func):
             op.framework_status = Success()
             op._check_return(ret_val)
         finally:
-            print('in finally:  framework status: ',
-                    op.framework_status.message(op))
+            # print('in finally:  framework status: ',
+                    # op.framework_status.message(op))
             # assert(op.p.framework_status is not None)
             op._report()
             if isinstance(op.framework_status, FrameworkError):
