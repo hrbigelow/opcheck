@@ -1,5 +1,5 @@
 import opcheck
-from schema import Kind
+from schema import Kind, kname
 
 def init_schema(op):
     op.add_index('r', 'read address')
@@ -17,13 +17,19 @@ def init_schema(op):
     op.arg_shape('shape', 'we')  
     op.return_tensor('we')
 
+    def rankw(indices_shape):
+        return indices_shape[-1]
+    inds_kname = kname('indices', Kind.SHAPE) 
+    op.rank_constraint('w', rankw, inds_kname)
+
     # set the dimension of index c to rank(w) 
     def dimsc(rank_map):
         return [rank_map['w']]
     op.computed_dims('c', dimsc, Kind.RANKS)
 
     op.valid_dtypes('indices', ('int32',))
-    op.valid_dtypes('updates', ('int32', 'float32'))
+    # op.valid_dtypes('updates', ('int32', 'float32'))
+    op.valid_dtypes('updates', ('float32',))
 
 opcheck.register('tf.scatter_nd', init_schema)
 

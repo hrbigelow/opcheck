@@ -33,7 +33,11 @@ def init_schema(op):
     op.arg_tensor('input', input_sig, 'channel_first')
 
     def df_pred(arg_val, rank_map, channel_first):
-        return arg_val == data_formats[rank_map['i'],channel_first]
+        valid = (arg_val == data_formats[rank_map['i'],channel_first])
+        if valid:
+            return True, arg_val
+        else:
+            return False, ArgValueError('data_format', arg_val) 
 
     def df_gen(rank_map, channel_first):
         return [data_formats[rank_map['i'],channel_first]]
@@ -66,7 +70,7 @@ def init_schema(op):
             out = idims.ceildiv(strides)
         return out.val
 
-    op.computed_dims('o', odims, 'strides', 'dilations', 'padding')
+    op.computed_dims('o', odims, Kind.IDIMS, 'strides', 'dilations', 'padding')
 
     def return_sig(channel_first):
         if channel_first:

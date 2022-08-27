@@ -59,8 +59,8 @@ class Sig(object):
 class ArgFunc(object):
     """
     Retrieve and validate the value of {arg_name} with {pred_func}.
-    {pred_func} also accepts additional inputs.
-    Kind.SCHEMA must be included as the first parent.
+    Will be called as pred_func(arg_val, *args)
+    Kind.SCHEMA must be included as the first parent to this node.
     """
     def __init__(self, arg_name, pred_func):
         self.arg_name = arg_name

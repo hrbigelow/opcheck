@@ -117,8 +117,8 @@ class SchemaApi(object):
             except Exception as e:
                 if isinstance(e, SchemaError):
                     raise e
-                else:
-                    print('in validate_schema, got exception: ', e)
+                # else:
+                #     print('in validate_schema, got exception: ', e)
 
             msg, err = self._validation_report(config)
             print(f'{msg}\n{err}')
@@ -132,12 +132,9 @@ class SchemaApi(object):
 
     def _validation_report(self, config):
         err = ''
-        if self._passed():
-            err += 'None'
-        else:
-            err += f'Input Error: {self.input_status.message(self)}\n'
-            err += f'Framework Error: {self.framework_status.message(self)}\n'
-            err += f'Returns Error: {self.return_status.message(self)}\n'
+        err += f'Input Error: {self.input_status.message(self)}\n'
+        err += f'Framework Error: {self.framework_status.message(self)}\n'
+        err += f'Returns Error: {self.return_status.message(self)}\n'
         msg = ''
         dims = ', '.join(f'{k}:{v}' for k,v in config[Kind.DIMS].items())
         msg += f'\nIndexes: {dims}'
@@ -349,7 +346,7 @@ class SchemaApi(object):
     def computed_dims(self, index, comp_func, *comp_arg_names):
         """
         Register {comp_func} to compute the dimensions of {index}.
-        Will be called as: comp_func(idims_map, *comp_arg_vals)
+        Will be called as: comp_func(*comp_arg_vals)
         """
         comp_knames = self._resolve_arg_names(self, P, comp_arg_names)
         self.comp_dims.add(index, comp_func, comp_knames)
@@ -438,8 +435,9 @@ class SchemaApi(object):
         {gen_func}() generates all legal values for the pseudo argument during
         the schema validation phase.
 
-        {pred_func} is a predicate function - that is, it must return a tuple
-        of either (True, <value>) or (False, SchemaError).
+        {pred_func}(arg_val) returns a derived value which represents the
+        pseudo-input's value.  It is as if that value were provided directly to
+        the framework operation.
         """
         arg_kname = base.kname(pseudo_name, Kind.PSEUDO)
         pfunc_obj = pr.ArgFunc(arg_name, pred_func)
@@ -448,16 +446,13 @@ class SchemaApi(object):
 
     def arg_func(self, arg_name, pred_func, gen_func, *func_arg_names):
         """
-        Validates {arg_name} with a call to the predicate as:
-        {pred_func}(arg_val, *arg_vals)
+        Register {arg_name} to be validated with the call
+        pred_func(*func_arg_vals).  For testing, generate values with a call to
+        gen_func(*func_arg_vals).
 
-        Generates testing values for {arg_name} with a call to the generator
-        function as: {gen_func}(*arg_vals)
-
-        arg_vals are the values resolved at call-time from {arg_names}.
-        arg_names may contain any names defined by this Schema API.
-        Additionally, arg_names may contain knames of kinds
-        Kind.{SCHEMA,DTYPES,RANKS,DTYPE,SIG,ARG,PSEUDO,TENSOR,SHAPE}
+        pred_func must return tuples of either:
+        True, <value>
+        False, SchemaError
         """
         knames = self._resolve_arg_names(self, P, func_arg_names)
         arg_kname = base.kname(arg_name, Kind.ARG)
@@ -476,19 +471,18 @@ class SchemaApi(object):
             raise SchemaError(
                 f'{type(self).__qualname__}: \'options\' argument must be '
                 f'iterable.  Got {type(options)}')
-        def gen():
+        def options_gen():
             return options
 
         arg_kname = base.kname(arg_name, Kind.ARG)
         self._set_arg_kname(arg_name, arg_kname)
-        G.add_node(arg_kname, gen)
-        def pred():
-            arg_val = self._get_arg(arg_name)
+        G.add_node(arg_kname, options_gen)
+        def options_pred(arg_val):
             if arg_val in options:
                 return True, arg_val
             else:
                 return False, NonOptionError(arg_name, arg_val) 
-        pred_obj = pr.ArgFunc(arg_name, pred)
+        pred_obj = pr.ArgFunc(arg_name, options_pred)
         P.add_node(arg_kname, pred_obj, Kind.SCHEMA)
 
     def arg_tensor(self, arg_name, sig_func, *sig_arg_names):
@@ -545,16 +539,20 @@ class SchemaApi(object):
         """
         sig_func = self._convert_str(self, sig_func, sig_arg_names)
         sig_arg_knames = self._resolve_arg_names(self, P, sig_arg_names)
-        # self._set_arg_type(arg_name, list)
         shape_kname = base.kname(arg_name, Kind.SHAPE)
         self._set_arg_kname(arg_name, shape_kname)
         sig_kname = base.kname(arg_name, Kind.SIG)
-        P.add_node(shape_kname, pr.ArgShape(arg_name), Kind.SCHEMA)
-        P.add_node(sig_kname, pr.Sig(sig_func), *sig_arg_knames)
-        sig_node = G.add_node(sig_kname, ge.Sig(sig_func), *sig_arg_knames)
+        shape_pnode = P.add_node(shape_kname, pr.ArgShape(arg_name),
+                Kind.SCHEMA)
+        sig_pnode = P.add_node(sig_kname, pr.Sig(sig_func), *sig_arg_knames)
+        sig_gnode = G.add_node(sig_kname, ge.Sig(sig_func), *sig_arg_knames)
         G.add_node(shape_kname, ge.GenShape(), Kind.DIMS, sig_kname)
         dims_gnode = G.get_node(Kind.DIMS)
-        dims_gnode.append_parent(sig_node)
+        dims_gnode.append_parent(sig_gnode)
+
+        idims_pnode = P.get_node(Kind.IDIMS)
+        idims_pnode.append_parent(shape_pnode)
+        idims_pnode.append_parent(sig_pnode)
 
     def arg_sigrank(self, arg_name, sig, lo, hi):
         """

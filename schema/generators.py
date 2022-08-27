@@ -88,7 +88,9 @@ def pack_dims_map(rank_map, index_list, dims_list):
 
 class GenIndexDims(object):
     """
-    Generate all (input and return) index dims
+    Generate all (input and return) index dims.
+    call inputs:
+    RANKS, all SIG nodes (input and return) 
     """
     def __init__(self, comp_dims):
         self.comp_dims = comp_dims
@@ -159,6 +161,8 @@ class GenShape(object):
 
 class GenSigRank(object):
     """
+    Generate an integer list of length equal to the rank of {sig}, whose
+    elements lie in [lo, hi]
     """
     def __init__(self, sig, lo, hi):
         self.sig = sig
@@ -167,6 +171,6 @@ class GenSigRank(object):
 
     def __call__(self, rank_map):
         rank = sum(rank_map[s] for s in self.sig)
-        val = [randint(self.lo, self.hi+1) for _ in range(rank)]
+        val = [randint(self.lo, self.hi) for _ in range(rank)]
         return [val]
 
