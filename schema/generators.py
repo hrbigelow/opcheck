@@ -1,9 +1,10 @@
+import sys
 import tensorflow as tf
 import numpy as np
 import itertools
 from random import randint
 from functools import partial
-from .base import Kind, kind, pfx
+from .base import Kind, kind, kpfx
 from . import util
 
 class GenDTypes(object):
@@ -109,7 +110,7 @@ class GenIndexDims(object):
     def __call__(self, **kwargs):
         rank_map = kwargs[Kind.RANKS]
         sig_keys = [ k for k in kwargs.keys() if kind(k) == Kind.SIG ]
-        sigs_map = { pfx(k): kwargs[k] for k in sig_keys }
+        sigs_map = { kpfx(k): kwargs[k] for k in sig_keys }
 
         def nelem(rank_map, free_inds, calc_inds, flat_dims):
             free_dims_map = pack_dims_map(rank_map, free_inds, flat_dims)
@@ -148,6 +149,18 @@ class GenTensor(object):
             ten = tf.random.normal(shape, dtype=dtype)
         return [ten] 
 
+class GenIntShape(object):
+    """
+    Generate the current shape of the input signature as an integer
+    """
+    def __init__(self):
+        pass
+
+    def __call__(self, dims_map, sig):
+        shape = [ d for s in sig for d in dims_map[s] ]
+        assert len(shape) == 1
+        return [shape[0]]
+
 class GenShape(object):
     """
     Generate the current shape of the input signature
@@ -158,6 +171,32 @@ class GenShape(object):
     def __call__(self, dims_map, sig):
         shape = [ d for s in sig for d in dims_map[s] ]
         return [shape]
+
+class GenTensorShape(object):
+    """
+    Generate the current shape of the input signature as a tensor
+    """
+    def __init__(self):
+        pass
+
+    def __call__(self, dims_map, sig):
+        shape = [ d for s in sig for d in dims_map[s] ]
+        ten = tf.constant(shape, dtype=tf.int32)
+        return [ten]
+
+class GenTensorShape2D(object):
+    """
+    Generate a 2D tensor from dims and a list of signatures
+    """
+    def __init__(self):
+        pass
+
+    def __call__(self, dims_map, *sigs):
+        rows = []
+        for sig in sigs:
+            shape = [ d for s in sig for d in dims_map[s] ]
+            rows.append(shape)
+        return tf.constant(rows, dtype=tf.int32)
 
 class GenSigRank(object):
     """
@@ -173,4 +212,47 @@ class GenSigRank(object):
         rank = sum(rank_map[s] for s in self.sig)
         val = [randint(self.lo, self.hi) for _ in range(rank)]
         return [val]
+
+class GenLayout(object):
+    def __init__(self):
+        pass
+
+    def __call__(self):
+        return [0, 1]
+
+class GenDataFormat(object):
+    """
+    Generate the special data_format argument, defined by the 'layout' API call
+    """
+    def __init__(self, layouts, rank_index):
+        self.layouts = layouts
+        self.rank_index = rank_index
+
+    def __call__(self, rank_map, layout):
+        rank = rank_map[self.rank_index]
+        rmap = self.layouts[layout]
+        data_format = rmap[rank]
+        return [data_format]
+
+class GenLayoutOption(object):
+    def __init__(self, options):
+        self.options = options
+
+    def __call__(self, layout):
+        return [self.options[layout]]
+
+
+class GenInt(object):
+    def __init__(self, lo, hi):
+        if lo is None:
+            self.lo = -sys.maxsize - 1
+        else:
+            self.lo = lo
+        if hi is None:
+            self.hi = sys.maxsize
+        else:
+            self.hi = hi
+
+    def __call__(self):
+        return [randint(self.lo, self.hi)]
 

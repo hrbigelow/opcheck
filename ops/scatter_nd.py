@@ -14,7 +14,7 @@ def init_schema(op):
 
     op.arg_tensor('indices', 'rc')
     op.arg_tensor('updates', 're')
-    op.arg_shape('shape', 'we')  
+    op.arg_shape_list('shape', 'we')  
     op.return_tensor('we')
 
     def rankw(indices_shape):

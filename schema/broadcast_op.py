@@ -74,6 +74,9 @@ class Broadcastable(object):
     def __mul__(self, o):
         return self._op(operator.mul, o)
 
+    def __mod__(self, o):
+        return self._op(operator.mod, o)
+
     def __floordiv__(self, o):
         return self._op(operator.floordiv, o)
 

@@ -1,11 +1,22 @@
-def pfx(kname):
-    return kname[:kname.index(':')]
+from .error import SchemaError
+
+def kpfx(kname):
+    return kname.split(':')[0]
 
 def kind(kname):
     return kname[kname.index(':'):]
 
 def kname(prefix, kind):
     return prefix+kind
+
+def ksig(prefix):
+    return prefix + Kind.SIG
+
+def karg(prefix):
+    return prefix + Kind.ARG
+
+def kshp(prefix):
+    return prefix + Kind.SHAPE
 
 class Kind(object):
     # these cannot have prefixes
@@ -143,7 +154,16 @@ class CompDims(object):
         for index, func in self.funcs.items():
             arg_names = self.args[index]
             call_args = tuple(kwargs[a] for a in arg_names)
-            comp_dims_map[index] = func(*call_args)
+            comp_dims = func(*call_args)
+            if (not isinstance(comp_dims, list) or
+                not all(isinstance(d, int) for d in comp_dims)):
+                types = tuple(type(d) for d in comp_dims)
+                raise SchemaError(
+                    f'{type(self).__qualname__}: function \'{func.__name__}\' '
+                    f'registered with computed_dims must return a list of '
+                    f'integers.\n'
+                    f'Instead received \'{comp_dims}\' with types \'{types}\'')
+            comp_dims_map[index] = comp_dims
         return comp_dims_map
 
 

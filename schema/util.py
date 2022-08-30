@@ -44,9 +44,9 @@ def feasible_region(k, sum_min_map, sum_max_map, sum_equiv_map, sum_const_map):
 
 def bsearch_integers(k, min_val, max_val, val_func):
     """
-    Conduct binary search over a space of {k} real numbers until {val_func}(i1, ...,
-    ik) is between min_val and max_val.  val_func is strictly increasing in all
-    arguments.
+    Conduct binary search over a space of {k} real numbers until {val_func}(i1,
+    ..., ik) is between min_val and max_val.  val_func must be strictly
+    increasing in all arguments.
     """
     space = [random.randint(3, 10) for _ in range(k)]
     while True:
