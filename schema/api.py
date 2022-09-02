@@ -2,7 +2,7 @@ import tensorflow as tf
 from . import predicates as pr
 from . import generators as ge
 from . import base
-from .base import Kind, kpfx, ksig, karg, kshp
+from .base import Kind, kname, kpfx, ksig, karg, kshp
 from . import fgraph
 from .error import *
 from .fgraph import PredNode as P, GenNode as G
@@ -111,7 +111,7 @@ class SchemaApi(object):
             # extract the values from the argument nodes of the graph
             # print(vals)
             arg_dict = { p: config.get(k, None) for p,k in self.params.items() }
-            self.wrapped_op(**arg_dict)
+            # self.wrapped_op(**arg_dict)
             # print(arg_dict.keys())
             try:
                 self.wrapped_op(**arg_dict)
@@ -231,15 +231,16 @@ class SchemaApi(object):
         P.add_node(Kind.SCHEMA, lambda: (True, self))
         P.add_node(Kind.DTYPES, pr.ValidDTypes(self.dtype_cons))
         P.add_node(Kind.RANKS, pr.IndexRanks(self, self.rank_cons))
-        P.add_node(Kind.IDIMS, pr.input_index_dims, Kind.RANKS)
+        P.add_node(Kind.IDIMS, pr.input_dims, Kind.RANKS)
         P.add_node(Kind.CDIMS, pr.ComputedDims(self.comp_dims), Kind.IDIMS)
 
     def _init_gen_graph(self):
         G.clear_registry()
         G.add_node(Kind.SCHEMA, lambda: [self])
-        G.add_node(Kind.DTYPES, ge.GenDTypes(self.dtype_cons)) 
-        G.add_node(Kind.RANKS, ge.GenRanks(self, self.rank_cons)) 
-        G.add_node(Kind.DIMS, ge.GenIndexDims(self.comp_dims), Kind.RANKS)
+        G.add_node(Kind.DTYPES, ge.DTypes(self.dtype_cons)) 
+        G.add_node(Kind.RANKS, ge.Ranks(self, self.rank_cons)) 
+        dims_obj = ge.IndexDimsGD(self.comp_dims, 1e5, 2e5)
+        G.add_node(Kind.DIMS, dims_obj, Kind.RANKS)
 
     def _add_pred_graph(self):
         pred_nodes = P.get_ordered_nodes()
@@ -318,6 +319,7 @@ class SchemaApi(object):
         self.index[idx] = description
         if min_rank is not None or max_rank is not None:
             self.rank_cons.add_rank_limits(idx, min_rank, max_rank)
+
 
     def arg_rank(self, arg_name, sig):
         """
@@ -443,7 +445,7 @@ class SchemaApi(object):
         arg_kname = base.kname(arg_name, Kind.ARG)
         self._set_arg_kname(arg_name, arg_kname)
         pred_obj = pr.ArgInt(arg_name, lo, hi)
-        gen_obj = ge.GenInt(lo, hi)
+        gen_obj = ge.Int(lo, hi)
         P.add_node(arg_kname, pred_obj, Kind.SCHEMA)
         G.add_node(arg_kname, gen_obj)
 
@@ -517,14 +519,14 @@ class SchemaApi(object):
         The rank of {rank_idx} determines which layout is mapped.
         """
         # Define the pseudo-arg
-        pseudo_gen = ge.GenLayout()
+        pseudo_gen = ge.Layout()
         pseudo_pred = pr.ArgLayout(arg_name, layouts)
         self.arg_pseudo('layout', pseudo_pred, pseudo_gen, arg_name)
         pseudo_kname = base.kname('layout', Kind.PSEUDO)
 
         # define the real arg 
         arg_pred = pr.ArgDataFormat(arg_name, layouts, rank_idx)
-        arg_gen = ge.GenDataFormat(layouts, rank_idx)
+        arg_gen = ge.DataFormat(layouts, rank_idx)
         self.arg_func(arg_name, arg_pred, arg_gen, Kind.RANKS, pseudo_kname)
         self.num_layouts = len(layouts)
 
@@ -562,16 +564,16 @@ class SchemaApi(object):
             layout = tuple()
         else:
             sig_pobj = pr.LayoutOption(arg_name, sigs)
-            sig_gobj = ge.GenLayoutOption(sigs) 
+            sig_gobj = ge.LayoutOption(sigs) 
             layout = (base.kname('layout', Kind.PSEUDO),)
 
-        arg_pobj = pr.GetType(arg_name, tf.Tensor) 
+        arg_pobj = pr.ArgType(arg_name, tf.Tensor) 
         P.add_node(arg_kname, arg_pobj, Kind.SCHEMA)
         dtype_pnode = P.add_node(dtype_kname, pr.dtype, arg_kname)
         shape_pnode = P.add_node(shape_kname, pr.tensor_shape, arg_kname)
         sig_pnode = P.add_node(sig_kname, sig_pobj, *layout)
 
-        arg_gobj = ge.GenTensor(arg_name)
+        arg_gobj = ge.Tensor(arg_name)
         sig_gnode = G.add_node(sig_kname, sig_gobj, *layout)
         G.add_node(arg_kname, arg_gobj, sig_kname,  Kind.DIMS, Kind.DTYPES) 
         dims_gnode = G.get_node(Kind.DIMS)
@@ -587,10 +589,11 @@ class SchemaApi(object):
         idims_pnode.append_parent(shape_pnode)
         idims_pnode.append_parent(sig_pnode)
 
-    def _arg_shape_type(self, arg_name, _type, *sigs):
+    def _arg_shape_func(self, arg_name, sigs, _type, pred_obj, gen_obj):
         """
-        Backend function for arg_shape and arg_shape_tensor
+        Backend function for arg_shape_* API functions 
         """
+        # TODO: add obj arguments
         if len(sigs) != 1 and len(sigs) != self.num_layouts:
             raise SchemaError(
                 f'{type(self).__qualname__}: There are {self.num_layouts} '
@@ -598,19 +601,8 @@ class SchemaApi(object):
                 f'{len(sigs)} elements of \'*sigs\' argument.')
 
         self._set_arg_kname(arg_name, karg(arg_name))
-
-        arg_pobj = pr.GetType(arg_name, _type)
-        if _type == list:
-            shape_pobj = pr.Shape(arg_name)
-            gen_obj = ge.GenShape()
-        elif _type == tf.Tensor:
-            shape_pobj = pr.ShapeTensor(arg_name)
-            gen_obj = ge.GenTensorShape()
-        elif _type == int:
-            shape_pobj = pr.ShapeInt(arg_name)
-            gen_obj = ge.GenIntShape()
-        else:
-            raise SchemaError(f'unsupported type {_type}')
+        arg_pobj = pr.ArgType(arg_name, _type)
+        shape_pobj = pred_obj
 
         if len(sigs) == 1:
             sig_pobj = lambda: (True, sigs[0])
@@ -618,7 +610,7 @@ class SchemaApi(object):
             layout = tuple()
         else:
             sig_pobj = pr.LayoutOption(arg_name, sigs)
-            sig_gobj = ge.GenLayoutOption(sigs) 
+            sig_gobj = ge.LayoutOption(sigs) 
             layout = (base.kname('layout', Kind.PSEUDO),)
 
         arg_kname = karg(arg_name)
@@ -647,14 +639,18 @@ class SchemaApi(object):
         # arg_name:arg (int list)
         # arg_name:shape (int list, the same value as :arg)
         # arg_name:sig (str, the associated signature)
-        return self._arg_shape_type(arg_name, list, *sigs)
+        pred_obj = pr.ShapeList(arg_name)
+        gen_obj = ge.ShapeList()
+        return self._arg_shape_func(arg_name, sigs, list, pred_obj, gen_obj)
 
     def arg_shape_int(self, arg_name, *sigs):
         """
         Register {arg_name} as an integer parameter which defines the shape of
         a signature.
         """
-        return self._arg_shape_type(arg_name, int, *sigs)
+        pred_obj = pr.ShapeInt(arg_name)
+        gen_obj = ge.ShapeInt()
+        return self._arg_shape_func(arg_name, sigs, int, pred_obj, gen_obj) 
 
     def arg_shape_tensor(self, arg_name, *sigs):
         """
@@ -666,7 +662,10 @@ class SchemaApi(object):
         # arg_name:shape (int list, the contents of the tensor)
         # arg_name:sig (str, the associated signature)
         # (no dtype node is created)
-        return self._arg_shape_type(arg_name, tf.Tensor, *sigs) 
+        pred_obj = pr.ShapeTensor(arg_name)
+        gen_obj = ge.ShapeTensor()
+        return self._arg_shape_func(arg_name, sigs, tf.Tensor, pred_obj,
+                gen_obj)
 
     def arg_shape_tensor2d(self, arg_name, *sigs):
         """
@@ -683,8 +682,8 @@ class SchemaApi(object):
         # arg_name.i:shape (the i'th shape)
         # arg_name.i:sig (the i'th signature)
         self._set_arg_kname(arg_name, karg(arg_name))
-        arg_pobj = pr.GetType(arg_name, tf.Tensor)
-        arg_gobj = ge.GenTensorShape2D()
+        arg_pobj = pr.ArgType(arg_name, tf.Tensor)
+        arg_gobj = ge.ShapeTensor2D()
         P.add_node(karg(arg_name), arg_pobj, Kind.SCHEMA)
         idims_pnode = P.get_node(Kind.IDIMS)
         ten_gnode = G.add_node(karg(arg_name), arg_gobj, Kind.DIMS)
@@ -700,7 +699,7 @@ class SchemaApi(object):
                 sig_gnode = G.add_node(sig_kname, lambda: [sig]) 
             else:
                 sig_pobj = pr.LayoutOption(arg_name, list(sig))
-                sig_gobj = ge.GenLayoutOption(list(sig))
+                sig_gobj = ge.LayoutOption(list(sig))
                 sig_pnode = P.add_node(sig_kname, sig_pobj, layout_kname)
                 sig_gnode = G.add_node(sig_kname, sig_gobj, layout_kname) 
 
@@ -708,6 +707,43 @@ class SchemaApi(object):
             idims_pnode.append_parent(shp_pnode)
             idims_pnode.append_parent(sig_pnode)
             ten_gnode.append_parent(sig_gnode)
+
+    def add_index_predicate(self, pred_name, status_func, index_combo):
+        """
+        Registers {status_func} with the schema to be used as an additional
+        predicate for {indexes} dimensions.
+
+        {pred_name} is a name given to this custom predicate.  It may be used
+        in error messages.
+
+        Called as status_func(*index_shapes), where index_shapes are the
+        resolved shapes of each index, in order, in {index_combo}
+
+        status_func must return an instance of SchemaStatus
+
+        Custom status functions are found in the flib module.
+        """
+        pobj = pr.Dims(pred_name, status_func, index_combo)
+        dims_kname = kname(pred_name, Kind.NONE)
+        dims_pnode = P.add_node(dims_kname, pobj, Kind.IDIMS, Kind.CDIMS)
+
+    def add_index_generator(self, gen_func, index_combo, *gen_args):
+        """
+        Registers {gen_func_obj} with the schema to be used to generate
+        dimension combinations for {index_combo}, which is a string consisting
+        of individual index one-letter codes.
+
+        It is called as gen_func(*gen_args) and returns a list of shape tuples.
+        The shapes in each shape tuple correspond with the indices in
+        index_combo.
+
+        Custom generator function objects are found in the flib module.
+        """
+        dims_kname = kname(index_combo, Kind.DIMS)
+        gobj = ge.Dims(gen_func, index_combo, gen_args)
+        dims_gnode = G.add_node(dims_kname, gobj, Kind.RANKS)
+        bsearch_dims_gnode = G.get_node(Kind.DIMS)
+        bsearch_dims_gnode.append_parent(dims_gnode)
 
     def return_tensor(self, *sigs):
         """
@@ -735,7 +771,7 @@ class SchemaApi(object):
             layout = tuple()
         else:
             sig_pobj = pr.LayoutOption(str(index), sigs)
-            sig_gobj = ge.GenLayoutOption(sigs) 
+            sig_gobj = ge.LayoutOption(sigs) 
             layout = (base.kname('layout', Kind.PSEUDO),)
 
         rten_pobj = pr.GetReturnTensor(index)

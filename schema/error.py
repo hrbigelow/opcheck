@@ -120,6 +120,12 @@ class RankDependentArgError(SchemaStatus):
     def __init__(self, arg_name):
         self.arg_name = arg_name
 
+class CustomError(SchemaStatus):
+    def __init__(self, message):
+        self.msg = message
+
+    def message(self, op):
+        return self.msg
 
 class ShapeError(SchemaStatus):
     """

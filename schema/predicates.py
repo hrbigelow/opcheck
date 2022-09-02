@@ -12,7 +12,41 @@ method which is expected to return one of:
 
 where <value> is used by the function object in each child node.
 """
-class GetType(object):
+
+class And(object):
+    def __init__(self, *obj_args):
+        if len(obj_args) % 2 != 0:
+            raise RuntimeError(
+                f'And: got uneven number of arguments.  Call as: '
+                f'obj1, args1, obj2, args2, ...')
+        self.calls = []
+        for i in range(0, len(obj_args), 2):
+            self.calls.append(obj_args[i], obj_args[i+1])
+
+    def __call__(self, *args):
+        val = None
+        is_first = True
+        for obj, inds in self.calls:
+            call = tuple(args[i] for i in inds)
+            if is_first:
+                valid, val = obj(*call)
+            else:
+                valid, val = obj(val, *call)
+            is_first = False
+            if not valid:
+                return valid, val
+        return valid, val
+
+class ArgListShape(And):
+    def __init__(self, arg_name):
+        super().__init__(
+                ArgType(arg_name, list), (0,), 
+                ListShape(arg_name), (1,))
+
+class ArgType(object):
+    """
+    Validate that the argument is of allowed type.  Used in Kind.ARG nodes.
+    """
     def __init__(self, arg_name, allowed_types):
         self.arg_name = arg_name
         self.allowed_types = allowed_types
@@ -23,17 +57,25 @@ class GetType(object):
             return False, ArgTypeError(self.arg_name)
         else:
             return True, arg_val
-    
-class GetTensor(object):
-    def __init__(self, arg_name):
-        self.arg_name = arg_name
 
-    def __call__(self, op):
-        ten = op._get_arg(self.arg_name)
-        if not isinstance(ten, tf.Tensor):
-            return False, ArgTypeError(self.arg_name)
+class ArgListShape(ArgType):
+    def __init__(self, arg_name, pred_func):
+        super().__init__(arg_name, list)
+        self.func = pred_func
+
+    def __call__(self, op, *args):
+        valid, shape = super().__call__(op)
+        if not valid:
+            return valid, shape 
+        elif not all(isinstance(v, int) for v in shape):
+            return False, ArgValueError(self.arg_name, shape)
+        elif not all(v >= 0 for v in shape):
+            return False, ArgValueError(self.arg_name, shape)
         else:
-            return True, ten
+            return self.func(shape, *args)
+
+
+
 
 class GetReturnTensor(object):
     def __init__(self, index):
@@ -83,21 +125,6 @@ class ArgFunc(object):
         arg_val = op._get_arg(self.arg_name)
         return self.pred_func(arg_val, *args)
 
-
-class ArgString(object):
-    """
-    Retrieve the value for {arg_name} and validate that it is a string
-    """
-    def __init__(self, arg_name):
-        self.arg_name = arg_name
-
-    def __call__(self, op):
-        arg_val = op._get_arg(self.arg_name)
-        if isinstance(arg_val, str):
-            return True, arg_val
-        else:
-            return False, ArgValueError(self.arg_name, arg_val)
-
 def dtype(tensor):
     return True, tensor.dtype
 
@@ -109,20 +136,24 @@ def predicted_shape(idims_map, cdims_map, sig):
     shape = [ d for s in sig for d in dims_map[s] ]
     return True, shape
 
-class Shape(object):
+class ShapeList(object):
+    """
+    Interpret the contents as a shape.  Used in Kind.SHAPE nodes 
+    """
     def __init__(self, arg_name):
         self.arg_name = arg_name
 
-    def __call__(self, shape):
+    def __call__(self, shape, *shapes):
         if not all(isinstance(v, int) for v in shape):
             return False, ArgValueError(self.arg_name, shape)
         if not all(v >= 0 for v in shape):
             return False, ArgValueError(self.arg_name, shape)
-        return True, shape
-
+        else:
+            return True, shape
+        
 class ShapeInt(object):
     """
-    Interpret the integer as a shape
+    Interpret the integer as a shape.  Used in Kind.SHAPE nodes
     """
     def __init__(self, arg_name):
         self.arg_name = arg_name
@@ -133,20 +164,33 @@ class ShapeInt(object):
         else:
             return True, i
 
-class ShapeTensor(object):
+class ShapeTensorFunc(object):
     """
-    Interpret the tensor contents as a shape
+    Interpret the tensor contents as a shape.
+    Additionally, perform the checks defined by {pred_func}.
+    {pred_func} accepts the integer list shape extracted from the tensor as
+    well as any integer lists provided by *shapes.
     """
-    def __init__(self, arg_name):
+    def __init__(self, arg_name, pred_func):
         self.arg_name = arg_name
+        self.func = pred_func 
 
-    def __call__(self, ten):
+    def __call__(self, ten, *shapes):
         if ten.dtype != tf.int32:
             return False, ArgValueError(self.arg_name, ten)
         nums = ten.numpy().tolist()
         if any(n < 0 for n in nums):
             return False, ArgValueError(self.arg_name, ten)
-        return True, nums
+        else:
+            return self.func(nums, *shapes)
+
+class ShapeTensor(ShapeTensorFunc):
+    """
+    Specialization of ShapeTensorFunc that performs no additional checks
+    """
+    def __init__(self, arg_name):
+        pred_func = lambda shape: (True, shape)
+        super().__init__(arg_name, pred_func)
 
 class ShapeTensorSlice(object):
     """
@@ -222,7 +266,10 @@ def get_sig_shape_map(kwargs):
     ss_map = { d[kname(p,Kind.SIG)] : d[kname(p,Kind.SHAPE)] for p in pfxs }
     return ss_map
 
-def input_index_dims(rank_map, **kwargs):
+def input_dims(rank_map, **kwargs):
+    """
+    Used by the IDIMS node
+    """
     sig_shape = get_sig_shape_map(kwargs)
     input_inds = { idx for sig in sig_shape.keys() for idx in sig }
     index_dims = {}
@@ -241,6 +288,24 @@ def input_index_dims(rank_map, **kwargs):
         else:
             index_dims[idx] = idx_shapes.pop()
     return True, index_dims
+
+class Dims(object):
+    """
+    Validate the combination of index shapes using the enclosed function.
+    status_func accepts the shapes of indices in index_combo in order.
+    It returns an instance of SchemaStatus.
+    """
+    def __init__(self, name, status_func, index_combo):
+        self.name = name
+        self.func = status_func 
+        self.indices = index_combo
+
+    def __call__(self, idims_map, cdims_map):
+        dims_map = { **idims_map, **cdims_map }
+        shapes_list = [ dims_map[i] for i in self.indices ]
+        status = self.func(*shapes_list)
+        valid = isinstance(status, Success)
+        return valid, status
 
 class ComputedDims(object):
     def __init__(self, comp_dims):

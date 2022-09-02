@@ -1,10 +1,12 @@
+import tensorflow as tf
 from .error import SchemaError
 
 def kpfx(kname):
     return kname.split(':')[0]
 
 def kind(kname):
-    return kname[kname.index(':'):]
+    idx = kname.index(':')
+    return kname[idx:]
 
 def kname(prefix, kind):
     return prefix+kind
@@ -22,11 +24,12 @@ class Kind(object):
     # these cannot have prefixes
     SCHEMA = ':schema'
     DTYPES = ':dtypes'
-    RANKS = ':index_ranks'
-    IDIMS = ':input_index_dims'
+    RANKS = ':ranks'
+    IDIMS = ':input_dims'
     CDIMS = ':computed_dims'
-    DIMS = ':all_dims'
+    DIMS = ':dims'
     PSHAPE = ':predicated_shape'
+    NONE = ':none'
 
     # these must have prefixes
     DTYPE = ':dtype'
@@ -146,6 +149,9 @@ class CompDims(object):
         self.funcs[index] = comp_func
         self.args[index] = arg_knames
 
+    def indices(self):
+        return set(self.funcs.keys())
+
     def get_args(self):
         return { a for l in self.args.values() for a in l }
 
@@ -155,14 +161,12 @@ class CompDims(object):
             arg_names = self.args[index]
             call_args = tuple(kwargs[a] for a in arg_names)
             comp_dims = func(*call_args)
-            if (not isinstance(comp_dims, list) or
-                not all(isinstance(d, int) for d in comp_dims)):
-                types = tuple(type(d) for d in comp_dims)
+            if not (isinstance(comp_dims, tf.Tensor) and
+                    comp_dims.shape.rank == 1):
                 raise SchemaError(
                     f'{type(self).__qualname__}: function \'{func.__name__}\' '
-                    f'registered with computed_dims must return a list of '
-                    f'integers.\n'
-                    f'Instead received \'{comp_dims}\' with types \'{types}\'')
+                    f'registered with computed_dims must return a 1D'
+                    f'tensor.  Got \'{comp_dims}\'')
             comp_dims_map[index] = comp_dims
         return comp_dims_map
 

@@ -1,15 +1,15 @@
 import opcheck
-from schema import Broadcastable as B, Kind
+from schema import Kind, flib
 
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
     op.add_index('i', 'input spatial', 1, 3)
-    op.add_index('f', 'filter spatial')
+    op.add_index('f', 'filter spatial', None, None)
     op.add_index('o', 'output spatial')
     op.add_index('k', 'input channel', 1, 1)
     op.add_index('l', 'output channel', 1, 1)
-    op.add_index('s', 'strides')
-    op.add_index('d', 'dilations')
+    op.add_index('s', 'strides', None, None)
+    op.add_index('d', 'dilations', None, None)
 
     op.equate_ranks('f', 'i')
     op.equate_ranks('o', 'i')
@@ -31,21 +31,25 @@ def init_schema(op):
     op.valid_dtypes('input', ('int32', 'float32'))
     op.equate_dtypes('filters', 'input')
 
-    # constraints
+    op.add_index_predicate('stride-dilation exclusion', flib.not_both_over_one,
+            'sd')
+    op.add_index_generator(flib.gen_not_both_over_one, 'sd', 1, 10)
+    op.add_index_generator(flib.gen_range, 'f', 3, 10)
     
     # compute output spatial dimension 
     def odims(dims_map, padding):
-        idims = B(dims_map['i'])
-        fdims = B(dims_map['f'])
-        strides = B(dims_map['s'])
-        dilations = B(dims_map['d'])
+        idims = dims_map['i']
+        fdims = dims_map['f']
+        strides = dims_map['s']
+        dilations = dims_map['d']
 
         if padding == 'VALID':
             pad_filter_dims = (fdims - 1) * dilations + 1
-            out = (idims - pad_filter_dims + 1).ceildiv(strides)
+            tmp = idims - pad_filter_dims + 1
+            out = flib.ceildiv(tmp, strides)
         else:
-            out = idims.ceildiv(strides)
-        return out.val
+            out = flib.ceildiv(idims, strides)
+        return out 
 
     op.computed_dims('o', odims, Kind.IDIMS, 'padding')
     op.return_tensor('blo', 'bol')
