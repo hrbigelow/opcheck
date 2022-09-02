@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 from .error import *
 from numpy.random import randint
 
@@ -10,7 +11,12 @@ Schema API calls:
     add_index_generator
 """
 def diff_ceil(x):
-    return tf.grad_pass_through(tf.math.ceil)(x)
+    if isinstance(x, tf.Tensor):
+        return tf.grad_pass_through(tf.math.ceil)(x)
+    elif isinstance(x, np.ndarray):
+        return np.ceil(x)
+    else:
+        return math.ceil(x)
 
 def ceildiv(a, b):
     return diff_ceil(a / b)

@@ -1,4 +1,5 @@
 import sys
+import numpy as np
 import tensorflow as tf
 from .error import *
 from . import util
@@ -73,9 +74,6 @@ class ArgListShape(ArgType):
             return False, ArgValueError(self.arg_name, shape)
         else:
             return self.func(shape, *args)
-
-
-
 
 class GetReturnTensor(object):
     def __init__(self, index):
@@ -312,7 +310,16 @@ class ComputedDims(object):
         self.comp_dims = comp_dims
 
     def __call__(self, **kwargs):
+        # convert dims tuples to np.arrays
+        dims_map = kwargs.get(Kind.IDIMS, None)
+        if dims_map is not None:
+            dims_map = { k: np.array(v) for k, v in dims_map.items() }
+            kwargs[Kind.IDIMS] = dims_map
+
         comp_dims_map = self.comp_dims(**kwargs)
+        # convert back to tuples
+        comp_dims_map = { k: tuple(v.tolist()) for k, v in
+                comp_dims_map.items() }
         for idx, dims in comp_dims_map.items():
             if any(c < 0 for c in dims):
                 return False, NegativeDimsError(idx, dims)

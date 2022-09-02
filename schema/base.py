@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 from .error import SchemaError
 
 def kpfx(kname):
@@ -133,6 +134,8 @@ class DTypeConstraints(object):
 class CompDims(object):
     """
     Encapsulate the functions and arguments for computed index dimensions.
+    The funcs are executed with tf.float32 tensor inputs and outputs, despite
+    the fact that they are searching for integer dimensions.
     """
     def __init__(self):
         # idx => func
@@ -161,12 +164,16 @@ class CompDims(object):
             arg_names = self.args[index]
             call_args = tuple(kwargs[a] for a in arg_names)
             comp_dims = func(*call_args)
-            if not (isinstance(comp_dims, tf.Tensor) and
-                    comp_dims.shape.rank == 1):
+            if not (
+                    (isinstance(comp_dims, tf.Tensor) and
+                        comp_dims.shape.rank == 1) or
+                    (isinstance(comp_dims, np.ndarray) and
+                        comp_dims.ndim == 1)
+                    ):
                 raise SchemaError(
                     f'{type(self).__qualname__}: function \'{func.__name__}\' '
                     f'registered with computed_dims must return a 1D'
-                    f'tensor.  Got \'{comp_dims}\'')
+                    f'tf.Tensor or np.ndarray.  Got \'{comp_dims}\'')
             comp_dims_map[index] = comp_dims
         return comp_dims_map
 

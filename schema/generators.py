@@ -1,4 +1,5 @@
 import sys
+import math
 import tensorflow as tf
 import logging
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
@@ -109,8 +110,8 @@ class IndexDimsGD(object):
     def __init__(self, comp_dims, min_nelem, max_nelem):
         self.lr = 5.0
         self.comp_dims = comp_dims
-        self.min_nelem = min_nelem
-        self.max_nelem = max_nelem
+        self.log_min_nelem = math.log(min_nelem)
+        self.log_max_nelem = math.log(max_nelem)
         self.vars_map = {}
         self.const_map = {}
         self.calc_map = {}
@@ -145,14 +146,31 @@ class IndexDimsGD(object):
 
     def elem_loss(self, kwargs):
         self.calc_dims(kwargs)
-        return tf.reduce_sum(tuple(self.num_elem(s) for s in self.sigs))
+        nelem = tf.reduce_sum(tuple(self.num_elem(s) for s in self.sigs))
+        log_nelem = tf.math.log(nelem)
+        # the distance from interval [self.log_min_nelem, self.log_max_nelem]
+        # done in log space since these are products of several variables
+        ival_dist = tf.maximum(
+                tf.nn.relu(self.log_min_nelem - log_nelem),
+                tf.nn.relu(log_nelem - self.log_max_nelem)
+                )
+
+        # should I use ival_dist**2 instead?
+        return 2.0 * ival_dist
 
     def index_loss(self, kwargs):
-        # ensure all calculated dimensions 
+        # ensure all computed dimensions are >= 1
         self.calc_dims(kwargs)
         c = tf.concat(list(self.calc_map.values()), axis=0)
         loss = tf.reduce_sum(tf.nn.relu(1.0 - c))
         return loss
+
+    def dims_map(self):
+        m = {}
+        all_map = { **self.vars_map, **self.const_map, **self.calc_map }
+        for idx, var in all_map.items():
+            m[idx] = var.numpy().astype(np.int32).tolist() 
+        return m
 
     def __call__(self, **kwargs):
         """
@@ -195,31 +213,33 @@ class IndexDimsGD(object):
         # TODO: include sigs for return tensors
 
         opt = tf.keras.optimizers.Adam(learning_rate=self.lr)
+        losses = ( 
+            # ensures positive index dimensions 
+            lambda kw: self.index_loss(kw), 
+            # adjusts dims so total number of elements are within a range 
+            lambda kw: self.elem_loss(kw) 
+        )
 
+        # The first phase (index_loss) ensures that all index dims are positive
+        # (free, generated, and computed). Under that condition, the next
+        # surface (elem_loss) is monotonically increasing in all free
+        # dimensions.  And, because of the finite interval solution, zero loss
+        # is achievable
         with tf.device('/device:CPU:0'):
-            for step in range(1000):
-                with tf.GradientTape() as tape:
-                    objective = self.index_loss(kwargs)
-                free_vars = self.vars_map.values() 
-                grads = tape.gradient(objective, free_vars)
-                opt.apply_gradients(zip(grads, free_vars))
-                print(f'index loss: {step}: {objective:10.2f}')
-                if objective == 0.0:
-                    break
-
-            for step in range(1000):
-                with tf.GradientTape() as tape:
-                    objective = self.elem_loss(kwargs)
-                free_vars = self.vars_map.values() 
-                grads = tape.gradient(objective, free_vars)
-                opt.apply_gradients(zip(grads, free_vars))
-                print(f'elem loss: {step}: {objective:10.2f}')
-                if objective == 0.0:
-                    break
+            for loss_func in losses:
+                for step in range(1000):
+                    with tf.GradientTape() as tape:
+                        objective = loss_func(kwargs)
+                    free_vars = self.vars_map.values() 
+                    grads = tape.gradient(objective, free_vars)
+                    opt.apply_gradients(zip(grads, free_vars))
+                    # print(f'loss: {step}: {objective:5.3f}')
+                    if objective == 0.0:
+                        break
             
-        dims_map = { i: v.numpy().astype(np.int32).tolist() for i, v in
-                self.vars_map.items() }
-        return dims_map
+        # extract the dims map
+        dims_map = self.dims_map()
+        return [dims_map]
 
 
 class IndexDimsBSearch(object):

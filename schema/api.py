@@ -119,7 +119,8 @@ class SchemaApi(object):
                 if isinstance(e, SchemaError):
                     raise e
                 else:
-                    print('in validate_schema, got exception: ', e)
+                    pass
+                    # print('in validate_schema, got exception: ', e)
 
             msg, err = self._validation_report(config)
             print(f'{msg}\n{err}')
@@ -319,7 +320,6 @@ class SchemaApi(object):
         self.index[idx] = description
         if min_rank is not None or max_rank is not None:
             self.rank_cons.add_rank_limits(idx, min_rank, max_rank)
-
 
     def arg_rank(self, arg_name, sig):
         """
@@ -781,6 +781,8 @@ class SchemaApi(object):
         P.add_node(pshape_kname, pr.predicted_shape, Kind.IDIMS, Kind.CDIMS,
                 sig_name)
         P.add_node(valid_return, rvalid_pobj, ret_kname, pshape_kname) 
-        G.add_node(sig_name, sig_gobj, *layout) 
+        sig_gnode = G.add_node(sig_name, sig_gobj, *layout) 
+        dims_gnode = G.get_node(Kind.DIMS)
+        dims_gnode.append_parent(sig_gnode)
         self.num_returns += 1
 
