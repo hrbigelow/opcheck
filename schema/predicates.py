@@ -13,37 +13,6 @@ method which is expected to return one of:
 
 where <value> is used by the function object in each child node.
 """
-
-class And(object):
-    def __init__(self, *obj_args):
-        if len(obj_args) % 2 != 0:
-            raise RuntimeError(
-                f'And: got uneven number of arguments.  Call as: '
-                f'obj1, args1, obj2, args2, ...')
-        self.calls = []
-        for i in range(0, len(obj_args), 2):
-            self.calls.append(obj_args[i], obj_args[i+1])
-
-    def __call__(self, *args):
-        val = None
-        is_first = True
-        for obj, inds in self.calls:
-            call = tuple(args[i] for i in inds)
-            if is_first:
-                valid, val = obj(*call)
-            else:
-                valid, val = obj(val, *call)
-            is_first = False
-            if not valid:
-                return valid, val
-        return valid, val
-
-class ArgListShape(And):
-    def __init__(self, arg_name):
-        super().__init__(
-                ArgType(arg_name, list), (0,), 
-                ListShape(arg_name), (1,))
-
 class ArgType(object):
     """
     Validate that the argument is of allowed type.  Used in Kind.ARG nodes.
@@ -58,22 +27,6 @@ class ArgType(object):
             return False, ArgTypeError(self.arg_name)
         else:
             return True, arg_val
-
-class ArgListShape(ArgType):
-    def __init__(self, arg_name, pred_func):
-        super().__init__(arg_name, list)
-        self.func = pred_func
-
-    def __call__(self, op, *args):
-        valid, shape = super().__call__(op)
-        if not valid:
-            return valid, shape 
-        elif not all(isinstance(v, int) for v in shape):
-            return False, ArgValueError(self.arg_name, shape)
-        elif not all(v >= 0 for v in shape):
-            return False, ArgValueError(self.arg_name, shape)
-        else:
-            return self.func(shape, *args)
 
 class GetReturnTensor(object):
     def __init__(self, index):
@@ -96,18 +49,6 @@ class ValidReturnShape(object):
             return True, None
         else:
             return False, ReturnShapeError(self.index) 
-
-class Sig(object):
-    """
-    Compute a signature using {sig_func} and optionally additional arguments.
-    Argument names of sig_func are ignored and it is called with positional
-    arguments.  Always succeeds.
-    """
-    def __init__(self, sig_func):
-        self.sig_func = sig_func
-
-    def __call__(self, *args):
-        return True, self.sig_func(*args)
 
 class ArgFunc(object):
     """
@@ -333,23 +274,6 @@ class ComputedDims(object):
             if any(c < 0 for c in dims):
                 return False, NegativeDimsError(idx, dims)
         return True, comp_dims_map
-
-class SigRank(object):
-    """
-    Expect the value of {arg_name} to be a list of length equal to the rank of
-    {sig}
-    """
-    def __init__(self, arg_name, sig):
-        self.arg_name = arg_name
-        self.sig = sig
-
-    def __call__(self, op, rank_map):
-        arg_val = op._get_arg(self.arg_name)
-        rank = sum(rank_map[s] for s in self.sig)
-        if len(arg_val) != rank:
-            return False, SigRankError(arg_name, rank, len(arg_val))
-        else:
-            return True, arg_val
 
 class ArgLayout(object):
     """

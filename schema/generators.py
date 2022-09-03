@@ -63,18 +63,6 @@ class Ranks(object):
             rank_maps.append(m)
         return rank_maps
 
-class Sig(object):
-    """
-    Generate a single signature using {sig_func} and any additional arguments.
-    Argument names are ignored so that the schema-writer doesn't need to know
-    the Kind.* extensions
-    """
-    def __init__(self, sig_func):
-        self.sig_func = sig_func
-
-    def __call__(self, *args):
-        return [self.sig_func(*args)]
-
 class Rank(object):
     """
     Generate the rank of a given signature
@@ -276,89 +264,6 @@ class IndexDimsGD(object):
         dims_map = self.dims_map()
         return [dims_map]
 
-
-class IndexDimsBSearch(object):
-    """
-    Generate free (input and return) index dims.
-    call inputs:
-    RANKS, all SIG nodes (input and return), and individual DIMS nodes
-    """
-    def __init__(self, comp_dims):
-        self.comp_dims = comp_dims
-
-    def calc_dims(self, idims_map, kwargs):
-        arg_names = self.comp_dims.get_args()
-        call = {}
-        for a in arg_names:
-            if a == Kind.IDIMS:
-                call[a] = idims_map
-            else:
-                call[a] = kwargs[a]
-        calc_dims_map = self.comp_dims(**call)
-        return calc_dims_map
-
-    def calc_inds(self):
-        return list(self.comp_dims.funcs.keys())
-
-    def input_dims_map(self, kwargs):
-        dims_map = {}
-        for k, v in kwargs.items():
-            if kind(k) == Kind.DIMS: 
-                dims_map.update(v)
-        return dims_map
-
-    def get_free_inds(self, rank_map, kwargs):
-        all_inds = list(rank_map.keys())
-        comp_inds = list(self.comp_dims.funcs.keys())
-        input_inds = list(self.input_dims_map(kwargs))
-        return [ i for i in all_inds if i not in comp_inds and i not in
-            input_inds ] 
-
-    def dims_map(self, rank_map, flat_dims, kwargs):
-        offset = 0
-        free_inds = self.get_free_inds(rank_map, kwargs)
-        dims_map = {}
-        for i, idx in enumerate(free_inds):
-            rank = rank_map[idx] 
-            dims_map[idx] = flat_dims[offset:offset+rank]
-            offset += rank
-        input_dims_map = self.input_dims_map(kwargs)
-        dims_map.update(input_dims_map)
-        calc_dims_map = self.calc_dims(dims_map, kwargs) 
-        return { **dims_map, **calc_dims_map } 
-
-    def nelem(self, flat_dims, kwargs):
-        rank_map = kwargs[Kind.RANKS]
-        sig_keys = [ k for k in kwargs.keys() if kind(k) == Kind.SIG ]
-        sigs_map = { kpfx(k): kwargs[k] for k in sig_keys }
-        dims_map = self.dims_map(rank_map, flat_dims, kwargs)
-
-        # Any tensor with negative dimensions is considered to have a negative
-        # number of elements.  Return -1 so that the system searches for a
-        # higher value.  This relies on the objective function being
-        # monotonically increasing in all flat_dims
-        if any(d < 0 for sh in dims_map.values() for d in sh):
-            return -1
-        sum_nelem = 0
-        for sig in sigs_map.values():
-            shape = [d for s in sig for d in dims_map[s]]
-            sum_nelem += np.prod(shape)
-        return sum_nelem
-
-    def __call__(self, **kwargs):
-        def nelem_wrap(flat_dims):
-            return self.nelem(flat_dims, kwargs)
-        rank_map = kwargs[Kind.RANKS]
-        free_inds = self.get_free_inds(rank_map, kwargs)
-        k = sum(rank for idx, rank in rank_map.items() if idx in free_inds)
-        min_nelem = 100000
-        max_nelem = 200000
-        print(', '.join(f'{k}{i}' for k in free_inds for i in range(1, rank_map[k]+1)))
-        dims, niter = util.bsearch_integers(k, min_nelem, max_nelem, nelem_wrap)
-        print('num iterations: ', niter)
-        dims_map = self.dims_map(rank_map, dims, kwargs)
-        return [dims_map]
-
 class Tensor(object):
     def __init__(self, arg_name):
         self.arg_name = arg_name
@@ -412,8 +317,6 @@ class ShapeIndex(object):
         shape = dims_map[self.index]
         return [shape]
 
-        
-
 class ShapeTensor(object):
     """
     Generate the current shape of the input signature as a tensor
@@ -449,21 +352,6 @@ class Closure(object):
     def __call__(self):
         return self.obj
 
-class SigRank(object):
-    """
-    Generate an integer list of length equal to the rank of {sig}, whose
-    elements lie in [lo, hi]
-    """
-    def __init__(self, sig, lo, hi):
-        self.sig = sig
-        self.lo = lo
-        self.hi = hi
-
-    def __call__(self, rank_map):
-        rank = sum(rank_map[s] for s in self.sig)
-        val = [randint(self.lo, self.hi) for _ in range(rank)]
-        return [val]
-
 class Layout(object):
     def __init__(self, num_layouts):
         self.num_layouts = num_layouts
@@ -491,7 +379,6 @@ class LayoutOption(object):
 
     def __call__(self, layout):
         return [self.options[layout]]
-
 
 class Int(object):
     def __init__(self, lo, hi):

@@ -1,5 +1,5 @@
 import opcheck
-from schema import Broadcastable, Kind
+from schema import Kind
 
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)

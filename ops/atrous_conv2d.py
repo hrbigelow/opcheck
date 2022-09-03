@@ -1,5 +1,5 @@
 import opcheck
-from schema import Broadcastable as B, Kind
+from schema import Kind
 
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
@@ -19,14 +19,14 @@ def init_schema(op):
     op.equate_dtypes('filters', 'value')
 
     def odims(dims_map, padding):
-        idims = B(dims_map['i'])
-        fdims = B(dims_map['f'])
-        rate = B(dims_map['r'])
+        idims = dims_map['i']
+        fdims = dims_map['f']
+        rate = dims_map['r']
         if padding == 'VALID':
             out = idims - (fdims - 1) * 2
         else:
             out = idims
-        return B.getval(out)
+        return out
 
     op.computed_index('o', odims, Kind.IDIMS, 'padding')
     # op.return_tensor()

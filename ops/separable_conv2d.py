@@ -1,5 +1,5 @@
 import opcheck
-from schema import Kind, Broadcastable
+from schema import Kind
 
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
@@ -30,10 +30,10 @@ def init_schema(op):
     op.equate_dtypes('pointwise_filter', 'input')
 
     def pdims(idims_map):
-        cmul = Broadcastable(idims_map['c'])
-        ichan = Broadcastable(idims_map['k'])
+        cmul = idims_map['c']
+        ichan = idims_map['k']
         flat = cmul * ichan
-        return Broadcastable.getval(flat)
+        return flat
 
     op.computed_index('p', pdims, Kind.IDIMS)
     op.computed_index('z', lambda: [1, 1])
