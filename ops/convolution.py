@@ -33,8 +33,8 @@ def init_schema(op):
 
     op.add_index_predicate('stride-dilation exclusion', flib.not_both_over_one,
             'sd')
-    op.add_index_generator(flib.gen_not_both_over_one, 'sd', 1, 10)
-    op.add_index_generator(flib.gen_range, 'f', 3, 10)
+    op.add_index_generator(flib.gen_not_both_over_one, 'sd', 'sd', 1, 10)
+    op.add_index_generator(flib.gen_range, 'f', 'f', 3, 10)
     
     # compute output spatial dimension 
     def odims(dims_map, padding):
@@ -51,7 +51,7 @@ def init_schema(op):
             out = flib.ceildiv(idims, strides)
         return out 
 
-    op.computed_dims('o', odims, Kind.IDIMS, 'padding')
+    op.computed_index('o', odims, Kind.IDIMS, 'padding')
     op.return_tensor('blo', 'bol')
 
 opcheck.register('tf.nn.convolution', init_schema)

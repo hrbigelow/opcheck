@@ -11,8 +11,8 @@ def init_schema(op):
     op.add_index('o', 'output spatial')
     op.add_index('l', 'output channel', 1, 1)
     op.add_index('p', 'pointwise channel', 1, 1)
-    op.add_index('s', 'strides', 1, None)
-    op.add_index('e', 'dilations', 1, None)
+    op.add_index('s', 'strides')
+    op.add_index('e', 'dilations')
 
     op.equate_ranks('d', 'i')
     op.equate_ranks('o', 'i')
@@ -35,8 +35,8 @@ def init_schema(op):
         flat = cmul * ichan
         return Broadcastable.getval(flat)
 
-    op.computed_dims('p', pdims, Kind.IDIMS)
-    op.computed_dims('z', lambda: [1, 1])
+    op.computed_index('p', pdims, Kind.IDIMS)
+    op.computed_index('z', lambda: [1, 1])
 
     op.arg_option('padding', ('VALID', 'SAME'))
 

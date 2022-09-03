@@ -1,5 +1,5 @@
 import opcheck
-from schema import Broadcastable, Kind
+from schema import Kind, flib
 import numpy as np
 
 def init_schema(op):
@@ -10,7 +10,13 @@ def init_schema(op):
     op.add_index('o', 'output spatial', 2, 2)
     op.add_index('f', 'output flattened', 1, 1)
     op.add_index('c', 'vect c channel', 1, 1)
-    op.add_index('s', 'block size', 2, None)
+    op.add_index('s', 'block size', 1, 1)
+
+    def cdims(dummy):
+        return [([4],)]
+    op.add_index_generator(cdims, 'c', 'c')
+
+    op.add_index_generator(flib.gen_blocked_sizes, 'is', 'i', 2, 8, 10, 100)
 
     data_formats = [ 
             { 2: 'NHWC' }, 
@@ -25,23 +31,21 @@ def init_schema(op):
 
     op.valid_dtypes('input', ('int32', 'float32'))
 
-    def output_dims(dims_map, block_size):
-        block_size = Broadcastable(block_size)
-        idims = Broadcastable(dims_map['i'])
-        odims = idims // block_size
-        return Broadcastable.getval(odims)
+    def output_dims(dims_map):
+        idims = dims_map['i']
+        block_size = dims_map['s']
+        odims = flib.floordiv(idims, block_size)
+        return odims
 
-    op.computed_dims('o', output_dims, Kind.IDIMS, 'block_size')
+    op.computed_index('o', output_dims, Kind.IDIMS)
 
-    def flattened_dims(dims_map, block_size):
-        idims = Broadcastable(dims_map['i'])
+    def flattened_dims(dims_map):
         kdims = dims_map['k']
-        block = idims % block_size
-        flat = np.prod((*Broadcastable.getval(block), *kdims))
-        return [int(flat)]
+        block_size = dims_map['s']
+        flat = block_size * block_size * flib.reduce_prod(kdims)
+        return flat
 
-    op.computed_dims('f', flattened_dims, Kind.IDIMS, 'block_size')
-    op.computed_dims('c', lambda: [4])
+    op.computed_index('f', flattened_dims, Kind.IDIMS)
 
 opcheck.register('tf.nn.space_to_depth', init_schema)
 

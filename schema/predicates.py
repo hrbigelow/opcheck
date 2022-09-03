@@ -160,7 +160,7 @@ class ShapeInt(object):
         if i < 0:
             return False, ArgValueError(self.arg_name, i)
         else:
-            return True, i
+            return True, [i]
 
 class ShapeTensorFunc(object):
     """
@@ -235,20 +235,23 @@ class IndexRanks(object):
         self.rcons = rank_cons
 
     def __call__(self, **kwargs):
-        k = len(self.op.index)
+        eq_map = self.rcons.equiv
+        free_inds = self.rcons.free_inds()
+        k = len(free_inds)
         mins = self.rcons.mins_inds()
         maxs = self.rcons.maxs_inds()
-        equiv = self.rcons.equiv_inds()
         const = self.rcons.const_inds(kwargs)
-        rank_list = list(util.feasible_region(k, mins, maxs, equiv, const))
-
-        if len(rank_list) == 0:
+        gen = util.feasible_region(k, mins, maxs, const)
+        ranks = next(gen, None)
+        if ranks is None:
             return False, NoMatchingRanks()
-        elif len(rank_list) > 1:
+        extra = next(gen, None)
+        if extra is not None:
             return False, AmbiguousRanks()
-        else:
-            index_ranks = dict(zip(self.op.index.keys(), rank_list[0]))
-            return True, index_ranks
+        index_ranks = dict(zip(free_inds, ranks))
+        eq_ranks = { trg: index_ranks[src] for trg, src in eq_map.items() }
+        index_ranks.update(eq_ranks)
+        return True, index_ranks
 
 def calc_sig_range(rank_map, idx, sig):
     ind = sig.index(idx)
@@ -264,28 +267,32 @@ def get_sig_shape_map(kwargs):
     ss_map = { d[kname(p,Kind.SIG)] : d[kname(p,Kind.SHAPE)] for p in pfxs }
     return ss_map
 
-def input_dims(rank_map, **kwargs):
+class InputDims(object):
     """
     Used by the IDIMS node
     """
-    sig_shape = get_sig_shape_map(kwargs)
-    input_inds = { idx for sig in sig_shape.keys() for idx in sig }
-    index_dims = {}
-    for idx in input_inds:
-        # find all usages of idx
-        idx_shapes = set()
-        for sig, shape in sig_shape.items():
-            if idx not in sig:
-                continue
-            sub_range = calc_sig_range(rank_map, idx, sig)
-            idx_shape = shape[slice(*sub_range)]
-            idx_shapes.add(tuple(idx_shape))
+    def __init__(self):
+        pass
 
-        if len(idx_shapes) != 1:
-            return False, IndexUsageError(idx)
-        else:
-            index_dims[idx] = idx_shapes.pop()
-    return True, index_dims
+    def __call__(self, rank_map, **kwargs):
+        sig_shape = get_sig_shape_map(kwargs)
+        input_inds = { idx for sig in sig_shape.keys() for idx in sig }
+        index_dims = {}
+        for idx in input_inds:
+            # find all usages of idx
+            idx_shapes = set()
+            for sig, shape in sig_shape.items():
+                if idx not in sig:
+                    continue
+                sub_range = calc_sig_range(rank_map, idx, sig)
+                idx_shape = shape[slice(*sub_range)]
+                idx_shapes.add(tuple(idx_shape))
+
+            if len(idx_shapes) != 1:
+                return False, IndexUsageError(idx)
+            else:
+                index_dims[idx] = idx_shapes.pop()
+        return True, index_dims
 
 class Dims(object):
     """
@@ -317,9 +324,11 @@ class ComputedDims(object):
             kwargs[Kind.IDIMS] = dims_map
 
         comp_dims_map = self.comp_dims(**kwargs)
-        # convert back to tuples
-        comp_dims_map = { k: tuple(v.tolist()) for k, v in
-                comp_dims_map.items() }
+        # convert back to integer tuples
+        comp_dims_map = { 
+                k: tuple(v.astype(np.int32).tolist()) 
+                for k, v in comp_dims_map.items() 
+                }
         for idx, dims in comp_dims_map.items():
             if any(c < 0 for c in dims):
                 return False, NegativeDimsError(idx, dims)
@@ -406,4 +415,11 @@ class LayoutOption(object):
 
     def __call__(self, layout):
         return True, self.sig_list[layout]
+
+class Closure(object):
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __call__(self):
+        return self.obj
 

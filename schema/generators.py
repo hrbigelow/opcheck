@@ -8,6 +8,7 @@ import itertools
 from random import randint
 from functools import partial
 from .base import Kind, kind, kpfx
+from .error import SchemaError
 from . import util
 
 class DTypes(object):
@@ -44,13 +45,23 @@ class Ranks(object):
         """
         mins = self.rcons.mins_inds()
         maxs = self.rcons.maxs_inds()
-        equiv = self.rcons.equiv_inds()
+        eq_map = self.rcons.equiv
+        free_inds = self.rcons.free_inds()
 
-        k = len(self.op.index)
-        index_order = list(self.op.index.keys())
-        gen = util.feasible_region(k, mins, maxs, equiv, {})
-        rank_list = list(gen)
-        return [dict(zip(index_order, ranks)) for ranks in rank_list]
+        k = len(free_inds)
+        gen = util.feasible_region(k, mins, maxs, {})
+        rank_maps = []
+        for ranks in gen:
+            m = dict(zip(free_inds, ranks))
+            if any(r > 100 for r in ranks):
+                raise SchemaError(
+                    f'Found rank > 100 in set of valid combinations of ranks. '
+                    f'rank_map: \'{m}\'. '
+                    f'Perhaps a constraint is missing.')
+            eq_ranks = { trg: m[src] for trg, src in eq_map.items() }
+            m.update(eq_ranks)
+            rank_maps.append(m)
+        return rank_maps
 
 class Sig(object):
     """
@@ -77,30 +88,45 @@ class Rank(object):
 
 class Dims(object):
     """
-    Generate dimensions for {index_combo} using {gen_func}.  Used in Kind.DIMS
+    Generate dimensions for {output_indices} using {gen_func}.  Used in Kind.DIMS
     nodes.  Has parent Kind.RANKS
 
     Calls gen_func(ranks_list, *gen_args).  ranks_list are the ranks of each
-    index in index_combo in order.
+    index in {input_indices} in order.
 
-    returns a list of shape tuples, one shape for each index in index_combo.  A
+    returns a list of shape tuples, one shape for each index in output_indices.  A
     shape is an integer list.  
 
-    For example, if index_combo has two indices, a return value could be:
+    For example, if output_indices has two indices, a return value could be:
     [ 
       ([1,2,3], [4,5]),
       ([6,4,2], [5,4]) 
     ]
     """
-    def __init__(self, gen_func, index_combo, gen_args):
-        self.indices = index_combo
+    def __init__(self, gen_func, output_indices, input_indices, gen_args):
+        self.output_indices = output_indices 
+        self.input_indices = input_indices 
         self.func = gen_func
         self.gen_args = gen_args
 
+    @staticmethod
+    def valid_return(vals):
+        return (
+                isinstance(vals, list) and
+                all(isinstance(v, tuple) for v in vals) and
+                all(isinstance(s, list) for v in vals for s in v)
+                )
+
     def __call__(self, ranks_map):
-        ranks_list = [ ranks_map[i] for i in self.indices ]
+        ranks_list = [ ranks_map[i] for i in self.input_indices ]
         vals = self.func(ranks_list, *self.gen_args)
-        return [ dict(zip(self.indices,v)) for v in vals ]
+        if not self.valid_return(vals):
+            raise SchemaError(
+                f'{type(self).__qualname__}: Custom Dims generation function '
+                f'\'{self.func.__name__}\' returned the wrong type.  Expected '
+                f'a list of shape tuples, got: '
+                f'{vals}')
+        return [ dict(zip(self.output_indices,v)) for v in vals ]
 
 class IndexDimsGD(object):
     """
@@ -129,18 +155,20 @@ class IndexDimsGD(object):
         self.calc_map = self.comp_dims(**call)
 
     def add_var(self, index, lo, hi, rank):
-        val = tf.random.uniform([rank], lo, hi)
-        cons_fun = lambda v: tf.clip_by_value(tf.round(v), 1.0, 1e10)
-        var = tf.Variable(val, constraint = cons_fun, dtype=tf.float32)
-        self.vars_map[index] = var
+        with tf.device('/device:CPU:0'):
+            val = tf.random.uniform([rank], lo, hi)
+            cons_fun = lambda v: tf.clip_by_value(tf.round(v), 1.0, 1e10)
+            var = tf.Variable(val, constraint = cons_fun, dtype=tf.float32)
+            self.vars_map[index] = var
 
     def add_const(self, index, val):
-        self.const_map[index] = tf.constant(val, dtype=tf.float32)
+        with tf.device('/device:CPU:0'):
+            self.const_map[index] = tf.constant(val, dtype=tf.float32)
 
     def num_elem(self, sig):
         all_map = { **self.vars_map, **self.const_map, **self.calc_map }
         v = [all_map[s] for s in sig]
-        c = tf.concat(v, axis=0)
+        c = tf.concat(v, axis=0) 
         nelem = tf.reduce_min(tf.sign(c)) * tf.abs(tf.reduce_prod(c))
         return nelem
 
@@ -161,7 +189,11 @@ class IndexDimsGD(object):
     def index_loss(self, kwargs):
         # ensure all computed dimensions are >= 1
         self.calc_dims(kwargs)
-        c = tf.concat(list(self.calc_map.values()), axis=0)
+        v = list(self.calc_map.values())
+        if len(v) == 0:
+            raise SchemaError(
+                f'Cannot use index_loss if no computed dims exist')
+        c = tf.concat(v, axis=0)
         loss = tf.reduce_sum(tf.nn.relu(1.0 - c))
         return loss
 
@@ -213,12 +245,14 @@ class IndexDimsGD(object):
         # TODO: include sigs for return tensors
 
         opt = tf.keras.optimizers.Adam(learning_rate=self.lr)
-        losses = ( 
-            # ensures positive index dimensions 
-            lambda kw: self.index_loss(kw), 
-            # adjusts dims so total number of elements are within a range 
-            lambda kw: self.elem_loss(kw) 
-        )
+        losses = []
+        if len(computed_inds) != 0:
+            # ensure computed inds are >= 1
+            losses.append(lambda kw: self.index_loss(kw))
+
+        # adjusts dims so total number of elements are within a range 
+        losses.append(lambda kw: self.elem_loss(kw))
+            
 
         # The first phase (index_loss) ensures that all index dims are positive
         # (free, generated, and computed). Under that condition, the next
@@ -233,7 +267,8 @@ class IndexDimsGD(object):
                     free_vars = self.vars_map.values() 
                     grads = tape.gradient(objective, free_vars)
                     opt.apply_gradients(zip(grads, free_vars))
-                    # print(f'loss: {step}: {objective:5.3f}')
+                    if step % 10 == 0:
+                        print(f'loss: {step}: {objective:5.3f}')
                     if objective == 0.0:
                         break
             
@@ -340,14 +375,19 @@ class Tensor(object):
 
 class ShapeInt(object):
     """
-    Generate the current shape of the input signature as an integer
+    Expect the shape of index to be rank 1 and extract the first component as
+    an integer.  
     """
     def __init__(self):
         pass
 
-    def __call__(self, dims_map, sig):
-        shape = [ d for s in sig for d in dims_map[s] ]
-        assert len(shape) == 1
+    def __call__(self, dims_map, index):
+        shape = dims_map[index]
+        if len(shape) != 1:
+            raise SchemaError(
+                f'{type(self).__qualname__}: index \'{index}\' has a '
+                f'non-rank-1 shape \'{shape}\'.  Cannot convert it to an '
+                f'integer.')
         return [shape[0]]
 
 class ShapeList(object):
@@ -398,7 +438,16 @@ class ShapeTensor2D(object):
         for sig in sigs:
             shape = [ d for s in sig for d in dims_map[s] ]
             rows.append(shape)
-        return tf.constant(rows, dtype=tf.int32)
+        ten = tf.constant(rows, dtype=tf.int32)
+        ten = tf.transpose(ten, (1,0))
+        return [ten]
+
+class Closure(object):
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __call__(self):
+        return self.obj
 
 class SigRank(object):
     """
@@ -416,11 +465,11 @@ class SigRank(object):
         return [val]
 
 class Layout(object):
-    def __init__(self):
-        pass
+    def __init__(self, num_layouts):
+        self.num_layouts = num_layouts
 
     def __call__(self):
-        return [0, 1]
+        return list(range(self.num_layouts))
 
 class DataFormat(object):
     """

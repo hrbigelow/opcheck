@@ -3,15 +3,17 @@ from schema import Kind, kname
 
 def init_schema(op):
     op.add_index('b', 'batch')
-    op.add_index('r', 'read location')
-    op.add_index('w', 'write location')
+    op.add_index('r', 'read location', 1, None)
+    op.add_index('w', 'write location', 1, None)
     op.add_index('e', 'slice element')
-    op.add_index('c', 'read address component')
+    op.add_index('c', 'read address component', 1, 1)
+
+    def genc(rank_list):
+        return [([rank_list[0]],)]
+
+    op.add_index_generator(genc, 'c', 'r')
 
     # allowed rank combinations
-    op.limit_ranks('c', 1, 1)
-    op.limit_ranks('r', 1, None)
-    op.limit_ranks('w', 1, None)
     op.limit_ranks('bre', None, 7)
     op.limit_ranks('bwc', None, 7)
 
@@ -29,11 +31,6 @@ def init_schema(op):
         return indices_shape[-1]
     inds_kname = kname('indices', Kind.SHAPE) 
     op.rank_constraint('r', rankr, inds_kname)
-
-    # allowed dims combinations (see below)
-    def dimsc(rank_map):
-        return [rank_map['r']]
-    op.computed_dims('c', dimsc, Kind.RANKS)
 
     # output shape prediction
     op.return_tensor('bwe')

@@ -48,10 +48,14 @@ class Kind(object):
 class RankConstraints(object):
     def __init__(self, op):
         self.op = op
+
+        # sig => max_rank
         self.maxs = {}
+
+        # sig => min_rank
         self.mins = {}
 
-        # sig => sig
+        # index => index 
         self.equiv = {}
 
         # constraints applied during predicate
@@ -63,8 +67,26 @@ class RankConstraints(object):
         # a set of prefixes.  expect inputs of pfx:sig and pfx:shape 
         self.shape_sig = set()
 
-    def equate_ranks(self, target_sig, source_sig):
-        self.equiv[target_sig] = source_sig
+    def free_inds(self):
+        fi = [ k for k in self.op.index.keys() if k not in self.equiv ]
+        return fi
+
+    def inds(self, sig):
+        fi = self.free_inds()
+        map_sig = [ self.equiv.get(s, s) for s in sig ]
+        return tuple(fi.index(m) for m in map_sig)
+
+    def num_equated(self):
+        return len(self.equiv)
+
+    def index_limited(self, index):
+        return index in self.mins or index in self.maxs
+
+    def index_equated(self, index):
+        return index in self.equiv
+    
+    def equate_ranks(self, target_index, source_index):
+        self.equiv[target_index] = source_index
 
     def add_rank_limits(self, sig, min_val, max_val):
         if min_val is not None:
@@ -88,15 +110,11 @@ class RankConstraints(object):
 
     def mins_inds(self):
         d = self.mins.items()
-        return { self.op._sig_inds(sig): rank for sig,rank in d }
+        return { self.inds(sig): rank for sig,rank in d }
 
     def maxs_inds(self):
         d = self.maxs.items()
-        return { self.op._sig_inds(sig): rank for sig,rank in d }
-
-    def equiv_inds(self):
-        d = self.equiv.items()
-        return { self.op._sig_inds(s1): self.op._sig_inds(s2) for s1, s2 in d }
+        return { self.inds(sig): rank for sig,rank in d }
 
     def const_inds(self, kwargs):
         # evaluate each sig_func, providing the 
@@ -105,14 +123,14 @@ class RankConstraints(object):
             arg_names = self.sig_args[sig]
             call_args = tuple(kwargs[a] for a in arg_names)
             rank = func(*call_args)
-            inds = self.op._sig_inds(sig)
+            inds = self.inds(sig) 
             const_map[inds] = rank
 
         # process the shape_sig entries.
         for prefix in self.shape_sig:
             shape = kwargs[kname(prefix, Kind.SHAPE)]
             sig = kwargs[kname(prefix, Kind.SIG)]
-            inds = self.op._sig_inds(sig)
+            inds = self.inds(sig)
             const_map[inds] = len(shape)
 
         return const_map
@@ -172,7 +190,7 @@ class CompDims(object):
                     ):
                 raise SchemaError(
                     f'{type(self).__qualname__}: function \'{func.__name__}\' '
-                    f'registered with computed_dims must return a 1D'
+                    f'registered with computed_dims must return a 1D '
                     f'tf.Tensor or np.ndarray.  Got \'{comp_dims}\'')
             comp_dims_map[index] = comp_dims
         return comp_dims_map

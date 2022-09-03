@@ -28,7 +28,7 @@ def init_schema(op):
             out = idims
         return B.getval(out)
 
-    op.computed_dims('o', odims, Kind.IDIMS, 'padding')
+    op.computed_index('o', odims, Kind.IDIMS, 'padding')
     # op.return_tensor()
 
 opcheck.register('tf.nn.atrous_conv2d', init_schema)

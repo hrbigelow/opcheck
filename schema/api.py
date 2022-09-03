@@ -1,3 +1,4 @@
+import traceback
 import tensorflow as tf
 from . import predicates as pr
 from . import generators as ge
@@ -119,7 +120,7 @@ class SchemaApi(object):
                 if isinstance(e, SchemaError):
                     raise e
                 else:
-                    pass
+                    traceback.print_exc()
                     # print('in validate_schema, got exception: ', e)
 
             msg, err = self._validation_report(config)
@@ -155,6 +156,11 @@ class SchemaApi(object):
 
     def _report(self):
         print('Validation Report')
+
+    # for debugging
+    def _print_pred_graph(self):
+        for n in self.input_pred_graph:
+            print(f'{n.name}: {n.cached_val}')
 
     def _sig_inds(self, sig):
         inds = list(self.index.keys())
@@ -229,15 +235,15 @@ class SchemaApi(object):
 
     def _init_pred_graph(self):
         P.clear_registry()
-        P.add_node(Kind.SCHEMA, lambda: (True, self))
+        P.add_node(Kind.SCHEMA, pr.Closure((True, self)))
         P.add_node(Kind.DTYPES, pr.ValidDTypes(self.dtype_cons))
         P.add_node(Kind.RANKS, pr.IndexRanks(self, self.rank_cons))
-        P.add_node(Kind.IDIMS, pr.input_dims, Kind.RANKS)
+        P.add_node(Kind.IDIMS, pr.InputDims(), Kind.RANKS)
         P.add_node(Kind.CDIMS, pr.ComputedDims(self.comp_dims), Kind.IDIMS)
 
     def _init_gen_graph(self):
         G.clear_registry()
-        G.add_node(Kind.SCHEMA, lambda: [self])
+        G.add_node(Kind.SCHEMA, ge.Closure([self]))
         G.add_node(Kind.DTYPES, ge.DTypes(self.dtype_cons)) 
         G.add_node(Kind.RANKS, ge.Ranks(self, self.rank_cons)) 
         dims_obj = ge.IndexDimsGD(self.comp_dims, 1e5, 2e5)
@@ -354,10 +360,12 @@ class SchemaApi(object):
         """
         pass
 
-    def computed_dims(self, index, comp_func, *comp_arg_names):
+    def computed_index(self, index, comp_func, *comp_arg_names):
         """
         Register {comp_func} to compute the dimensions of {index}.
         Will be called as: comp_func(*comp_arg_vals)
+
+        {comp_arg_names} 
         """
         comp_knames = self._resolve_arg_names(self, P, comp_arg_names)
         self.comp_dims.add(index, comp_func, comp_knames)
@@ -368,15 +376,26 @@ class SchemaApi(object):
             if kname != Kind.IDIMS:
                 dims_gnode.maybe_append_parent(kname)
 
-    def equate_ranks(self, target_sig, source_sig):
+    def equate_ranks(self, target_index, source_index):
         """
-        Declare that the rank of {target_sig} be equal to {source_sig}.
-        It is required that all indices in {source_sig} appear in some
+        Declare that the rank of {target_index} be equal to {source_index}.
+        It is required that all indices in {source_index} appear in some
         signature in a limit_ranks call.
         """
-        self._check_sig(target_sig, 'equate ranks')
-        self._check_sig(source_sig, 'equate ranks')
-        self.rank_cons.equate_ranks(target_sig, source_sig)
+        if target_index not in self.index:
+            raise SchemaError(
+                f'{type(self).__qualname__}: target_index \'{target_index}\''
+                f'is not a registered index')
+        if (self.rank_cons.index_limited(target_index) or
+                self.rank_cons.index_equated(target_index)):
+            raise SchemaError(
+                f'{type(self).__qualname__}: target index \'{target_index}\''
+                f'is already registered as constrained')
+        if not self.rank_cons.index_limited(source_index):
+            raise SchemaError(
+                f'{type(self).__qualname__}: source index \'{source_index}\''
+                f'is not constrained with limit_ranks')
+        self.rank_cons.equate_ranks(target_index, source_index)
 
     def limit_ranks(self, sig, min_val, max_val):
         """
@@ -519,7 +538,8 @@ class SchemaApi(object):
         The rank of {rank_idx} determines which layout is mapped.
         """
         # Define the pseudo-arg
-        pseudo_gen = ge.Layout()
+        self.num_layouts = len(layouts)
+        pseudo_gen = ge.Layout(self.num_layouts)
         pseudo_pred = pr.ArgLayout(arg_name, layouts)
         self.arg_pseudo('layout', pseudo_pred, pseudo_gen, arg_name)
         pseudo_kname = base.kname('layout', Kind.PSEUDO)
@@ -528,7 +548,6 @@ class SchemaApi(object):
         arg_pred = pr.ArgDataFormat(arg_name, layouts, rank_idx)
         arg_gen = ge.DataFormat(layouts, rank_idx)
         self.arg_func(arg_name, arg_pred, arg_gen, Kind.RANKS, pseudo_kname)
-        self.num_layouts = len(layouts)
 
     def arg_tensor(self, arg_name, *sigs):
         """
@@ -559,8 +578,8 @@ class SchemaApi(object):
         self.rank_cons.add_shape_sig(arg_name)
 
         if len(sigs) == 1:
-            sig_pobj = lambda: (True, sigs[0])
-            sig_gobj = lambda: [sigs[0]]
+            sig_pobj = pr.Closure((True, sigs[0]))
+            sig_gobj = ge.Closure([sigs[0]])
             layout = tuple()
         else:
             sig_pobj = pr.LayoutOption(arg_name, sigs)
@@ -605,8 +624,8 @@ class SchemaApi(object):
         shape_pobj = pred_obj
 
         if len(sigs) == 1:
-            sig_pobj = lambda: (True, sigs[0])
-            sig_gobj = lambda: [sigs[0]]
+            sig_pobj = pr.Closure((True, sigs[0]))
+            sig_gobj = ge.Closure([sigs[0]])
             layout = tuple()
         else:
             sig_pobj = pr.LayoutOption(arg_name, sigs)
@@ -643,14 +662,15 @@ class SchemaApi(object):
         gen_obj = ge.ShapeList()
         return self._arg_shape_func(arg_name, sigs, list, pred_obj, gen_obj)
 
-    def arg_shape_int(self, arg_name, *sigs):
+    def arg_shape_int(self, arg_name, index):
         """
         Register {arg_name} as an integer parameter which defines the shape of
-        a signature.
+        an index.  The shape will be the broadcasted value of the argument if
+        the index has rank greater than 1.
         """
         pred_obj = pr.ShapeInt(arg_name)
         gen_obj = ge.ShapeInt()
-        return self._arg_shape_func(arg_name, sigs, int, pred_obj, gen_obj) 
+        return self._arg_shape_func(arg_name, (index,), int, pred_obj, gen_obj) 
 
     def arg_shape_tensor(self, arg_name, *sigs):
         """
@@ -695,8 +715,10 @@ class SchemaApi(object):
             shp_kname = kshp(prefix)
             shp_pobj = pr.ShapeTensorSlice(arg_name, i)
             if isinstance(sig, str):
-                sig_pnode = P.add_node(sig_kname, lambda: (True, s))
-                sig_gnode = G.add_node(sig_kname, lambda: [sig]) 
+                sig_gobj = ge.Closure(list(sig))
+                sig_pobj = pr.Closure((True, sig))
+                sig_pnode = P.add_node(sig_kname, sig_pobj)
+                sig_gnode = G.add_node(sig_kname, sig_gobj) 
             else:
                 sig_pobj = pr.LayoutOption(arg_name, list(sig))
                 sig_gobj = ge.LayoutOption(list(sig))
@@ -727,20 +749,23 @@ class SchemaApi(object):
         dims_kname = kname(pred_name, Kind.NONE)
         dims_pnode = P.add_node(dims_kname, pobj, Kind.IDIMS, Kind.CDIMS)
 
-    def add_index_generator(self, gen_func, index_combo, *gen_args):
+    def add_index_generator(self, gen_func, output_indices, input_indices, 
+            *gen_args):
         """
         Registers {gen_func_obj} with the schema to be used to generate
-        dimension combinations for {index_combo}, which is a string consisting
-        of individual index one-letter codes.
+        dimension combinations for {output_indices}, which is a string
+        consisting of individual index one-letter codes.
 
-        It is called as gen_func(*gen_args) and returns a list of shape tuples.
-        The shapes in each shape tuple correspond with the indices in
-        index_combo.
+        It is called as gen_func(input_ranks, *gen_args) and returns a list of
+        shape tuples.  The shapes in each shape tuple correspond with the
+        indices in output_indices.
+
+        input_ranks are the resolved ranks of input_indices
 
         Custom generator function objects are found in the flib module.
         """
-        dims_kname = kname(index_combo, Kind.DIMS)
-        gobj = ge.Dims(gen_func, index_combo, gen_args)
+        dims_kname = kname(output_indices, Kind.DIMS)
+        gobj = ge.Dims(gen_func, output_indices, input_indices, gen_args)
         dims_gnode = G.add_node(dims_kname, gobj, Kind.RANKS)
         bsearch_dims_gnode = G.get_node(Kind.DIMS)
         bsearch_dims_gnode.append_parent(dims_gnode)
@@ -766,8 +791,8 @@ class SchemaApi(object):
         pshape_kname = base.kname(ret_name, Kind.PSHAPE)
         sig_name = base.kname(ret_name, Kind.SIG)
         if len(sigs) == 1:
-            sig_pobj = lambda: (True, sigs[0])
-            sig_gobj = lambda: [sigs[0]]
+            sig_pobj = pr.Closure((True, sigs[0]))
+            sig_gobj = ge.Closure([sigs[0]])
             layout = tuple()
         else:
             sig_pobj = pr.LayoutOption(str(index), sigs)

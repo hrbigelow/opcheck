@@ -7,6 +7,10 @@ def init_schema(op):
     op.add_index('e', 'slice element')
     op.add_index('w', 'write address')
 
+    def genc(rank_list):
+        return [([rank_list[0]],)]
+    op.add_index_generator(genc, 'c', 'w')
+
     op.limit_ranks('r', 1, 3)
     op.limit_ranks('c', 1, 1)
     op.limit_ranks('e', 0, 4)
@@ -21,11 +25,6 @@ def init_schema(op):
         return indices_shape[-1]
     inds_kname = kname('indices', Kind.SHAPE) 
     op.rank_constraint('w', rankw, inds_kname)
-
-    # set the dimension of index c to rank(w) 
-    def dimsc(rank_map):
-        return [rank_map['w']]
-    op.computed_dims('c', dimsc, Kind.RANKS)
 
     op.valid_dtypes('indices', ('int32',))
     # op.valid_dtypes('updates', ('int32', 'float32'))

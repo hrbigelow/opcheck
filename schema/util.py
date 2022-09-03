@@ -1,14 +1,17 @@
 import random
 import math
+from .error import SchemaError
 
-def feasible_region(k, sum_min_map, sum_max_map, sum_equiv_map, sum_const_map):
+def feasible_region(k, sum_min_map, sum_max_map, sum_const_map):
     """
     Enumerate all k-integer tuples with non-negative integers.
-    {sum_max_map} and {sum_min_map} are maps with integer tuple keys.  Each key
-    denotes a set of digits to be summed.  The value denotes the maximum
-    (respectively minimum) value that the sum of digits is allowed to have.
-    {sum_equiv_list} is a list of pairs of indices, whose sums must be equal
-    {sum_const_map} is a map of integer tuple => value
+    Constraints:
+    {sum_max_map}: (i1,i2,...) => max_val
+    {sum_min_map}: (i1,i2,...) => min_val
+    {sum_const_map}: (i1,i2,...) => value
+
+    These are processed to constrain the sum digits[i1] + digits[i2] + ...
+    either above, below, or equal.
     """
     def sum_digits(d, inds):
         return sum(digits[i] for i in inds)
@@ -21,19 +24,19 @@ def feasible_region(k, sum_min_map, sum_max_map, sum_equiv_map, sum_const_map):
         return all(sum_digits(d, inds) >= lb for inds, lb in
                 sum_min_map.items())
 
-    def eq_valid(d):
-        return all(sum_digits(d, inds1) == sum_digits(d, inds2) for inds1,
-                inds2 in sum_equiv_map.items()) 
-
     def const_valid(d):
         return all(sum_digits(d, inds) == val for inds, val in
                 sum_const_map.items())
     t = 0
     digits = [0] * k 
     while True:
+        if any(d > 100 for d in digits):
+            raise SchemaError(
+                f'feasible_region: region exceeds 100.  Possible missing '
+                f'constraint')
         if upper_bound_valid(digits):
             t = 0
-            if lb_valid(digits) and eq_valid(digits) and const_valid(digits):
+            if lb_valid(digits) and const_valid(digits):
                 yield list(digits)
         else:
             digits[t] = 0
@@ -41,6 +44,7 @@ def feasible_region(k, sum_min_map, sum_max_map, sum_equiv_map, sum_const_map):
             if t == k:
                 break
         digits[t] += 1
+        # print('digits: ', digits)
 
 def bsearch_integers(k, min_val, max_val, val_func):
     """
