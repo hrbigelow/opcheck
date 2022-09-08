@@ -30,7 +30,7 @@ def init_schema(op):
     def rankr(indices_shape):
         return indices_shape[-1]
     inds_kname = kname('indices', Kind.SHAPE) 
-    op.rank_constraint('r', rankr, inds_kname)
+    op.rank_constraint('rank(r) == dims(c)', 'r', rankr, inds_kname)
 
     # output shape prediction
     op.return_tensor('bwe')

@@ -27,6 +27,7 @@ def init_schema(op):
     op.arg_layout('data_format', data_formats, 'i')
     op.arg_tensor('input', 'bik', 'bki', 'bzic')
     op.arg_shape_int('block_size', 's') 
+    op.arg_unchecked('name')
     op.return_tensor('bof', 'bfo', 'bfoc')
 
     op.valid_dtypes('input', ('int32', 'float32'))

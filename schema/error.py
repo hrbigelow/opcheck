@@ -9,8 +9,6 @@ class SchemaStatus(BaseException):
         pass
 
     def message(self, op):
-        """
-        """
         raise NotImplementedError
 
 class Success(SchemaStatus):
@@ -35,20 +33,36 @@ class FrameworkError(SchemaStatus):
         return f'{self.ex}'
 
 class NoMatchingRanks(SchemaStatus):
-    def __init__(self):
-        pass
+    """
+    No matching index rank combinations could be found which explain the
+    shape-related input arguments.
+
+    {shape_args} are the list of shape-related argument names
+    {ranks_deltas} is a list of tuples with two members.  The first is the
+ 
+
+    A rank-delta is a list of integers of the same length as {shape_args}
+    """
+    def __init__(self, sig_shape):
+        self.sigs = { k: v[0] for k, v in sig_shape.items() }
+        self.shapes = { k: v[1] for k, v in sig_shape.items() }
+
+    @staticmethod
+    def error_key(tup):
+        _, _, tot, sum_abs = tup
+        return tot, sum_abs
 
     def message(self, op):
-        msg = 'No matching ranks found'
-        return msg
-
-class AmbiguousRanks(SchemaStatus):
-    def __init__(self):
-        pass
-
-    def message(self, op):
-        msg = 'Ambiguous ranks'
-        return msg
+        sig_inst = op._signature_instantiations()
+        arg_list = self.shapes.keys()
+        diffs = []
+        for si in sig_inst:
+            diff = [ len(si[k]) - len(v) for k, v in self.shapes.items() ]
+            tot = len([e for e in diff if e != 0])
+            sum_abs = sum(abs(e) for e in diff)
+            diffs.append((si, diff, tot, sum_abs))
+        diffs = sorted(diffs, key=self.error_key)
+        return str(diffs[:3])
 
 class ArgTypeError(SchemaStatus):
     def __init__(self, arg_name):
@@ -103,46 +117,12 @@ class NonOptionError(SchemaStatus):
                 f'{self.arg_val}')
         return msg
 
-class SigRankError(SchemaStatus):
-    def __init__(self, arg_name, expected_length, actual_length):
-        self.arg_name = arg_name
-        self.expected_length = expected_length
-        self.actual_length = actual_length
-
-    def message(self, op):
-        msg = (f'Argument \'{self.arg_name}\' was expected to be of length '
-                f'{self.expected_length} but had actual length '
-                f'{self.actual_length}')
-        return msg
-
-
-class RankDependentArgError(SchemaStatus):
-    def __init__(self, arg_name):
-        self.arg_name = arg_name
-
 class CustomError(SchemaStatus):
     def __init__(self, message):
         self.msg = message
 
     def message(self, op):
         return self.msg
-
-class ShapeError(SchemaStatus):
-    """
-    tensor {ten_name} at {idx} has sub-dimensions {ten_sub_dims}, which are not
-    equal to the inferred dimensions of {idx}
-    """
-    def __init__(self, ten_name, idx, ten_sub_dims):
-        self.ten_name = ten_name
-        self.idx = idx
-        self.ten_sub_dims = ten_sub_dims
-
-    def message(self, op):
-        dims_map = op.get_index_dims()
-        expect_dims = dims_map[self.idx] 
-        msg = f'Tensor input {self.ten_name} had sub-dimensions '
-        msg += f'{self.ten_sub_dims} but expected {expect_dims}'
-        return msg
 
 class ReturnShapeError(SchemaStatus):
     """The output at {out_idx} does not match the shape implied by its
@@ -179,18 +159,37 @@ class ReturnTypeError(SchemaStatus):
         return msg
 
 # convert rows of arbitrary objects to tabular row strings
-def tabulate(rows, sep, left_justify=True):
-    n = len(rows[0])
-    w = [max(len(str(row[c])) for row in rows) for c in range(n)]
-    if left_justify:
-        t = [sep.join(f'{str(row[c]):<{w[c]}s}' for c in range(n))
+def tabulate(rows, sep, left_align=True):
+    """
+    {rows} is a list of rows, where each row is a list of arbitrary items
+
+    Produces a tuple.  The first item is a string-representation of {rows},
+    such that each item is column-aligned, using {sep} as a field separator.
+    
+    rows may have different numbers of items.  the longest row defines the
+    number of columns, and any shorter rows are augmented with empty-string
+    items.
+
+    The second item is a list of (beg, end) column position tuples
+    corresponding to each column.
+    """
+    def get(items, i):
+        try:
+            return items[i]
+        except IndexError:
+            return ''
+
+    ncols = max(len(row) for row in rows)
+    w = [max(len(str(get(row, c))) for row in rows) for c in range(ncols)]
+    if left_align:
+        t = [sep.join(f'{str(row[c]):<{w[c]}s}' for c in range(len(row)))
                 for row in rows]
     else:
-        t = [sep.join(f'{str(row[c]):>{w[c]}s}' for c in range(n))
+        t = [sep.join(f'{str(row[c]):>{w[c]}s}' for c in range(len(row)))
                 for row in rows]
 
-    begs = [sum(w[:s]) + len(sep) * s for s in range(n)]
-    ends = [sum(w[:s+1]) + len(sep) * s for s in range(n)]
+    begs = [sum(w[:s]) + len(sep) * s for s in range(ncols)]
+    ends = [sum(w[:s+1]) + len(sep) * s for s in range(ncols)]
     return t, list(zip(begs, ends))
 
 """

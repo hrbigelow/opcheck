@@ -274,9 +274,30 @@ class PredNode(FuncNode):
     def all_children(self):
         return self.pred_children + self.children
 
-def gen_graph_iterate(topo_nodes):
+def all_values(node):
+    """
+    Generate all values from a given node
+    """
+    # collect all ancestors
+    found = set()
+    def dfs(n):
+        if n.name in found:
+            return
+        found.add(n)
+        for pa in n.parents:
+            dfs(pa)
+
+    dfs(node)
+
+    topo_nodes = _topo_sort(found)
+    config = gen_graph_iterate(topo_nodes)
+    results = [ item[node.name] for item in config ]
+    return results
+
+def gen_graph_iterate(nodes):
     """Produce all possible settings of the graph"""
     # print('gen_graph_iterate: ', ','.join(n.name for n in visited_nodes))
+    topo_nodes = _topo_sort(nodes)
     val_map = {}
     def gen_rec(i):
         if i == len(topo_nodes):
@@ -290,8 +311,9 @@ def gen_graph_iterate(topo_nodes):
             yield from gen_rec(i+1)
     yield from gen_rec(0)
 
-def pred_graph_evaluate(topo_nodes):
+def pred_graph_evaluate(nodes):
     """Evaluate PredNodes in dependency order until a predicate fails"""
+    topo_nodes = _topo_sort(nodes)
     for n in topo_nodes:
         if not n.evaluate():
             return n.get_cached_value()

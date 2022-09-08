@@ -49,7 +49,7 @@ class Ranks(object):
         free_inds = self.rcons.free_inds()
 
         k = len(free_inds)
-        gen = util.feasible_region(k, mins, maxs, {})
+        gen = util.feasible_region(k, mins, maxs)
         rank_maps = []
         for ranks in gen:
             m = dict(zip(free_inds, ranks))
@@ -112,8 +112,12 @@ class Dims(object):
             raise SchemaError(
                 f'{type(self).__qualname__}: Custom Dims generation function '
                 f'\'{self.func.__name__}\' returned the wrong type.  Expected '
-                f'a list of shape tuples, got: '
-                f'{vals}')
+                f'a list of shape tuples, for example like: \n'
+                f'[ \n'
+                f'  ([1,2,3], [4,5]),\n'
+                f'  ([6,4,2], [5,4]) \n'
+                f'].\n'
+                f'Got: {vals}\n')
         return [ dict(zip(self.output_indices,v)) for v in vals ]
 
 class IndexDimsGD(object):
@@ -249,7 +253,7 @@ class IndexDimsGD(object):
         # is achievable
         with tf.device('/device:CPU:0'):
             for loss_func in losses:
-                for step in range(1000):
+                for step in range(100):
                     with tf.GradientTape() as tape:
                         objective = loss_func(kwargs)
                     free_vars = self.vars_map.values() 
@@ -264,19 +268,26 @@ class IndexDimsGD(object):
         dims_map = self.dims_map()
         return [dims_map]
 
-class Tensor(object):
+class TensorStub(object):
+    """
+    Produce the (shape, dtype) combo needed to produce a tensor
+    """
     def __init__(self, arg_name):
         self.arg_name = arg_name
 
     def __call__(self, sig, dims_map, dtype_map):
         dtype = dtype_map[self.arg_name]
         shape = [ d for s in sig for d in dims_map[s] ]
-        if dtype.is_integer:
-            ten = tf.random.uniform(shape, minval=-10, maxval=10,
-                    dtype=dtype)
-        else:
-            ten = tf.random.normal(shape, dtype=dtype)
-        return [ten] 
+        return [(shape, dtype)]
+
+def from_stub(stub):
+    shape, dtype = stub
+    if dtype.is_integer:
+        ten = tf.random.uniform(shape, minval=-10, maxval=10,
+                dtype=dtype)
+    else:
+        ten = tf.random.normal(shape, dtype=dtype)
+    return ten
 
 class ShapeInt(object):
     """
@@ -344,6 +355,27 @@ class ShapeTensor2D(object):
         ten = tf.constant(rows, dtype=tf.int32)
         ten = tf.transpose(ten, (1,0))
         return [ten]
+
+class SigInstantiation(object):
+    """
+    Generate the instantiation for the signature, for example:
+    signature: 'bir'
+    instantiation: ['b', 'i1', 'i2', 'i3', 'r']
+
+    This simply replaces any index of rank >1 with a numbered list.
+    """
+    def __init__(self):
+        pass
+
+    def __call__(self, ranks_map, **kwargs):
+        combo = {}
+        for kn, val in kwargs.items():
+            if kind(kn) == Kind.SIG:
+                new_val = ''.join(s * ranks_map[s] for s in val)
+            elif kind(kn) == Kind.LAYOUT:
+                new_val = val
+            combo[kpfx(kn)] = new_val
+        return [combo]
 
 class Closure(object):
     def __init__(self, obj):

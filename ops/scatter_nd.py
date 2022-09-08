@@ -19,12 +19,13 @@ def init_schema(op):
     op.arg_tensor('indices', 'rc')
     op.arg_tensor('updates', 're')
     op.arg_shape_list('shape', 'we')  
+    op.arg_unchecked('name')
     op.return_tensor('we')
 
     def rankw(indices_shape):
         return indices_shape[-1]
     inds_kname = kname('indices', Kind.SHAPE) 
-    op.rank_constraint('w', rankw, inds_kname)
+    op.rank_constraint('rank(w) == dims(c)', 'w', rankw, inds_kname)
 
     op.valid_dtypes('indices', ('int32',))
     # op.valid_dtypes('updates', ('int32', 'float32'))

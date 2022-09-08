@@ -27,6 +27,7 @@ def init_schema(op):
     op.arg_option('padding', ('VALID', 'SAME'))
     op.arg_shape_list('strides', 's')
     op.arg_shape_list('dilations', 'd')
+    op.arg_unchecked('name')
 
     op.valid_dtypes('input', ('int32', 'float32'))
     op.equate_dtypes('filters', 'input')

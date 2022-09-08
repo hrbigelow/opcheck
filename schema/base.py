@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+from collections import namedtuple
 from .error import SchemaError
 
 def kpfx(kname):
@@ -18,9 +19,6 @@ def ksig(prefix):
 def karg(prefix):
     return prefix + Kind.ARG
 
-def kshp(prefix):
-    return prefix + Kind.SHAPE
-
 class Kind(object):
     # these cannot have prefixes
     SCHEMA = ':schema'
@@ -35,17 +33,25 @@ class Kind(object):
     # these must have prefixes
     DTYPE = ':dtype'
     SIG = ':sig'
-    # CONS = ':constraint'
+    SIG_INST = ':sig_instantiation'
+    SIG_SHAPE_MAP = ':sig_shape_map'
 
-    # these must have unique usages of prefixes
     ARG = ':arg'
     PSEUDO = ':pseudo'
-    TENSOR = ':tensor'
+    LAYOUT = ':layout'
+    DATA_TENSOR = ':data_tensor'
+    SHAPE_LIST = ':shape_list'
+    SHAPE_INT = ':shape_int'
+    SHAPE_TENSOR = ':shape_tensor'
+    SHAPE_TENSOR2D = ':shape_tensor2d'
     SHAPE = ':shape'
     RETURN_TENSOR = ':return_tensor'
     VALID_RETURN = ':valid_return'
 
 class RankConstraints(object):
+    SigFunc = namedtuple('SigFunc', ['sig', 'func', 'args'])
+    IndsRank = namedtuple('IndsRank', ['inds', 'rank'])
+
     def __init__(self, op):
         self.op = op
 
@@ -58,13 +64,19 @@ class RankConstraints(object):
         # index => index 
         self.equiv = {}
 
+        # set of constraints 
+        # constraint_name => SigFunc
+        self.sig_funcs = {}
         # constraints applied during predicate
         # for generation, these are not applied, instead there exist
         # inverse functions that go in the opposite direction
+        # sig => func.  
         self.sig_funcs = {}
+
+        # sig => args for matching func
         self.sig_args = {}
 
-        # a set of prefixes.  expect inputs of pfx:sig and pfx:shape 
+        # set of shape+sig kname pairs (arg:*_shape, arg:sig)
         self.shape_sig = set()
 
     def free_inds(self):
@@ -96,17 +108,18 @@ class RankConstraints(object):
             prev_max_val = self.maxs.get(sig, 10000)
             self.maxs[sig] = min(prev_max_val, max_val)
 
-    def add_shape_sig(self, prefix):
-        self.shape_sig.add(prefix)
+    def add_shape_sig(self, shape_kname, sig_kname):
+        # add prefix:sig and prefix:shape_* to list of expected inputs
+        self.shape_sig.add((shape_kname, sig_kname))
 
     def add_arg_rank(self, arg_name, sig):
         identity = lambda val: val
         node_kname = kname(arg_name, Kind.ARG)
-        self.add_sig_func(sig, identity, (node_kname,))
+        cons_name = f'rank({sig}) == \'{arg_name}\''
+        self.add_sig_func(cons_name, sig, identity, (node_kname,))
 
-    def add_sig_func(self, sig, func, arg_knames):
-        self.sig_funcs[sig] = func
-        self.sig_args[sig] = arg_knames 
+    def add_sig_func(self, constraint_name, sig, func, arg_knames):
+        self.sig_funcs[constraint_name] = self.SigFunc(sig, func, arg_knames)
 
     def mins_inds(self):
         d = self.mins.items()
@@ -116,22 +129,30 @@ class RankConstraints(object):
         d = self.maxs.items()
         return { self.inds(sig): rank for sig,rank in d }
 
-    def const_inds(self, kwargs):
+    def const_inds(self, sig_shape_map, kwargs):
         # evaluate each sig_func, providing the 
+        # constraint_name => IndsRank 
         const_map = {}
-        for sig, func in self.sig_funcs.items():
-            arg_names = self.sig_args[sig]
-            call_args = tuple(kwargs[a] for a in arg_names)
-            rank = func(*call_args)
-            inds = self.inds(sig) 
-            const_map[inds] = rank
+        for cname, sf in self.sig_funcs.items():
+            call_args = tuple(kwargs[a] for a in sf.args)
+            rank = sf.func(*call_args)
+            inds = self.inds(sf.sig) 
+            const_map[cname] = self.IndsRank(inds, rank)
 
         # process the shape_sig entries.
-        for prefix in self.shape_sig:
-            shape = kwargs[kname(prefix, Kind.SHAPE)]
-            sig = kwargs[kname(prefix, Kind.SIG)]
+        for prefix, sig_shape in sig_shape_map.items():
+            sig, shape = sig_shape
             inds = self.inds(sig)
-            const_map[inds] = len(shape)
+            const_map[prefix] = self.IndsRank(inds, len(shape))
+
+        """
+        for shape_kname, sig_kname in self.shape_sig:
+            shape = kwargs[shape_kname]
+            sig = kwargs[sig_kname]
+            inds = self.inds(sig)
+            prefix = kpfx(shape_kname)
+            const_map[prefix] = self.IndsRank(inds, len(shape))
+        """
 
         return const_map
 

@@ -14,6 +14,7 @@ def init_schema(op):
     op.arg_tensor('filters', 'fkl')
     op.arg_option('padding', ('VALID', 'SAME'))
     op.arg_shape_int('rate', 'r')
+    op.arg_unchecked('name')
 
     op.valid_dtypes('value', ('float32',))
     op.equate_dtypes('filters', 'value')

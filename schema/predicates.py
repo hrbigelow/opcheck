@@ -3,7 +3,7 @@ import numpy as np
 import tensorflow as tf
 from .error import *
 from . import util
-from .base import Kind, kpfx, kname
+from .base import Kind, kind, kpfx, kname
 
 """
 Functions or function objects to be used in PredNodes.  Implement the __call__
@@ -170,25 +170,66 @@ class ValidDTypes(object):
                 return False, DTypeNotEqual(src_name, trg_name)
         return True, None
 
+class SigShape(object):
+    """
+    Produce a map of arg_name => (sig, shape)
+    """
+    def __init__(self):
+        pass
+
+    def __call__(self, **kwargs):
+        # convert a map containing: pfx:sig => sig, pfx:shape => shape to
+        # sig => shape
+        sig_map = {}
+        shp_map = {}
+        for kn, val in kwargs.items():
+            prefix = kpfx(kn)
+            suffix = kind(kn)
+            if suffix == Kind.SIG:
+                sig_map[prefix] = val
+            elif suffix == Kind.SHAPE:
+                shp_map[prefix] = val 
+        if set(shp_map.keys()) != set(sig_map.keys()):
+            raise SchemaError(
+                f'{type(self).__qualname__}: Expected the same set of SIG and '
+                f'SHAPE nodes.  Got sig nodes: {sig_map.keys()}\n'
+                f'but shape nodes: {shp_map.keys()}')
+        sig_shape_map = { k: (v, shp_map[k]) for k, v in sig_map.items() }
+        return True, sig_shape_map
+
+
 class IndexRanks(object):
     def __init__(self, op, rank_cons):
         self.op = op
         self.rcons = rank_cons
 
-    def __call__(self, **kwargs):
+    def __call__(self, sig_shape, **kwargs):
         eq_map = self.rcons.equiv
         free_inds = self.rcons.free_inds()
         k = len(free_inds)
         mins = self.rcons.mins_inds()
         maxs = self.rcons.maxs_inds()
-        const = self.rcons.const_inds(kwargs)
-        gen = util.feasible_region(k, mins, maxs, const)
-        ranks = next(gen, None)
-        if ranks is None:
-            return False, NoMatchingRanks()
-        extra = next(gen, None)
-        if extra is not None:
-            return False, AmbiguousRanks()
+        cmap = self.rcons.const_inds(sig_shape, kwargs)
+        gen = util.feasible_region(k, mins, maxs)
+        ranks_list = list(gen)
+        valid_ranks = []
+        for ranks in ranks_list:
+            delta = [sum(ranks[i] for i in ir.inds) - ir.rank for ir in
+                    cmap.values()]
+            if all(d == 0 for d in delta):
+                valid_ranks.append(ranks)
+
+        if len(valid_ranks) > 1:
+            raise SchemaError(
+                f'{type(self).__qualname__}: {len(ranks_list)} valid rank '
+                f'combinations were found.  This means that schema '
+                f'\'{self.op.op_path}\' lacks proper rank constraints. '
+                f'Current constraints are:\n'
+                f'{cmap.keys()}')
+        elif len(valid_ranks) == 0:
+            return False, NoMatchingRanks(sig_shape)
+
+        ranks = valid_ranks[0]
         index_ranks = dict(zip(free_inds, ranks))
         eq_ranks = { trg: index_ranks[src] for trg, src in eq_map.items() }
         index_ranks.update(eq_ranks)
@@ -200,14 +241,6 @@ def calc_sig_range(rank_map, idx, sig):
     rank = rank_map[idx] 
     return [start, start + rank]
 
-def get_sig_shape_map(kwargs):
-    # convert a map containing: pfx:sig => sig, pfx:shape => shape to
-    # sig => shape
-    d = kwargs
-    pfxs = { kpfx(k) for k in kwargs.keys() }
-    ss_map = { d[kname(p,Kind.SIG)] : d[kname(p,Kind.SHAPE)] for p in pfxs }
-    return ss_map
-
 class InputDims(object):
     """
     Used by the IDIMS node
@@ -215,14 +248,14 @@ class InputDims(object):
     def __init__(self):
         pass
 
-    def __call__(self, rank_map, **kwargs):
-        sig_shape = get_sig_shape_map(kwargs)
-        input_inds = { idx for sig in sig_shape.keys() for idx in sig }
+    def __call__(self, rank_map, sig_shape, **kwargs):
+        input_inds = { idx for ss in sig_shape.values() for idx in ss[0] }
         index_dims = {}
         for idx in input_inds:
             # find all usages of idx
             idx_shapes = set()
-            for sig, shape in sig_shape.items():
+            for _, ss in sig_shape.items():
+                sig, shape = ss
                 if idx not in sig:
                     continue
                 sub_range = calc_sig_range(rank_map, idx, sig)
@@ -248,7 +281,7 @@ class Dims(object):
 
     def __call__(self, idims_map, cdims_map):
         dims_map = { **idims_map, **cdims_map }
-        shapes_list = [ dims_map[i] for i in self.indices ]
+        shapes_list = [ np.array(dims_map[i]) for i in self.indices ]
         status = self.func(*shapes_list)
         valid = isinstance(status, Success)
         return valid, status
