@@ -98,7 +98,7 @@ class RankCandidates(object):
                 rank_map = dict(zip(fi, ranks))
                 eq_map = { t: rank_map[s] for t,s in self.equiv.items() }
                 rank_map.update(**eq_map)
-            yield rank_map
+                yield rank_map
         return add_equiv(gen)
 
 class RankConstraint(object):

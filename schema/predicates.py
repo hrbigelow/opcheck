@@ -246,7 +246,7 @@ class IndexRanks(object):
                             highlight_map[arg].extend(pos)
 
                 if layout_delta == 1:
-                    sug = f'Use layout {cand_format}.'
+                    sug = f'Use layout {cand_format}'
                     suggestions.append(sug)
                     # highlight the argument itself
                     highlight_map[Kind.LAYOUT].append(0)
@@ -275,7 +275,7 @@ class IndexRanks(object):
         if valid_map is None:
             top = sorted(candidates, key=key)
             report = [ t[2] for t in top ]
-            return False, NoMatchingRanks(shape_map, report)
+            return False, NoMatchingRanks(shape_map, data_format, report)
         else:
             return True, valid_map 
 

@@ -39,6 +39,7 @@ class SchemaApi(object):
         self.index = {}
         # arg_name => kname
         self.params = None # will be an ordered dict
+        self.layout_param = None 
         self.gen_graph = None
         self.input_pred_graph = None
         self.return_pred_graph = None
@@ -113,13 +114,28 @@ class SchemaApi(object):
         """
         Generate the formatted signature inventory for this op
         """
-        inst_list = self._signature_instantiations()
-        inst1 = inst_list[0]
-        arg_names = [ k for k in self.params.keys() if k in inst1 ]
-        inst_groups = [arg_names]
-        inst_groups.extend([l[a] for a in arg_names] for l in inst_list)
-        inst_tab, _ = tabulate(inst_groups, '  ', left_align=True)
-        return inst_tab
+        sig_plus_layout = self._sig_layout()
+        sig_map, _ = sig_plus_layout[0]
+        args = [ *sig_map ]
+        if self.layout_param is not None:
+            args.append(self.layout_param)
+        arg_order = [ k for k in self.params.keys() if k in args ]
+
+        rows = [arg_order]
+        for sig_map, cand_format in sig_plus_layout:
+            for ranks in self.rank_candidates.value_gen():
+                row = []
+                for arg in arg_order:
+                    if arg == self.layout_param:
+                        row.append(cand_format)
+                    else:
+                        sig = sig_map[arg]
+                        inst = ''.join(s * ranks[s] for s in sig)
+                        row.append(inst)
+                rows.append(row)
+
+        table, _ = tabulate(rows, '  ', left_align=True)
+        return table
 
     def _index_inventory(self):
         """
@@ -131,37 +147,48 @@ class SchemaApi(object):
         tab, _ = tabulate(rows, '  ', left_align=True)
         return tab
 
-    def _rank_error_report(self, shape_map, report):
+    def _rank_error_report(self, shape_map, data_format, report):
         """
-        Print the suggestions in the {report}, which is a list whose elements
-        are the named tuple 'candidate' (see predicates.IndexRanks) with 
-        .format
-        .sigs
-        .ranks
-        .suggs
-        .highlight
+        This report is generated when the framework op arguments are such that
+        no consistent set of index ranks could be inferred.  The report
+        consists of a set of possible ways to fix the inputs.
 
-        Rows are:
+        Each item is a table, followed by one or more text suggestions on how
+        to fix the inputs.  The table has the following rows:
 
-        arg_names
+        arguments
         shapes
-        instantiation
-        highlight
-        suggestions
+        interpretation
+        errors
+
+        'arguments' shows formatted argument names highlighting the relevant
+        aspect of the argument.  (see api.py:_shape_header)
+
+        DATA_TENSOR:  {arg_name}.shape
+        SHAPE_TENSOR: {arg_name}.numpy()
+        SHAPE_LIST: {arg_name}
+        SHAPE_INT: {arg_name}
+
+        'shapes' shows the actual submitted values of the argument aspect.
+        All of these represent shapes to be applied to OpCheck indices.
+
+        'interpretation' shows, for each component of a shape, the one-letter
+        OpCheck index name which is inferred in this item.
+
+        'errors' is an ASCII representation highlighting where the error
+        occurred.
+        
+        The list of plain-text suggestions provides one way to fix the errors.
+        It is necessarily a guess about what the user might have intended.
         ...
 
-        1. resolve the proper argument order
-        2. retrieve the shapes for each argument
-        3. produce the instantiation map 
-        4. populate the highlight rows
-        5. format the mini-tables of shape, instantiation, highlight for each arg
-        6. format the main table of arg_names plus the rows from the mini-table
-        7. print out the main table, followed by the suggestions.
-        8. repeat for the next candidate
         """
         # need to augment this with another map of other argument values
-        arg_order = [ k for k in self.params.keys() if k in shape_map ]
+        arg_order = [ k for k in self.params.keys() if k in shape_map or k ==
+                self.layout_param ]
         cand_reports = []
+
+        leader_col = [ 'arguments', 'shapes', 'interpretation', 'errors' ]
 
         for cand in report:
             # the sub_table is a map of arg_name => rows
@@ -200,14 +227,31 @@ class SchemaApi(object):
                 sub_table[n].append(highlight_row)
 
             # format the sub-tables
-            columns = []
-            for name in arg_order:
+            columns = {} 
+            for name, tab in sub_table.items():
                 tab = sub_table[name]
                 shape_rows, _ = tabulate(tab, ' ', left_align=True)
                 hdr = self._shape_header(name)
                 col = [hdr, *shape_rows]
-                columns.append(col)
-            main_table = np.array(columns).transpose().tolist()
+                columns[name] = col
+
+            if self.layout_param is not None:
+                if (
+                        (data_format == cand.format) or
+                        (data_format is None and cand.format is None)
+                        ):
+                    hl = ''
+                else:
+                    hl = '^' * max(len(data_format), len(cand.format))
+                columns[self.layout_param] = [
+                        self.layout_param, 
+                        data_format, 
+                        cand.format,
+                        hl
+                        ]
+
+            col_array = [leader_col] + [ columns[name] for name in arg_order ]
+            main_table = np.array(col_array).transpose().tolist()
             main_rows, _ = tabulate(main_table, '   ', True)
             table = '\n'.join(main_rows)
             suggs = '\n'.join(cand.suggestions)
@@ -817,6 +861,7 @@ class SchemaApi(object):
         """
         # Define the pseudo-arg
         self.num_layouts = len(layouts)
+        self.layout_param = arg_name
         pseudo_gen = ge.Layout(layouts)
         pseudo_pred = pr.ArgLayout(arg_name, layouts)
         self._arg_pseudo('layout', pseudo_pred, pseudo_gen, arg_name)

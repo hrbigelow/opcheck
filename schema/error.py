@@ -38,15 +38,15 @@ class NoMatchingRanks(SchemaStatus):
     """
     No matching index rank combinations could be found which explain the
     shape-related input arguments.
-
-    {sig_shape} is produced by predicates.SigShape 
     """
-    def __init__(self, shape_map, report):
+    def __init__(self, shape_map, data_format, report):
         self.shape_map = shape_map
+        self.data_format = data_format
         self.report = report
 
     def message(self, op):
-        msg = op._rank_error_report(self.shape_map, self.report)
+        msg = op._rank_error_report(self.shape_map, self.data_format,
+                self.report)
         return msg
 
 class ArgTypeError(SchemaStatus):
