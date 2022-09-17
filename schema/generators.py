@@ -34,34 +34,16 @@ class DTypes(object):
         return combos
 
 class Ranks(object):
-    def __init__(self, op, rank_cons):
+    def __init__(self, op, rank_candidates):
         self.op = op
-        self.rcons = rank_cons
+        self.rcands = rank_candidates
 
     def __call__(self):
         """
         Generate all allowed rank combinations.  Generates a list of maps.
         Each map has index => rank for each index in self.index
         """
-        mins = self.rcons.mins_inds()
-        maxs = self.rcons.maxs_inds()
-        eq_map = self.rcons.equiv
-        free_inds = self.rcons.free_inds()
-
-        k = len(free_inds)
-        gen = util.feasible_region(k, mins, maxs)
-        rank_maps = []
-        for ranks in gen:
-            m = dict(zip(free_inds, ranks))
-            if any(r > 100 for r in ranks):
-                raise SchemaError(
-                    f'Found rank > 100 in set of valid combinations of ranks. '
-                    f'rank_map: \'{m}\'. '
-                    f'Perhaps a constraint is missing.')
-            eq_ranks = { trg: m[src] for trg, src in eq_map.items() }
-            m.update(eq_ranks)
-            rank_maps.append(m)
-        return rank_maps
+        return list(self.rcands.value_gen())
 
 class Rank(object):
     """
@@ -356,26 +338,24 @@ class ShapeTensor2D(object):
         ten = tf.transpose(ten, (1,0))
         return [ten]
 
-class SigInstantiation(object):
+class SigDataFormat(object):
     """
-    Generate the instantiation for the signature, for example:
-    signature: 'bir'
-    instantiation: ['b', 'i1', 'i2', 'i3', 'r']
-
-    This simply replaces any index of rank >1 with a numbered list.
+    Produce a map of arg_kname => sig, for all SIG nodes.
+    Additionally, the map includes arg_name => data_format, taken from the
+    pseudo:layout node, if it exists.
     """
     def __init__(self):
         pass
 
-    def __call__(self, ranks_map, **kwargs):
-        combo = {}
+    def __call__(self, **kwargs):
+        sig_map = {}
+        data_format = None
         for kn, val in kwargs.items():
-            if kind(kn) == Kind.SIG:
-                new_val = ''.join(s * ranks_map[s] for s in val)
-            elif kind(kn) == Kind.LAYOUT:
-                new_val = val
-            combo[kpfx(kn)] = new_val
-        return [combo]
+            if kind(kn) == Kind.LAYOUT:
+                data_format = val
+            else:
+                sig_map[kpfx(kn)] = val
+        return [(sig_map, data_format)]
 
 class Closure(object):
     def __init__(self, obj):
@@ -385,8 +365,8 @@ class Closure(object):
         return self.obj
 
 class Layout(object):
-    def __init__(self, num_layouts):
-        self.num_layouts = num_layouts
+    def __init__(self, layouts):
+        self.num_layouts = len(layouts)
 
     def __call__(self):
         return list(range(self.num_layouts))

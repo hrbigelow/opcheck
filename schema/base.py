@@ -1,7 +1,8 @@
 import tensorflow as tf
 import numpy as np
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from .error import SchemaError
+from . import util
 
 def kpfx(kname):
     return kname.split(':')[0]
@@ -33,8 +34,9 @@ class Kind(object):
     # these must have prefixes
     DTYPE = ':dtype'
     SIG = ':sig'
-    SIG_INST = ':sig_instantiation'
-    SIG_SHAPE_MAP = ':sig_shape_map'
+    SIG_LAYOUT = ':sig_layout'
+    SIG_MAP = ':sig_map'
+    SHAPE_MAP = ':shape_map'
 
     ARG = ':arg'
     PSEUDO = ':pseudo'
@@ -48,10 +50,12 @@ class Kind(object):
     RETURN_TENSOR = ':return_tensor'
     VALID_RETURN = ':valid_return'
 
-class RankConstraints(object):
-    SigFunc = namedtuple('SigFunc', ['sig', 'func', 'args'])
-    IndsRank = namedtuple('IndsRank', ['inds', 'rank'])
 
+class RankCandidates(object):
+    """
+    Produce all possible rank candidates, resolving min, max, and equiv
+    constraints.
+    """
     def __init__(self, op):
         self.op = op
 
@@ -63,40 +67,8 @@ class RankConstraints(object):
 
         # index => index 
         self.equiv = {}
+        # self.equiv = { k: k for k in self.op.index.keys() }
 
-        # set of constraints 
-        # constraint_name => SigFunc
-        self.sig_funcs = {}
-        # constraints applied during predicate
-        # for generation, these are not applied, instead there exist
-        # inverse functions that go in the opposite direction
-        # sig => func.  
-        self.sig_funcs = {}
-
-        # sig => args for matching func
-        self.sig_args = {}
-
-        # set of shape+sig kname pairs (arg:*_shape, arg:sig)
-        self.shape_sig = set()
-
-    def free_inds(self):
-        fi = [ k for k in self.op.index.keys() if k not in self.equiv ]
-        return fi
-
-    def inds(self, sig):
-        fi = self.free_inds()
-        map_sig = [ self.equiv.get(s, s) for s in sig ]
-        return tuple(fi.index(m) for m in map_sig)
-
-    def num_equated(self):
-        return len(self.equiv)
-
-    def index_limited(self, index):
-        return index in self.mins or index in self.maxs
-
-    def index_equated(self, index):
-        return index in self.equiv
-    
     def equate_ranks(self, target_index, source_index):
         self.equiv[target_index] = source_index
 
@@ -108,54 +80,200 @@ class RankConstraints(object):
             prev_max_val = self.maxs.get(sig, 10000)
             self.maxs[sig] = min(prev_max_val, max_val)
 
-    def add_shape_sig(self, shape_kname, sig_kname):
-        # add prefix:sig and prefix:shape_* to list of expected inputs
-        self.shape_sig.add((shape_kname, sig_kname))
+    def index_limited(self, index):
+        return index in self.mins or index in self.maxs
 
-    def add_arg_rank(self, arg_name, sig):
-        identity = lambda val: val
-        node_kname = kname(arg_name, Kind.ARG)
-        cons_name = f'rank({sig}) == \'{arg_name}\''
-        self.add_sig_func(cons_name, sig, identity, (node_kname,))
+    def index_equated(self, index):
+        return index in self.equiv
+    
+    def value_gen(self):
+        fi = [ k for k in self.op.index.keys() if k not in self.equiv ]
+        min_map = { tuple(fi.index(s) for s in sig): rank for sig, rank in
+                self.mins.items() } 
+        max_map = { tuple(fi.index(s) for s in sig): rank for sig, rank in
+                self.maxs.items() } 
+        gen = util.feasible_region(len(fi), min_map, max_map)
+        def add_equiv(gen):
+            for ranks in gen:
+                rank_map = dict(zip(fi, ranks))
+                eq_map = { t: rank_map[s] for t,s in self.equiv.items() }
+                rank_map.update(**eq_map)
+            yield rank_map
+        return add_equiv(gen)
 
-    def add_sig_func(self, constraint_name, sig, func, arg_knames):
-        self.sig_funcs[constraint_name] = self.SigFunc(sig, func, arg_knames)
+class RankConstraint(object):
+    """
+    Define a constraint rank(sig) == rank_func(shape), where sig and shape are
+    the run-time signature and shape associated with {shape_arg}
+    """
+    def __init__(self, name, shape_arg, rank_func):
+        self.name = name
+        self.shape_arg = shape_arg
+        self.rank_func = rank_func
 
-    def mins_inds(self):
-        d = self.mins.items()
-        return { self.inds(sig): rank for sig,rank in d }
+    def observed_rank(self, shape_map, **kwargs):
+        # return the observed rank of the associated shape argument
+        # this takes **kwargs because sometimes, rank information comes from
+        # other sources besides the shape_map
+        shape = shape_map[self.shape_arg]
+        return self.rank_func(shape)
 
-    def maxs_inds(self):
-        d = self.maxs.items()
-        return { self.inds(sig): rank for sig,rank in d }
+    def computed_rank(self, sig_map, rank_map):
+        # return the rank of the associated signature that is implied by the
+        # index ranks
+        sig = sig_map[self.shape_arg]
+        return sum(rank_map[s] for s in sig)
 
-    def const_inds(self, sig_shape_map, kwargs):
-        # evaluate each sig_func, providing the 
-        # constraint_name => IndsRank 
-        const_map = {}
-        for cname, sf in self.sig_funcs.items():
-            call_args = tuple(kwargs[a] for a in sf.args)
-            rank = sf.func(*call_args)
-            inds = self.inds(sf.sig) 
-            const_map[cname] = self.IndsRank(inds, rank)
-
-        # process the shape_sig entries.
-        for prefix, sig_shape in sig_shape_map.items():
-            sig, shape = sig_shape
-            inds = self.inds(sig)
-            const_map[prefix] = self.IndsRank(inds, len(shape))
-
+    def rank_error(self, sig_map, shape_map, rank_map, **kwargs):
         """
-        for shape_kname, sig_kname in self.shape_sig:
-            shape = kwargs[shape_kname]
-            sig = kwargs[sig_kname]
-            inds = self.inds(sig)
-            prefix = kpfx(shape_kname)
-            const_map[prefix] = self.IndsRank(inds, len(shape))
+        Computes the difference between the predicted rank of the constraint's
+        argument's signature based on the proposed set of index ranks, and the
+        observed rank.
+        Negative means the fix is to add to the rank
         """
+        obs_rank = self.observed_rank(shape_map, **kwargs) 
+        cmp_rank = self.computed_rank(sig_map, rank_map)
+        return obs_rank - cmp_rank
 
-        return const_map
+    def highlight_map(self):
+        """
+        Produce a map of arg_name => [dim1, dim2, ...], where dim1 etc are
+        positions of the shape that should be highlighted with '^^'.
+        """
+        raise NotImplementedError
 
+    def suggestion(self):
+        """
+        A plain-English suggestion to the user, describing what aspect of the
+        input needs to be changed.
+        """
+        raise NotImplementedError
+
+class ShapeRankConstraint(RankConstraint):
+    def __init__(self, shape_arg, arg_kind):
+        """
+        Represent the logical constraint:
+
+        rank(sig) == len(shape)
+
+        where sig and shape are the signature and shape associated with
+        {shape_arg}.
+
+        {shape_arg} Kind may be one of DATA_TENSOR, SHAPE_INT, SHAPE_LIST,
+        SHAPE_TENSOR, SHAPE_TENSOR2D 
+        """
+        name = f'rank(sig({shape_arg})) == len({shape_arg})'
+        super().__init__(name, shape_arg, len)
+        allowed_kinds = (Kind.DATA_TENSOR, Kind.SHAPE_LIST, Kind.SHAPE_INT,
+                Kind.SHAPE_TENSOR, Kind.SHAPE_TENSOR2D)
+        if arg_kind not in allowed_kinds:
+            raise RuntimeError(
+                f'{type(self).__qualname__}: got illegal arg_kind '
+                f'\'{arg_kind}\'')
+        self.arg_kind = arg_kind
+        
+    def highlight_map(self, sig_map, shape_map, rank_map):
+        re = self.rank_error(sig_map, shape_map, rank_map)
+        shape = shape_map[self.shape_arg]
+        act_len = len(shape)
+        cmp_len = act_len - re
+        inds = list(range(min(act_len, cmp_len), max(act_len, cmp_len)))
+        return { self.shape_arg: inds }
+
+    def suggestion(self, rank_error):
+        if rank_error == 0:
+            return None
+        elif rank_error < 0:
+            if self.arg_kind == Kind.DATA_TENSOR:
+                msg = f'Add {-rank_error} dimensions to \'{self.shape_arg}\''
+            elif self.arg_kind in (Kind.SHAPE_TENSOR, Kind.SHAPE_LIST):
+                msg = f'Add {-rank_error} elements to \'{self.shape_arg}\''
+            elif self.arg_kind == Kind.SHAPE_INT:
+                msg = f'Increase \'{self.shape_arg}\' by {-rank_error}'
+            elif self.arg_kind == Kind.SHAPE_TENSOR2D:
+                msg = f'Add {-rank_error} columns to \'{self.shape_arg}\''
+            else:
+                pass
+        else:
+            if self.arg_kind == Kind.DATA_TENSOR:
+                msg = (f'Remove {rank_error} dimensions from '
+                f'\'{self.shape_arg}\'')
+            elif self.arg_kind in (Kind.SHAPE_TENSOR, Kind.SHAPE_LIST):
+                msg = (f'Remove {rank_error} elements from '
+                        f'\'{self.shape_arg}\'')
+            elif self.arg_kind == Kind.SHAPE_INT:
+                msg = f'Decrease \'{self.shape-arg}\' by {-rank_error}'
+            elif self.arg_kind == Kind.SHAPE_TENSOR2D:
+                msg = (f'Remove {rank_error} columns from '
+                        f'\'{self.shape_arg}\'')
+        return msg
+
+class IntRankConstraint(RankConstraint):
+    """
+    Define the constraint: rank(rank_sig) == arg_val, where arg_val is the
+    value of {shape_arg}
+    """
+    def __init__(self, name, rank_arg, rank_sig):
+        super().__init__(name, None, None)
+        self.rank_sig = rank_sig
+        self.rank_arg = rank_arg
+
+    def observed_rank(self, _, **kwargs):
+        val = kwargs[self.rank_arg]
+        return val
+
+    def computed_rank(self, sig_map, rank_map):
+        sig = self.rank_sig
+        return sum(rank_map[s] for s in sig)
+
+    def highlight_map(self, *args):
+        return { self.rank_arg: [0] }
+
+    def suggestion(self, rank_error):
+        if rank_error == 0:
+            return None
+        elif rank_error < 0:
+            return f'Increase \'{self.shape_arg}\' by {-rank_error}'
+        else:
+            return f'Decrease \'{self.shape_arg}\' by {rank_error}'
+
+class DimRankConstraint(RankConstraint):
+    """
+    Define a constraint called {name} with the logic:
+
+    dims(source_idx)[0] = get_dims_func(shape)
+
+    """
+    def __init__(self, name, rank_sig, shape_arg, get_dims_func, source_idx):
+        super().__init__(name, shape_arg, get_dims_func)
+        self.rank_sig = rank_sig 
+        self.source_idx = source_idx
+
+    def computed_rank(self, _, rank_map):
+        sig = self.rank_sig
+        return sum(rank_map[s] for s in sig)
+
+    def highlight_map(self, sig_map, shape_map, rank_map):
+        hl = defaultdict(list) 
+        for arg, shape in shape_map.items():
+            sig = sig_map[arg]
+            dim = 0
+            for s in sig:
+                if s == self.source_idx:
+                    hl[arg].extend(range(dim, dim + rank_map[s]))
+                dim += rank_map[s]
+        return hl
+
+    def suggestion(self, rank_error):
+        if rank_error == 0:
+            return None
+        elif rank_error < 0:
+            return (f'Increase the dimension of index \'{self.source_idx}\' by '
+                    f'{-rank_error}')
+        else:
+            return (f'Decrease the dimension of index \'{self.source_idx}\' by '
+                    f'{rank_error}')
+    
 class DTypeConstraints(object):
     def __init__(self):
         self.valid = {}

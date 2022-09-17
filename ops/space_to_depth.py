@@ -12,10 +12,11 @@ def init_schema(op):
     op.add_index('c', 'vect c channel', 1, 1)
     op.add_index('s', 'block size', 1, 1)
 
+    op.add_index_predicate('i % s == 0', flib.divis_by, 'is')
+
     def cdims(dummy):
         return [([4],)]
     op.add_index_generator(cdims, 'c', 'c')
-
     op.add_index_generator(flib.gen_blocked_sizes, 'is', 'i', 2, 8, 10, 100)
 
     data_formats = [ 
@@ -40,13 +41,19 @@ def init_schema(op):
 
     op.computed_index('o', output_dims, Kind.IDIMS)
 
-    def flattened_dims(dims_map):
-        kdims = dims_map['k']
-        block_size = dims_map['s']
-        flat = block_size * block_size * flib.reduce_prod(kdims)
+    def flattened_dims(dims_map, layout):
+        if layout == 'NCHW_VECT_C':
+            zdims = dims_map['z']
+            cdims = dims_map['c']
+            block_size = dims_map['s']
+            flat = block_size * block_size * zdims * cdims
+        else:
+            kdims = dims_map['k']
+            block_size = dims_map['s']
+            flat = block_size * block_size * flib.reduce_prod(kdims)
         return flat
 
-    op.computed_index('f', flattened_dims, Kind.IDIMS)
+    op.computed_index('f', flattened_dims, Kind.IDIMS, Kind.LAYOUT)
 
 opcheck.register('tf.nn.space_to_depth', init_schema)
 

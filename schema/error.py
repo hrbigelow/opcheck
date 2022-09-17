@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 class SchemaError(BaseException):
     """Represents an error in the Schema definition"""
     def __init__(self, msg):
@@ -37,32 +39,15 @@ class NoMatchingRanks(SchemaStatus):
     No matching index rank combinations could be found which explain the
     shape-related input arguments.
 
-    {shape_args} are the list of shape-related argument names
-    {ranks_deltas} is a list of tuples with two members.  The first is the
- 
-
-    A rank-delta is a list of integers of the same length as {shape_args}
+    {sig_shape} is produced by predicates.SigShape 
     """
-    def __init__(self, sig_shape):
-        self.sigs = { k: v[0] for k, v in sig_shape.items() }
-        self.shapes = { k: v[1] for k, v in sig_shape.items() }
-
-    @staticmethod
-    def error_key(tup):
-        _, _, tot, sum_abs = tup
-        return tot, sum_abs
+    def __init__(self, shape_map, report):
+        self.shape_map = shape_map
+        self.report = report
 
     def message(self, op):
-        sig_inst = op._signature_instantiations()
-        arg_list = self.shapes.keys()
-        diffs = []
-        for si in sig_inst:
-            diff = [ len(si[k]) - len(v) for k, v in self.shapes.items() ]
-            tot = len([e for e in diff if e != 0])
-            sum_abs = sum(abs(e) for e in diff)
-            diffs.append((si, diff, tot, sum_abs))
-        diffs = sorted(diffs, key=self.error_key)
-        return str(diffs[:3])
+        msg = op._rank_error_report(self.shape_map, self.report)
+        return msg
 
 class ArgTypeError(SchemaStatus):
     def __init__(self, arg_name):
@@ -90,12 +75,42 @@ class TensorDTypeError(SchemaStatus):
         msg = f'Tensor \'{self.ten_nane}\' has invalid dtype'
         return msg
 
-class IndexUsageError(SchemaStatus):
-    def __init__(self, idx):
-        self.idx = idx
+class DTypeNotEqual(SchemaStatus):
+    def __init__(self, src_name, src_dtype, trg_name, trg_dtype):
+        self.src_name = src_name
+        self.src_dtype = src_dtype
+        self.trg_name = trg_name
+        self.trg_dtype = trg_dtype
 
     def message(self, op):
-        return f'Index {self.idx} inconsistent'
+        msg = (f'Tensors \'{self.trg_name}\' and \'{self.src_name}\' must have '
+                f'equal dtypes.\n'
+                f'Got {self.trg_name}.dtype = {self.trg_dtype.name} and '
+                f'{self.src_name}.dtype = {self.src_dtype.name}')
+        return msg
+
+class DTypeNotAllowed(SchemaStatus):
+    def __init__(self, ten_name, ten_dtype, valid_dtypes):
+        self.ten_name = ten_name
+        self.ten_dtype = ten_dtype
+        self.valid_dtypes = valid_dtypes
+
+    def message(self, op):
+        msg = (f'Tensor \'{self.ten_name}\' had dtype={self.ten_dtype.name}. '
+                f'The allowed dtypes are '
+                f'{", ".join(d.name for d in self.valid_dtypes)}')
+        return msg
+
+class IndexUsageError(SchemaStatus):
+    def __init__(self, idx_usage, ranks, sigs, shapes):
+        self.idx_usage = idx_usage
+        self.ranks = ranks
+        self.sigs = sigs
+        self.shapes = shapes
+
+    def message(self, op):
+        return op._index_usage_error(self.idx_usage, self.ranks,
+                self.sigs, self.shapes)
 
 class NegativeDimsError(SchemaStatus):
     def __init__(self, idx, dims):
@@ -178,15 +193,20 @@ def tabulate(rows, sep, left_align=True):
             return items[i]
         except IndexError:
             return ''
-
+    
     ncols = max(len(row) for row in rows)
+    if isinstance(left_align, bool):
+        left_align = [left_align] * ncols
+
     w = [max(len(str(get(row, c))) for row in rows) for c in range(ncols)]
-    if left_align:
-        t = [sep.join(f'{str(row[c]):<{w[c]}s}' for c in range(len(row)))
-                for row in rows]
-    else:
-        t = [sep.join(f'{str(row[c]):>{w[c]}s}' for c in range(len(row)))
-                for row in rows]
+    t = []
+    for row in rows:
+        fields = []
+        for c in range(len(row)):
+            align = '<' if left_align[c] else '>'
+            field = f'{str(row[c]):{align}{w[c]}s}'
+            fields.append(field)
+        t.append(sep.join(fields))
 
     begs = [sum(w[:s]) + len(sep) * s for s in range(ncols)]
     ends = [sum(w[:s+1]) + len(sep) * s for s in range(ncols)]
@@ -202,18 +222,5 @@ def print_indices(self):
         rows.append([ilist, tup.name])
     tab, _ = tabulate(rows, '   ', True)
     return '\n'.join(tab)
-
-def print_shapes(self, shapes, highlight):
-    msg = ''
-    for shape in shapes:
-        msg += '\n'.join(shape.index_usage(highlight))
-        msg += '\n\n'
-    return msg
-
-def print_inputs(self, highlight=None):
-    return self.print_shapes(self.input_shapes, highlight)
-
-def print_outputs(self, highlight=None):
-    return self.print_shapes(self.return_shapes, highlight)
 """
 

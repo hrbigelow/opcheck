@@ -27,7 +27,16 @@ def delete_from_shape(shape):
     shape.pop(del_pos)
     return shape
 
-def alter_rank(arg_val, mutate_shape_func, kind):
+def increment_dim(shape):
+    if isinstance(shape, int):
+        return shape + 1
+    shape = deepcopy(shape)
+    rank = len(shape)
+    c = randint(0, rank)
+    shape[c] += 1
+    return shape 
+
+def alter_shape(arg_val, mutate_shape_func, kind):
     if kind == Kind.DATA_TENSOR:
         shape, dtype = arg_val
         shape = mutate_shape_func(shape)
@@ -45,15 +54,17 @@ def alter_rank(arg_val, mutate_shape_func, kind):
         shape = mutate_shape_func(shape)
         return tf.constant(shape, dtype=ten.dtype)
     elif kind == Kind.SHAPE_INT:
-        pass # how to deal with this?
+        shape = mutate_shape_func(arg_val)
+        return shape
 
+def increase_dim(arg_val, kind):
+    return alter_shape(arg_val, increment_dim, kind)
 
 def increase_rank(arg_val, kind):
-    return alter_rank(arg_val, insert_to_shape, kind)
+    return alter_shape(arg_val, insert_to_shape, kind)
 
 def decrease_rank(arg_val, kind):
-    return alter_rank(arg_val, delete_from_shape, kind)
-
+    return alter_shape(arg_val, delete_from_shape, kind)
 
 def get_rank(arg_val, kind):
     """
@@ -70,12 +81,3 @@ def get_rank(arg_val, kind):
         return arg_val.shape[0]
     elif kind == Kind.SHAPE_INT:
         return arg_val
-
-
-
-
-
-
-
-
-

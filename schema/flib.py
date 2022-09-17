@@ -65,6 +65,17 @@ def not_both_over_one(shape1, shape2):
     else:
         return Success()
 
+def divis_by(numer, denom):
+    """
+    Return a status confirming that {nuner} is evenly divisible by {denom}
+    """
+    if np.all(numer % denom == 0):
+        return Success()
+    else:
+        return CustomError(
+            f'numerator must be divisible by denominator: '
+            f'Got numer={numer}, denom={denom}')
+
 def gen_not_both_over_one(ranks_list, lo, hi):
     """
     Generate a list of shape tuples in range [lo, hi], in which no more than

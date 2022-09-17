@@ -1,6 +1,7 @@
 import sys
 import numpy as np
 import tensorflow as tf
+from collections import defaultdict
 from .error import *
 from . import util
 from .base import Kind, kind, kpfx, kname
@@ -162,17 +163,18 @@ class ValidDTypes(object):
         for ten_name, valid_dtypes in self.dtype_cons.valid.items():
             dtype = dtype_map[ten_name]
             if dtype not in valid_dtypes:
-                return False, DTypeNotAllowed(ten_name, dtype)
+                return False, DTypeNotAllowed(ten_name, dtype, valid_dtypes)
         for trg_name, src_name in self.dtype_cons.equiv.items():
             src_dtype = dtype_map[src_name]
             trg_dtype = dtype_map[trg_name]
             if trg_dtype != src_dtype:
-                return False, DTypeNotEqual(src_name, trg_name)
+                stat = DTypeNotEqual(src_name, src_dtype, trg_name, trg_dtype)
+                return False, stat
         return True, None
 
-class SigShape(object):
+class ShapeMap(object):
     """
-    Produce a map of arg_name => (sig, shape)
+    Produce a map of arg_name => shape 
     """
     def __init__(self):
         pass
@@ -180,60 +182,102 @@ class SigShape(object):
     def __call__(self, **kwargs):
         # convert a map containing: pfx:sig => sig, pfx:shape => shape to
         # sig => shape
+        shape_map = {}
+        for kn, val in kwargs.items():
+            prefix = kpfx(kn)
+            suffix = kind(kn)
+            if suffix == Kind.SHAPE:
+                shape_map[prefix] = val 
+        return True, shape_map
+
+class SigMap(object):
+    """
+    Aggregate all of the :sig nodes into a map of arg_name => sig
+    """
+    def __init__(self):
+        pass
+
+    def __call__(self, **kwargs):
         sig_map = {}
-        shp_map = {}
         for kn, val in kwargs.items():
             prefix = kpfx(kn)
             suffix = kind(kn)
             if suffix == Kind.SIG:
-                sig_map[prefix] = val
-            elif suffix == Kind.SHAPE:
-                shp_map[prefix] = val 
-        if set(shp_map.keys()) != set(sig_map.keys()):
-            raise SchemaError(
-                f'{type(self).__qualname__}: Expected the same set of SIG and '
-                f'SHAPE nodes.  Got sig nodes: {sig_map.keys()}\n'
-                f'but shape nodes: {shp_map.keys()}')
-        sig_shape_map = { k: (v, shp_map[k]) for k, v in sig_map.items() }
-        return True, sig_shape_map
-
+                sig_map[prefix] = val 
+        return True, sig_map
 
 class IndexRanks(object):
-    def __init__(self, op, rank_cons):
+    def __init__(self, op, rank_candidates, rank_cons):
         self.op = op
+        self.cands = rank_candidates
         self.rcons = rank_cons
 
-    def __call__(self, sig_shape, **kwargs):
-        eq_map = self.rcons.equiv
-        free_inds = self.rcons.free_inds()
-        k = len(free_inds)
-        mins = self.rcons.mins_inds()
-        maxs = self.rcons.maxs_inds()
-        cmap = self.rcons.const_inds(sig_shape, kwargs)
-        gen = util.feasible_region(k, mins, maxs)
-        ranks_list = list(gen)
-        valid_ranks = []
-        for ranks in ranks_list:
-            delta = [sum(ranks[i] for i in ir.inds) - ir.rank for ir in
-                    cmap.values()]
-            if all(d == 0 for d in delta):
-                valid_ranks.append(ranks)
+    def __call__(self, shape_map, **kwargs):
+        fields = ['format', 'sigs', 'ranks', 'suggestions', 'highlight']
+        Candidate = namedtuple('Candidate', fields)
 
-        if len(valid_ranks) > 1:
-            raise SchemaError(
-                f'{type(self).__qualname__}: {len(ranks_list)} valid rank '
-                f'combinations were found.  This means that schema '
-                f'\'{self.op.op_path}\' lacks proper rank constraints. '
-                f'Current constraints are:\n'
-                f'{cmap.keys()}')
-        elif len(valid_ranks) == 0:
-            return False, NoMatchingRanks(sig_shape)
+        valid_map = None
+        candidates = []
 
-        ranks = valid_ranks[0]
-        index_ranks = dict(zip(free_inds, ranks))
-        eq_ranks = { trg: index_ranks[src] for trg, src in eq_map.items() }
-        index_ranks.update(eq_ranks)
-        return True, index_ranks
+        pseudo_kname = kname('layout', Kind.PSEUDO)
+        data_format, layout = kwargs.get(pseudo_kname, (None, None))
+        sig_plus_layout = self.op._sig_layout()
+        for sig_map, cand_format in sig_plus_layout:
+            if ((data_format is None and cand_format is None) or 
+                    (data_format == cand_format)):
+                layout_delta = 0
+            else:
+                layout_delta = 1
+
+            for cand_ranks in self.cands.value_gen():
+                deltas = []
+                suggestions = []
+                highlight_map = defaultdict(list)
+                for c in self.rcons:
+                    delta = c.rank_error(sig_map, shape_map, cand_ranks,
+                            **kwargs)
+                    deltas.append(delta)
+                    sug = c.suggestion(delta)
+                    if sug is not None:
+                        suggestions.append(sug)
+                    if delta != 0:
+                        hl = c.highlight_map(sig_map, shape_map, cand_ranks)
+                        for arg, pos in hl.items():
+                            highlight_map[arg].extend(pos)
+
+                if layout_delta == 1:
+                    sug = f'Use layout {cand_format}.'
+                    suggestions.append(sug)
+                    # highlight the argument itself
+                    highlight_map[Kind.LAYOUT].append(0)
+
+                if all(d == 0 for d in deltas) and layout_delta == 0:
+                    if valid_map is None:
+                        valid_map = cand_ranks
+                    else:
+                        raise SchemaError(
+                            f'{type(self).__qualname__}: multiple valid rank '
+                            f'combinations were found.  This means that schema'
+                            f' \'{self.op.op_path}\' lacks proper rank '
+                            f'constraints.  Current constraints are:\n'
+                            f'{", ".join(c.name for c in self.rcons)}')
+
+                cand = Candidate(cand_format, sig_map, cand_ranks, suggestions,
+                        highlight_map)
+                candidates.append((deltas, layout_delta, cand))
+
+        def key(cand):
+            delta, layout_delta, _ = cand
+            num_errors = len(list(d for d in delta if d != 0)) + layout_delta
+            tot_error = sum(abs(d) for d in delta) + layout_delta
+            return num_errors, tot_error
+
+        if valid_map is None:
+            top = sorted(candidates, key=key)
+            report = [ t[2] for t in top ]
+            return False, NoMatchingRanks(shape_map, report)
+        else:
+            return True, valid_map 
 
 def calc_sig_range(rank_map, idx, sig):
     ind = sig.index(idx)
@@ -241,32 +285,44 @@ def calc_sig_range(rank_map, idx, sig):
     rank = rank_map[idx] 
     return [start, start + rank]
 
-class InputDims(object):
+class IndexDims(object):
     """
     Used by the IDIMS node
     """
     def __init__(self):
         pass
 
-    def __call__(self, rank_map, sig_shape, **kwargs):
-        input_inds = { idx for ss in sig_shape.values() for idx in ss[0] }
-        index_dims = {}
-        for idx in input_inds:
-            # find all usages of idx
-            idx_shapes = set()
-            for _, ss in sig_shape.items():
-                sig, shape = ss
-                if idx not in sig:
-                    continue
-                sub_range = calc_sig_range(rank_map, idx, sig)
-                idx_shape = shape[slice(*sub_range)]
-                idx_shapes.add(tuple(idx_shape))
+    def __call__(self, ranks, sigs, shapes):
+        def nextn(it, n):
+            return [ next(it) for _ in range(n) ]
 
-            if len(idx_shapes) != 1:
-                return False, IndexUsageError(idx)
-            else:
-                index_dims[idx] = idx_shapes.pop()
-        return True, index_dims
+        # for each index and each component, produce a usage map 
+        idx_usage = {} 
+                       # idx => [(dim => [arg1, ...]), 
+                       #         (dim => [arg1, ...]), 
+                       #         ...]
+        for arg, sig in sigs.items():
+            shape = shapes[arg]
+            it = iter(shape)
+            for idx in sig:
+                r = ranks[idx]
+                if idx not in idx_usage:
+                    idx_usage[idx] = [defaultdict(list) for _ in range(r)]
+                dims = nextn(it, r)
+                for c, dim in enumerate(dims):
+                    idx_usage[idx][c][dim].append(arg)
+                
+        idx_dims = {}
+        for idx in list(idx_usage):
+            comp = idx_usage[idx]
+            if all(len(c) == 1 for c in comp):
+                idx_usage.pop(idx)
+                idx_dims[idx] = [i for c in comp for i in c] 
+        
+        if len(idx_usage) != 0:
+            return False, IndexUsageError(idx_usage, ranks, sigs, shapes)
+        else:
+            return True, idx_dims
 
 class Dims(object):
     """
@@ -290,12 +346,10 @@ class ComputedDims(object):
     def __init__(self, comp_dims):
         self.comp_dims = comp_dims
 
-    def __call__(self, **kwargs):
+    def __call__(self, dims_map, **kwargs):
         # convert dims tuples to np.arrays
-        dims_map = kwargs.get(Kind.IDIMS, None)
-        if dims_map is not None:
-            dims_map = { k: np.array(v) for k, v in dims_map.items() }
-            kwargs[Kind.IDIMS] = dims_map
+        dims_map = { k: np.array(v) for k, v in dims_map.items() }
+        kwargs[Kind.IDIMS] = dims_map
 
         comp_dims_map = self.comp_dims(**kwargs)
         # convert back to integer tuples
@@ -324,7 +378,7 @@ class ArgLayout(object):
         if data_format not in self.format_to_layout:
             return False, ArgValueError(self.arg_name, data_format)
         else:
-            return True, self.format_to_layout[data_format]
+            return True, (data_format, self.format_to_layout[data_format])
 
 class ArgDataFormat(object):
     def __init__(self, arg_name, layouts, rank_index):
@@ -332,7 +386,8 @@ class ArgDataFormat(object):
         self.layouts = layouts
         self.rank_index = rank_index
 
-    def __call__(self, arg_val, rank_map, layout):
+    def __call__(self, arg_val, rank_map, format_layout):
+        layout = format_layout[1]
         rmap = self.layouts[layout]
         rank = rank_map[self.rank_index]
         data_format = rmap[rank]
@@ -370,7 +425,8 @@ class LayoutOption(object):
         self.arg_name = arg_name
         self.sig_list = sig_list
 
-    def __call__(self, layout):
+    def __call__(self, format_layout):
+        _, layout = format_layout 
         return True, self.sig_list[layout]
 
 class Closure(object):
