@@ -53,7 +53,7 @@ def init_schema(op):
             flat = block_size * block_size * flib.reduce_prod(kdims)
         return flat
 
-    op.computed_index('f', flattened_dims, Kind.IDIMS, Kind.LAYOUT)
+    op.computed_index('f', flattened_dims, Kind.IDIMS, Kind.DATA_FORMAT)
 
 opcheck.register('tf.nn.space_to_depth', init_schema)
 

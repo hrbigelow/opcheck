@@ -43,7 +43,7 @@ class Ranks(object):
         Generate all allowed rank combinations.  Generates a list of maps.
         Each map has index => rank for each index in self.index
         """
-        return list(self.rcands.value_gen())
+        return list(self.rcands.all_index_ranks())
 
 class Rank(object):
     """
@@ -338,24 +338,18 @@ class ShapeTensor2D(object):
         ten = tf.transpose(ten, (1,0))
         return [ten]
 
-class SigDataFormat(object):
+class SigMap(object):
     """
-    Produce a map of arg_kname => sig, for all SIG nodes.
-    Additionally, the map includes arg_name => data_format, taken from the
-    pseudo:layout node, if it exists.
+    Aggregate all of the :sig nodes into a map of arg_name => sig
     """
     def __init__(self):
         pass
 
     def __call__(self, **kwargs):
         sig_map = {}
-        data_format = None
         for kn, val in kwargs.items():
-            if kind(kn) == Kind.LAYOUT:
-                data_format = val
-            else:
-                sig_map[kpfx(kn)] = val
-        return [(sig_map, data_format)]
+            sig_map[kpfx(kn)] = val
+        return [sig_map]
 
 class Closure(object):
     def __init__(self, obj):

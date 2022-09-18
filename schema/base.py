@@ -34,13 +34,12 @@ class Kind(object):
     # these must have prefixes
     DTYPE = ':dtype'
     SIG = ':sig'
-    SIG_LAYOUT = ':sig_layout'
     SIG_MAP = ':sig_map'
     SHAPE_MAP = ':shape_map'
 
     ARG = ':arg'
     PSEUDO = ':pseudo'
-    LAYOUT = ':layout'
+    DATA_FORMAT = ':data_format'
     DATA_TENSOR = ':data_tensor'
     SHAPE_LIST = ':shape_list'
     SHAPE_INT = ':shape_int'
@@ -86,7 +85,7 @@ class RankCandidates(object):
     def index_equated(self, index):
         return index in self.equiv
     
-    def value_gen(self):
+    def all_index_ranks(self):
         fi = [ k for k in self.op.index.keys() if k not in self.equiv ]
         min_map = { tuple(fi.index(s) for s in sig): rank for sig, rank in
                 self.mins.items() } 
@@ -149,6 +148,38 @@ class RankConstraint(object):
         """
         raise NotImplementedError
 
+class SliceRankConstraint(RankConstraint):
+    def __init__(self, shape_arg, slice_index):
+        """
+        Represent the logical constraint:
+
+        rank(sig) == len(shape)
+
+        where sig and shape are the signature and shape associated with
+        {shape_arg}.{slice_index}.  These special nodes are created by the API
+        call arg_shape_tensor2d.
+        """
+        node = f'{shape_arg}.{slice_index}'
+        name = f'rank(sig({node})) == len({node})'
+        super().__init__(name, node, len)
+        self.arg_name = shape_arg
+
+    def highlight_map(self, sig_map, shape_map, rank_map):
+        obs_rank = self.observed_rank(shape_map)
+        cmp_rank = self.computed_rank(sig_map, rank_map)
+        lo = min(obs_rank, cmp_rank)
+        hi = max(obs_rank, cmp_rank)
+        inds = list(range(lo, hi))
+        return { self.shape_arg: inds }
+
+    def suggestion(self, rank_error):
+        if rank_error == 0:
+            return None
+        elif rank_error < 0:
+            msg = f'Increase {self.arg_name}.shape[1] by {-rank_error}'
+        else:
+            msg = f'Decrease {self.arg_name}.shape[1] by {rank_error}'
+
 class ShapeRankConstraint(RankConstraint):
     def __init__(self, shape_arg, arg_kind):
         """
@@ -181,31 +212,27 @@ class ShapeRankConstraint(RankConstraint):
         return { self.shape_arg: inds }
 
     def suggestion(self, rank_error):
+        s = 's' if abs(rank_error) > 1 else ''
         if rank_error == 0:
             return None
         elif rank_error < 0:
             if self.arg_kind == Kind.DATA_TENSOR:
-                msg = f'Add {-rank_error} dimensions to \'{self.shape_arg}\''
+                msg = f'Add {-rank_error} dimension{s} to \'{self.shape_arg}\''
             elif self.arg_kind in (Kind.SHAPE_TENSOR, Kind.SHAPE_LIST):
-                msg = f'Add {-rank_error} elements to \'{self.shape_arg}\''
+                msg = f'Add {-rank_error} element{s} to \'{self.shape_arg}\''
             elif self.arg_kind == Kind.SHAPE_INT:
                 msg = f'Increase \'{self.shape_arg}\' by {-rank_error}'
-            elif self.arg_kind == Kind.SHAPE_TENSOR2D:
-                msg = f'Add {-rank_error} columns to \'{self.shape_arg}\''
             else:
                 pass
         else:
             if self.arg_kind == Kind.DATA_TENSOR:
-                msg = (f'Remove {rank_error} dimensions from '
+                msg = (f'Remove {rank_error} dimension{s} from '
                 f'\'{self.shape_arg}\'')
             elif self.arg_kind in (Kind.SHAPE_TENSOR, Kind.SHAPE_LIST):
-                msg = (f'Remove {rank_error} elements from '
+                msg = (f'Remove {rank_error} element{s} from '
                         f'\'{self.shape_arg}\'')
             elif self.arg_kind == Kind.SHAPE_INT:
                 msg = f'Decrease \'{self.shape-arg}\' by {-rank_error}'
-            elif self.arg_kind == Kind.SHAPE_TENSOR2D:
-                msg = (f'Remove {rank_error} columns from '
-                        f'\'{self.shape_arg}\'')
         return msg
 
 class IntRankConstraint(RankConstraint):

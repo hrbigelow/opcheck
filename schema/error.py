@@ -1,5 +1,10 @@
 from collections import namedtuple
 
+class OpCheckInternalError(BaseException):
+    """A bug in OpCheck"""
+    def __init__(self, ex):
+        self.ex = ex
+
 class SchemaError(BaseException):
     """Represents an error in the Schema definition"""
     def __init__(self, msg):
@@ -211,16 +216,4 @@ def tabulate(rows, sep, left_align=True):
     begs = [sum(w[:s]) + len(sep) * s for s in range(ncols)]
     ends = [sum(w[:s+1]) + len(sep) * s for s in range(ncols)]
     return t, list(zip(begs, ends))
-
-"""
-def print_indices(self):
-    rows = [['index group', 'description']]
-    for letter, tup in self.index.items():
-        ilist = ', '.join(self.index_list(letter))
-        if ilist == '':
-            ilist = '<empty>'
-        rows.append([ilist, tup.name])
-    tab, _ = tabulate(rows, '   ', True)
-    return '\n'.join(tab)
-"""
 

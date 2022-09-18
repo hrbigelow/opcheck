@@ -143,8 +143,9 @@ class ShapeTensorSlice(object):
     def __call__(self, ten):
         if ten.dtype not in (tf.int32, tf.int64):
             return False, ArgValueError(self.arg_name, ten)
-        if self.slice_index >= ten.shape[1]:
-            # Tensor has wrong shape
+        elif ten.shape.rank != 2:
+            return False, ArgValueError(self.arg_name, ten)  
+        elif self.slice_index >= ten.shape[1]:
             return False, ArgValueError(self.arg_name, ten)
         nums = ten[:,self.slice_index].numpy().tolist()
         if any(n < 0 for n in nums):
@@ -207,6 +208,21 @@ class SigMap(object):
         return True, sig_map
 
 class IndexRanks(object):
+    """
+    Search the set of all valid index rank combinations, combined with all
+    signature/layout combinations.
+
+    For each combination, and for each constraint, compute rank_error,
+    highlight_map, and suggestions, and accumulate them in an array.
+
+    If exactly one index rank combination plus signature/layout is found to
+    have zero rank errors over all the constraints, succeed, and return the
+    index rank combination.
+
+    If none are found, produce a NoMatchingRanks error with a selected set of
+    'best' candidates (with minimal errors).
+
+    """
     def __init__(self, op, rank_candidates, rank_cons):
         self.op = op
         self.cands = rank_candidates
@@ -221,50 +237,50 @@ class IndexRanks(object):
 
         pseudo_kname = kname('layout', Kind.PSEUDO)
         data_format, layout = kwargs.get(pseudo_kname, (None, None))
-        sig_plus_layout = self.op._sig_layout()
-        for sig_map, cand_format in sig_plus_layout:
+        # replace this with a single generative node which generates
+        # Ranks, Sigs, Layout 
+        for cand_ranks, sig_map, cand_format in self.op._ranks_sigs_format():
             if ((data_format is None and cand_format is None) or 
                     (data_format == cand_format)):
                 layout_delta = 0
             else:
                 layout_delta = 1
 
-            for cand_ranks in self.cands.value_gen():
-                deltas = []
-                suggestions = []
-                highlight_map = defaultdict(list)
-                for c in self.rcons:
-                    delta = c.rank_error(sig_map, shape_map, cand_ranks,
-                            **kwargs)
-                    deltas.append(delta)
-                    sug = c.suggestion(delta)
-                    if sug is not None:
-                        suggestions.append(sug)
-                    if delta != 0:
-                        hl = c.highlight_map(sig_map, shape_map, cand_ranks)
-                        for arg, pos in hl.items():
-                            highlight_map[arg].extend(pos)
-
-                if layout_delta == 1:
-                    sug = f'Use layout {cand_format}'
+            deltas = []
+            suggestions = []
+            highlight_map = defaultdict(list)
+            for c in self.rcons:
+                delta = c.rank_error(sig_map, shape_map, cand_ranks,
+                        **kwargs)
+                deltas.append(delta)
+                sug = c.suggestion(delta)
+                if sug is not None:
                     suggestions.append(sug)
-                    # highlight the argument itself
-                    highlight_map[Kind.LAYOUT].append(0)
+                if delta != 0:
+                    hl = c.highlight_map(sig_map, shape_map, cand_ranks)
+                    for arg, pos in hl.items():
+                        highlight_map[arg].extend(pos)
 
-                if all(d == 0 for d in deltas) and layout_delta == 0:
-                    if valid_map is None:
-                        valid_map = cand_ranks
-                    else:
-                        raise SchemaError(
-                            f'{type(self).__qualname__}: multiple valid rank '
-                            f'combinations were found.  This means that schema'
-                            f' \'{self.op.op_path}\' lacks proper rank '
-                            f'constraints.  Current constraints are:\n'
-                            f'{", ".join(c.name for c in self.rcons)}')
+            if layout_delta == 1:
+                sug = f'Use layout {cand_format}'
+                suggestions.append(sug)
+                # highlight the argument itself
+                highlight_map[Kind.DATA_FORMAT].append(0)
 
-                cand = Candidate(cand_format, sig_map, cand_ranks, suggestions,
-                        highlight_map)
-                candidates.append((deltas, layout_delta, cand))
+            if all(d == 0 for d in deltas) and layout_delta == 0:
+                if valid_map is None:
+                    valid_map = cand_ranks
+                else:
+                    raise SchemaError(
+                        f'{type(self).__qualname__}: multiple valid rank '
+                        f'combinations were found.  This means that schema'
+                        f' \'{self.op.op_path}\' lacks proper rank '
+                        f'constraints.  Current constraints are:\n'
+                        f'{", ".join(c.name for c in self.rcons)}')
+
+            cand = Candidate(cand_format, sig_map, cand_ranks, suggestions,
+                    highlight_map)
+            candidates.append((deltas, layout_delta, cand))
 
         def key(cand):
             delta, layout_delta, _ = cand
@@ -272,8 +288,13 @@ class IndexRanks(object):
             tot_error = sum(abs(d) for d in delta) + layout_delta
             return num_errors, tot_error
 
+        def filt(cand):
+            num_errors, tot_error = key(cand)
+            return num_errors < 3 and tot_error < 4
+
         if valid_map is None:
-            top = sorted(candidates, key=key)
+            filtered = filter(filt, candidates)
+            top = sorted(filtered, key=key)
             report = [ t[2] for t in top ]
             return False, NoMatchingRanks(shape_map, data_format, report)
         else:

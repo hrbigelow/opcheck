@@ -2,7 +2,8 @@
 import tensorflow as tf
 import inspect
 from schema import SchemaApi
-from schema.error import FrameworkError, Success, NotApplicable
+from schema.error import OpCheckInternalError, FrameworkError, Success
+from schema.error import NotApplicable
 
 REGISTRY = {}
 
@@ -21,15 +22,15 @@ def register(op_path, init_schema_func):
 
     def wrapped_op(*args, **kwargs):
         # executes during 'framework call phase'
-        sig = inspect.signature(func)
-        bind_obj = sig.bind(*args, **kwargs)
-        bind_obj.apply_defaults()
-        op._prepare_call(bind_obj.arguments)
-        op._check_args()
         try:
-            ret_val = func(**bind_obj.arguments)
-        except Exception as ex:
-            op._log_framework_status(ex)
+            op._prepare_call(*args, **kwargs)
+            op._check_args()
+        except BaseException as ex:
+            raise OpCheckInternalError(ex)
+        try:
+            ret_val = func(**op.arguments)
+        except BaseException as ex:
+            op.framework_status = FrameworkError(ex)
             op.return_status = NotApplicable()
         else:
             op.framework_status = Success()
@@ -37,9 +38,6 @@ def register(op_path, init_schema_func):
         finally:
             if not op._passed():
                 op._report()
-            # print('in finally:  framework status: ',
-                    # op.framework_status.message(op))
-            # assert(op.p.framework_status is not None)
             if isinstance(op.framework_status, FrameworkError):
                 raise op.framework_status.ex
             return ret_val

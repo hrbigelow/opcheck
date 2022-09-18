@@ -274,9 +274,10 @@ class PredNode(FuncNode):
     def all_children(self):
         return self.pred_children + self.children
 
-def all_values(node):
+def all_values(*nodes):
     """
-    Generate all values from a given node
+    Collects the slice of value combinations for {nodes} induced by the
+    subgraph of {nodes} and all of their ancestors
     """
     # collect all ancestors
     found = set()
@@ -287,15 +288,19 @@ def all_values(node):
         for pa in n.parents:
             dfs(pa)
 
-    dfs(node)
+    for node in nodes:
+        dfs(node)
 
     topo_nodes = _topo_sort(found)
     config = gen_graph_iterate(topo_nodes)
-    results = [ item[node.name] for item in config ]
+    results = [ tuple(c[n.name] for n in nodes) for c in config ]
     return results
 
 def gen_graph_iterate(nodes):
-    """Produce all possible settings of the graph"""
+    """
+    Produce all possible settings of the graph nodes as a generator of map
+    items.  Each map item is node.name => val
+    """
     # print('gen_graph_iterate: ', ','.join(n.name for n in visited_nodes))
     topo_nodes = _topo_sort(nodes)
     val_map = {}
