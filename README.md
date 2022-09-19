@@ -1,7 +1,7 @@
 
 # OpCheck - Better error messages for Tensor operations
 
-##Synopsis
+## Synopsis
 
 ```python
 import tensorflow as tf
@@ -37,22 +37,10 @@ d      dilations
 
 input  filters  strides  data_format  dilations  return[0]
 bki    fkl      s        NCW          d          blo
-bkii   ffkl     ss       NCW          dd         bloo
-bkiii  fffkl    sss      NCW          ddd        blooo
 bik    fkl      s        NWC          d          bol
-biik   ffkl     ss       NWC          dd         bool
-biiik  fffkl    sss      NWC          ddd        boool
-bki    fkl      s        NCHW         d          blo
 bkii   ffkl     ss       NCHW         dd         bloo
-bkiii  fffkl    sss      NCHW         ddd        blooo
-bik    fkl      s        NHWC         d          bol
 biik   ffkl     ss       NHWC         dd         bool
-biiik  fffkl    sss      NHWC         ddd        boool
-bki    fkl      s        NCDHW        d          blo
-bkii   ffkl     ss       NCDHW        dd         bloo
 bkiii  fffkl    sss      NCDHW        ddd        blooo
-bik    fkl      s        NDHWC        d          bol
-biik   ffkl     ss       NDHWC        dd         bool
 biiik  fffkl    sss      NDHWC        ddd        boool
 ```
 
@@ -70,5 +58,6 @@ same semantic group.  For example, further down we see an 'input' signature of
 convolution.  The total set of lines in this section list all of the valid
 geometries for this operation.
 
-
+The `data_format` argument, if it exists, is part of the shape-related
+arguments because it determines which set of valid 
 
