@@ -115,18 +115,11 @@ class SchemaApi(object):
         else:
             return tups
 
-    def _sig_layout(self):
-        """
-        Produce the combination of all shape signatures plus layout.
-        Each entry is a map of arg_name => sig_or_layout
-        """
-        sl_node = self.gen_graph[Kind.SIG_FORMAT]
-        sl_list = fgraph.all_values(sl_node)
-        return sl_list
-
     def _shape_key_order(self, shape_keys):
         # order the shape keys in argument order
         arg_order = list(self.params.keys())
+        arg_order.extend(str(i) for i in range(self.num_returns))
+
         def key_fun(shape_key):
             pfx = shape_key.split('.')[0]
             return arg_order.index(pfx)
@@ -137,7 +130,13 @@ class SchemaApi(object):
         """
         Generate the formatted signature inventory for this op
         """
-        sig_plus_layout = self._sig_layout()
+        names = [ Kind.SIG_MAP, Kind.DATA_FORMAT ]
+        nodes = tuple(self.gen_graph[n] for n in names if n in self.gen_graph)
+        tups = fgraph.all_values(*nodes)
+        if len(nodes) == 1:
+            tups = [ (*tup, None) for tup in tups ]
+        sig_plus_layout = tups
+
         sig_map, _ = sig_plus_layout[0]
         args = [ *sig_map ]
         if self.layout_param is not None:
@@ -531,26 +530,6 @@ class SchemaApi(object):
                 n in reps) 
         return call_string
 
-    def _validation_report(self, config):
-        err = ''
-        err += f'Input Status: {self.input_status.message(self)}\n'
-        err += f'Framework Status: {self.framework_status.message(self)}\n'
-        msg = ''
-        dims = ', '.join(f'{k}:{v}' for k,v in config[Kind.DIMS].items())
-        msg += f'\nIndexes: {dims}'
-        dtypes = ', '.join(f'{k}:{v.name}' for k,v in config[Kind.DTYPES].items()) 
-        msg += f'\nDTypes: ({dtypes})' 
-        # sigs = ', '.join(f'{n}: {sig}' for n, sig in self.arg_sigs.items())
-        # msg += f'\nShape Signatures: {sigs}'
-        for kname, arg_val in config.items():
-            if isinstance(arg_val, tf.Tensor):
-                msg += f'\n{kname} shape: {arg_val.shape.as_list()}'
-            elif kpfx(kname) == '':
-                continue
-            else:
-                msg += f'\n{kname}: {arg_val}'
-        return msg, err
-
     def _report(self):
         msg = self.input_status.message(self)
         print(msg, file=sys.stderr)
@@ -560,20 +539,12 @@ class SchemaApi(object):
         for n in self.input_pred_graph:
             print(f'{n.name}: {n.cached_val}')
 
-    def _sig_inds(self, sig):
-        inds = list(self.index.keys())
-        return tuple(inds.index(idx) for idx in sig)
-
-    def _check_arg_name(self, arg_name):
-        """Ensure {arg_name} is a valid argument name"""
+    def _get_arg(self, arg_name):
+        """Retrieve the value of {arg_name} argument at call-time."""
         if arg_name not in self.params:
             raise SchemaError(
                 f'\'{arg_name}\' not a known parameter. '
                 f'Known parameters are: {self.params.keys()}')
-
-    def _get_arg(self, arg_name, default=None):
-        """Retrieve the value of {arg_name} argument at call-time."""
-        self._check_arg_name(arg_name)
         return self.arguments[arg_name]
 
     def _set_arg_kname(self, arg_name, arg_kname):
@@ -641,9 +612,11 @@ class SchemaApi(object):
         P.add_node(Kind.DTYPES, pr.ValidDTypes(self.dtype_cons))
         P.add_node(Kind.SHAPE_MAP, pr.ShapeMap())
         P.add_node(Kind.SIG_MAP, pr.SigMap())
-        index_ranks_obj = pr.IndexRanks(self, self.rank_candidates, self.rank_cons)
+        index_ranks_obj = pr.IndexRanks(self, self.rank_candidates,
+                self.rank_cons)
         P.add_node(Kind.RANKS, index_ranks_obj, Kind.SHAPE_MAP)
-        P.add_node(Kind.IDIMS, pr.IndexDims(), Kind.RANKS, Kind.SIG_MAP, Kind.SHAPE_MAP)
+        P.add_node(Kind.IDIMS, pr.IndexDims(), Kind.RANKS, Kind.SIG_MAP,
+                Kind.SHAPE_MAP)
         P.add_node(Kind.CDIMS, pr.ComputedDims(self.comp_dims), Kind.IDIMS)
 
     def _init_gen_graph(self):
@@ -694,18 +667,6 @@ class SchemaApi(object):
                 f'\'{arg_name}\' has no registered dtype constraint.\n'
                 f'Call tensor_equate_dtypes or tensor_valid_dtypes '
                 f'for this tensor.')
-
-    @staticmethod
-    def _convert_str(call_func, func_or_str, arg_names):
-        if isinstance(func_or_str, str):
-            if len(arg_names) != 0:
-                raise SchemaError(
-                    f'{type(call_func).__qualname__}: A string-valued '
-                    f'arg \'{func_or_str}\' cannot have arguments. '
-                    f'Got arguments \'{arg_names}\'')
-            return lambda: func_or_str 
-        else:
-            return func_or_str
 
     # ============ PUBLIC API ====================
     def add_index(self, idx, description, min_rank=None, max_rank=None):
@@ -924,91 +885,28 @@ class SchemaApi(object):
         layout_pnode = P.get_node(pseudo_kname)
         ranks_pnode.append_parent(layout_pnode)
 
-    def arg_tensor(self, arg_name, *sigs):
-        """
-        Register {arg_name} as a tensor.  
-
-        sigs are all strings of signatures.  If len(sigs) == 1, then it
-        specifies a static signature regardless of whether 'arg_layout' was
-        called.  If len(sigs) > 1, then arg_layout is required to be called
-        before this call.
-        """
-        # Creates Predicate nodes
-        # arg_name:arg (tensor)
-        # arg_name:shape (int list, the shape of the tensor)
-        # arg_name:sig (str, the associated signature)
-        # arg_name:dtype (tf.dtype, the tensor dtype)
+    def _check_sigs_layout(self, arg_name, *sigs):
         if len(sigs) != 1 and len(sigs) != self.num_layouts:
             raise SchemaError(
-                f'{type(self).__qualname__}: There are {self.num_layouts} '
+                f'{type(self).__qualname__}: registering \'{arg_name}\' '
+                f'there are {self.num_layouts} '
                 f'layouts (as established by the call to \'arg_layout\') but '
                 f'{len(sigs)} elements of \'*sigs\' argument.')
-
-        arg_kname = kname(arg_name, Kind.DATA_TENSOR)
-        self._set_arg_kname(arg_name, arg_kname)
-
-        dtype_kname = kname(arg_name, Kind.DTYPE)
-        shape_kname = kname(arg_name, Kind.SHAPE)
-        sig_kname = kname(arg_name, Kind.SIG) 
-
-        if len(sigs) == 1:
-            sig_pobj = pr.Closure((True, sigs[0]))
-            sig_gobj = ge.Closure([sigs[0]])
-            layout = tuple()
-        else:
-            sig_pobj = pr.LayoutOption(arg_name, sigs)
-            sig_gobj = ge.LayoutOption(sigs) 
-            layout = (base.kname('layout', Kind.PSEUDO),)
-
-        arg_pobj = pr.ArgType(arg_name, tf.Tensor) 
-        P.add_node(arg_kname, arg_pobj, Kind.SCHEMA)
-        dtype_pnode = P.add_node(dtype_kname, pr.dtype, arg_kname)
-        shape_pnode = P.add_node(shape_kname, pr.tensor_shape, arg_kname)
-        sig_pnode = P.add_node(sig_kname, sig_pobj, *layout)
-
-        arg_gobj = ge.TensorStub(arg_name)
-        sig_gnode = G.add_node(sig_kname, sig_gobj, *layout)
-        G.add_node(arg_kname, arg_gobj, sig_kname, Kind.DIMS, Kind.DTYPES) 
-        dims_gnode = G.get_node(Kind.DIMS)
-        dims_gnode.append_parent(sig_gnode)
-
-        sig_map_gnode = G.get_node(Kind.SIG_MAP)
-        sig_map_gnode.append_parent(sig_gnode)
-
-        shapemap_pnode = P.get_node(Kind.SHAPE_MAP)
-        shapemap_pnode.append_parent(shape_pnode)
-
-        sigmap_pnode = P.get_node(Kind.SIG_MAP)
-        sigmap_pnode.append_parent(sig_pnode)
-
-        # Create edges
-        dtypes_pnode = P.get_node(Kind.DTYPES)
-        ranks_pnode = P.get_node(Kind.RANKS)
-        idims_pnode = P.get_node(Kind.IDIMS)
-        dtypes_pnode.append_parent(dtype_pnode)
-        ranks_pnode.append_parent(shape_pnode)
-        ranks_pnode.append_parent(sig_pnode)
-        idims_pnode.append_parent(shape_pnode)
-        idims_pnode.append_parent(sig_pnode)
-
-        cons = base.ShapeRankConstraint(arg_name, Kind.DATA_TENSOR)
-        self.rank_cons.append(cons)
 
     def _arg_shape_func(self, arg_name, sigs, _type, arg_kind, pred_obj, gen_obj):
         """
         Backend function for arg_shape_* API functions 
         """
         # TODO: add obj arguments
-        if len(sigs) != 1 and len(sigs) != self.num_layouts:
-            raise SchemaError(
-                f'{type(self).__qualname__}: There are {self.num_layouts} '
-                f'layouts (as established by the call to \'arg_layout\') but '
-                f'{len(sigs)} elements of \'*sigs\' argument.')
+        self._check_sigs_layout(arg_name, *sigs)
 
         arg_kname = kname(arg_name, arg_kind)
         self._set_arg_kname(arg_name, arg_kname)
-        arg_pobj = pr.ArgType(arg_name, _type)
+
         shape_pobj = pred_obj
+
+        shp_kname = kname(arg_name, Kind.SHAPE)
+        sig_kname = kname(arg_name, Kind.SIG)
 
         if len(sigs) == 1:
             sig_pobj = pr.Closure((True, sigs[0]))
@@ -1019,14 +917,13 @@ class SchemaApi(object):
             sig_gobj = ge.LayoutOption(sigs) 
             layout = (base.kname('layout', Kind.PSEUDO),)
 
-        sig_kname = kname(arg_name, Kind.SIG)
-        shp_kname = kname(arg_name, Kind.SHAPE)
+        arg_pobj = pr.ArgType(arg_name, _type)
+        P.add_node(arg_kname, arg_pobj, Kind.SCHEMA)
 
-        arg_pnode = P.add_node(arg_kname, arg_pobj, Kind.SCHEMA)
         shape_pnode = P.add_node(shp_kname, shape_pobj, arg_kname)
         sig_pnode = P.add_node(sig_kname, sig_pobj, *layout)
-
         sig_gnode = G.add_node(sig_kname, sig_gobj, *layout)
+
         G.add_node(arg_kname, gen_obj, Kind.DIMS, sig_kname)
         dims_gnode = G.get_node(Kind.DIMS)
         dims_gnode.append_parent(sig_gnode)
@@ -1042,6 +939,29 @@ class SchemaApi(object):
 
         cons = base.ShapeRankConstraint(arg_name, arg_kind)
         self.rank_cons.append(cons)
+
+    def arg_tensor(self, arg_name, *sigs):
+        """
+        Register {arg_name} as a tensor.  
+
+        sigs are all strings of signatures.  If len(sigs) == 1, then it
+        specifies a static signature regardless of whether 'arg_layout' was
+        called.  If len(sigs) > 1, then arg_layout is required to be called
+        before this call.
+        """
+        pred_obj = pr.tensor_shape
+        gen_obj = ge.TensorStub(arg_name)
+        self._arg_shape_func(arg_name, sigs, tf.Tensor, Kind.DATA_TENSOR,
+                pred_obj, gen_obj)
+        arg_kname = kname(arg_name, Kind.DATA_TENSOR)
+        gnode = G.get_node(arg_kname)
+        gnode.maybe_append_parent(Kind.DTYPES)
+
+        # dtypes
+        dtype_kname = kname(arg_name, Kind.DTYPE)
+        dtype_pnode = P.add_node(dtype_kname, pr.dtype, arg_kname)
+        dtypes_pnode = P.get_node(Kind.DTYPES)
+        dtypes_pnode.append_parent(dtype_pnode)
 
     def arg_shape_list(self, arg_name, *sigs):
         """
@@ -1130,10 +1050,12 @@ class SchemaApi(object):
         arg_pobj = pr.ArgType(arg_name, tf.Tensor)
         arg_gobj = ge.ShapeTensor2D()
         P.add_node(arg_kname, arg_pobj, Kind.SCHEMA)
-        idims_pnode = P.get_node(Kind.IDIMS)
-        ranks_pnode = P.get_node(Kind.RANKS)
         ten_gnode = G.add_node(arg_kname, arg_gobj, Kind.DIMS)
         layout_kname = base.kname('layout', Kind.PSEUDO)
+
+        sigmap_gnode = G.get_node(Kind.SIG_MAP)
+        shapemap_pnode = P.get_node(Kind.SHAPE_MAP)
+        sigmap_pnode = P.get_node(Kind.SIG_MAP)
 
         for i, sig in enumerate(sigs):
             prefix = f'{arg_name}.{i}'
@@ -1155,18 +1077,10 @@ class SchemaApi(object):
                 sig_gnode = G.add_node(sig_kname, sig_gobj, layout_kname) 
 
             shp_pnode = P.add_node(shp_kname, shp_pobj, arg_kname)
-            idims_pnode.append_parent(shp_pnode)
-            idims_pnode.append_parent(sig_pnode)
-            ranks_pnode.append_parent(shp_pnode)
-            ranks_pnode.append_parent(sig_pnode)
             ten_gnode.append_parent(sig_gnode)
 
-            sig_map_gnode = G.get_node(Kind.SIG_MAP)
-            sig_map_gnode.append_parent(sig_gnode)
-
-            shapemap_pnode = P.get_node(Kind.SHAPE_MAP)
+            sigmap_gnode.append_parent(sig_gnode)
             shapemap_pnode.append_parent(shp_pnode)
-            sigmap_pnode = P.get_node(Kind.SIG_MAP)
             sigmap_pnode.append_parent(sig_pnode)
 
     def arg_rank(self, arg_name, sig):
@@ -1266,12 +1180,8 @@ class SchemaApi(object):
         multiple, they are defined by the provided layout as declared in
         'arg_layout'
         """
-        if len(sigs) != 1 and len(sigs) != self.num_layouts:
-            raise SchemaError(
-                f'{type(self).__qualname__}: There are {self.num_layouts} '
-                f'layouts (as established by the call to \'arg_layout\') but '
-                f'{len(sigs)} elements of \'*sigs\' argument.')
         index = self.num_returns
+        self._check_sigs_layout(f'return[{index}]', *sigs)
         ret_name = str(index)
         ret_kname = kname(ret_name, Kind.RETURN_TENSOR)
         valid_return = kname(ret_name, Kind.VALID_RETURN)

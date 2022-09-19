@@ -257,7 +257,8 @@ class TensorStub(object):
     def __init__(self, arg_name):
         self.arg_name = arg_name
 
-    def __call__(self, sig, dims_map, dtype_map):
+    def __call__(self, dims_map, sig, **kwargs):
+        dtype_map = kwargs[Kind.DTYPES]
         dtype = dtype_map[self.arg_name]
         shape = [ d for s in sig for d in dims_map[s] ]
         return [(shape, dtype)]
@@ -297,17 +298,6 @@ class ShapeList(object):
 
     def __call__(self, dims_map, sig):
         shape = [ d for s in sig for d in dims_map[s] ]
-        return [shape]
-
-class ShapeIndex(object):
-    """
-    Generate the shape of the given index
-    """
-    def __init__(self, index):
-        self.index = index
-
-    def __call__(self, dims_map):
-        shape = dims_map[self.index]
         return [shape]
 
 class ShapeTensor(object):
