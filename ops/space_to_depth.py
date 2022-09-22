@@ -16,8 +16,8 @@ def init_schema(op):
 
     def cdims(dummy):
         return [([4],)]
-    op.add_index_generator(cdims, 'c', 'c')
-    op.add_index_generator(flib.gen_blocked_sizes, 'is', 'i', 2, 8, 10, 100)
+    op.add_index_generator('c', cdims, 'c')
+    op.add_index_generator('is', flib.gen_blocked_sizes, 'i', 2, 8, 10, 100)
 
     data_formats = [ 
             { 2: 'NHWC' }, 
@@ -33,30 +33,29 @@ def init_schema(op):
 
     op.valid_dtypes('input', ('int32', 'float32'))
 
-    def output_dims(dims_map):
-        idims = dims_map['i']
-        block_size = dims_map['s']
-        odims = flib.floordiv(idims, block_size)
-        return odims
+    def odims(i, s):
+        return flib.floordiv(i, s)
 
-    op.computed_index('o', output_dims, Kind.IDIMS)
+    def odims_template(i, s):
+        return f'{i} // {s}'
 
-    def flattened_dims(dims_map, layout):
+    op.computed_index('o', odims, odims_template, 'is')
+
+    def fdims(z, c, s, k, layout):
         if layout == 'NCHW_VECT_C':
-            zdims = dims_map['z']
-            cdims = dims_map['c']
-            block_size = dims_map['s']
-            flat = block_size * block_size * zdims * cdims
+            flat = s * s * z * c
         else:
-            kdims = dims_map['k']
-            block_size = dims_map['s']
-            flat = block_size * block_size * flib.reduce_prod(kdims)
+            flat = s * s * flib.reduce_prod(k)
         return flat
 
-    op.computed_index('f', flattened_dims, Kind.IDIMS, Kind.DATA_FORMAT)
+    def fdims_template(z, c, s, k, layout):
+        if layout == 'NCHW_VECT_C':
+            tmp = f'{s} * {s} * {z} * {c}'
+        else:
+            tmp = f'{s} * {s} * product({k})'
+        return tmp
+
+    op.computed_index('f', fdims, fdims_template, 'zcsk', Kind.DATA_FORMAT)
 
 opcheck.register('tf.nn.space_to_depth', init_schema)
-
-
-
 

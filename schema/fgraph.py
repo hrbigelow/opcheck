@@ -159,7 +159,9 @@ class FuncNode(object):
         return self.children
 
     def value(self):
-        """Evaluate the current node based on cached values of the parents"""
+        """
+        Evaluate the current node based on cached values of the parents
+        """
         all_args = [(n.name, n.get_cached_value()) for n in self.parents]
         pos_args = [v for n,v in all_args[:self.num_positional]]
         if self.vararg_type == VarArgs.Positional:

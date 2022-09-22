@@ -8,6 +8,7 @@ import itertools
 from random import randint
 from functools import partial
 from .base import Kind, kind, kpfx
+from .fgraph import FuncNode as F
 from .error import SchemaError
 from . import util
 
@@ -58,14 +59,14 @@ class Rank(object):
 
 class Dims(object):
     """
-    Generate dimensions for {output_indices} using {gen_func}.  Used in Kind.DIMS
-    nodes.  Has parent Kind.RANKS
+    Generate dimensions for {output_indices} using {gen_func}.  Used in
+    Kind.GEN_DIMS nodes.  Has parent Kind.RANKS
 
     Calls gen_func(ranks_list, *gen_args).  ranks_list are the ranks of each
     index in {input_indices} in order.
 
-    returns a list of shape tuples, one shape for each index in output_indices.  A
-    shape is an integer list.  
+    returns a list of shape tuples, one shape for each index in output_indices.
+    A shape is an integer list.  
 
     For example, if output_indices has two indices, a return value could be:
     [ 
@@ -102,11 +103,179 @@ class Dims(object):
                 f'Got: {vals}\n')
         return [ dict(zip(self.output_indices,v)) for v in vals ]
 
+
+class FreeIndex(object):
+    # FuncNode object for free indices
+    def __init__(self, gd, index_name):
+        self.gd = gd
+        self.idx = index_name
+
+    def __call__(self):
+        return self.gd.variables[self.idx]
+
+class GenIndex(object):
+    # FuncNode object for indices registered with add_index_generator
+    def __init__(self, gd, index_name):
+        self.gd = gd
+        self.idx = index_name
+
+    def __call__(self):
+        return self.gd.gen_index_dims[self.idx]
+
+class CompIndex(object):
+    # FuncNode object for indices registered with computed_index
+    def __init__(self, gd, comp_func, const_args):
+        self.gd = gd
+        self.args = const_args
+        self.func = comp_func
+
+    def __call__(self, *args):
+        # args will be index shapes, which change during gradient descent
+        # const_args are non-index aruments and remain constant during
+        # gradient descent
+        const_args = tuple(self.gd.extra_args[a] for a in self.args)
+        return self.func(*args, *const_args)
+
 class IndexDimsGD(object):
     """
     Perform gradient descent on two objectives to find suitable testing index
     dimensions.
     """
+    def __init__(self, min_nelem, max_nelem):
+        self.lr = 5.0
+        self.log_min_nelem = math.log(min_nelem)
+        self.log_max_nelem = math.log(max_nelem)
+        self.nodes = []
+        self.variables = {} # idx => tf.Variable
+        self.gen_index_dims = {}  # idx => 
+        self.computed_indexes = set()
+        self.extra_args = {}
+
+        # edges to add after node creation
+        self.edges = {} # kname => [ parent_kname, parent_kname, ... ] 
+
+    def nonfree_inds(self):
+        return (*self.computed_indexes, *self.gen_index_dims.keys())
+
+    def add_free_index(self, idx):
+        fi_obj = FreeIndex(self, idx)
+        node = F.add_node(idx, fi_obj)
+        self.nodes.append(node)
+        self.variables[idx] = None
+
+    def add_gen_index(self, idx):
+        gi_obj = GenIndex(self, idx)
+        node = F.add_node(idx, gi_obj)
+        self.nodes.append(node)
+        self.gen_index_dims[idx] = None
+
+    def add_comp_index(self, idx, comp_func, parent_indices, *const_args):
+        # adds a computed index graph node.  const_args are non-index arguments
+        # which are constant during the gradient descent.  
+        # all names in const_args must be keys in __call__'s **kwargs
+        ci_obj = CompIndex(self, comp_func, const_args)
+        node = F.add_node(idx, ci_obj)
+        self.edges[idx] = parent_indices
+        self.nodes.append(node)
+        self.computed_indexes.add(idx)
+
+    def finalize(self):
+        for n, pnodes in self.edges.items():
+            node = F.get_node(n)
+            for pn in pnodes:
+                pnode = F.get_node(pn)
+                node.append_parent(pnode)
+
+    def prepare(self, ranks, sigs, **kwargs):
+        # split kwargs into index and non-index
+        self.extra_args.clear()
+
+        for k, v in kwargs.items():
+            idx = kpfx(k)
+            if kind(k) == Kind.GEN_DIMS:
+                self.gen_index_dims[idx] = v
+            else:
+                self.extra_args[k] = v
+        self.sigs = sigs
+        for idx in self.variables.keys():
+            rank = ranks[idx]
+            # hard-coded reasonable choices for initialization
+            val = tf.random.uniform([rank], 1.0, 4.0)
+            cons_fun = lambda v: tf.clip_by_value(tf.round(v), 1.0, 1e10)
+            var = tf.Variable(val, constraint = cons_fun, dtype=tf.float32)
+            self.variables[idx] = var
+
+    def all_dims(self):
+        dims = { n.name: n.value() for n in self.nodes }
+        return dims
+
+    def num_elem(self, sig):
+        # computes the number of elements for sig, given the current index
+        # dimensions.  if one or more indices are negative, returns the
+        # negative of absolute number
+        dims = self.all_dims()
+        vals = [dims[s] for s in sig]
+        st = tf.concat(vals, axis=0)
+        nelem = tf.reduce_min(tf.sign(st)) * tf.abs(tf.reduce_prod(st))
+        return nelem
+
+    def index_loss(self):
+        dims = self.all_dims()
+        comp_dims = [ dim for idx, dim in dims.items() if idx in
+                self.computed_indexes ]
+        if len(comp_dims) == 0:
+            return 0
+        st = tf.concat(comp_dims, axis=0)
+        loss = tf.reduce_sum(tf.nn.relu(1.0 - st))
+        return loss
+
+    def elem_loss(self):
+        dims = self.all_dims()
+        nelem = tf.reduce_sum(tuple(self.num_elem(sig) for sig in self.sigs))
+        log_nelem = tf.math.log(nelem)
+        # the distance from interval [self.log_min_nelem, self.log_max_nelem]
+        # done in log space since these are products of several variables
+        # should it be k'th root instead, for k the maximum rank of a
+        # signature?
+        ival_dist = tf.maximum(
+                tf.nn.relu(self.log_min_nelem - log_nelem),
+                tf.nn.relu(log_nelem - self.log_max_nelem)
+                )
+        # should I use ival_dist**2 instead?
+        return 2.0 * ival_dist
+
+    def __call__(self, ranks, sigs, **kwargs):
+        # kwargs should have:
+        # all generated index dims declared with add_index_generator
+        # all extra arguments declared in calls to computed_index
+        self.prepare(ranks, sigs, **kwargs)
+        opt = tf.keras.optimizers.Adam(learning_rate=self.lr)
+        losses = [ lambda: self.index_loss(), lambda: self.elem_loss() ]
+
+        # The first phase (index_loss) ensures that all index dims are positive
+        # (free, generated, and computed). Under that condition, the next
+        # surface (elem_loss) is monotonically increasing in all free
+        # dimensions.  And, because of the finite interval solution, zero loss
+        # is achievable
+        with tf.device('/device:CPU:0'):
+            for loss_func in losses:
+                for step in range(100):
+                    with tf.GradientTape() as tape:
+                        objective = loss_func()
+                    free_vars = self.variables.values()
+                    grads = tape.gradient(objective, free_vars)
+                    opt.apply_gradients(zip(grads, free_vars))
+                    if step % 10 == 0:
+                        print(f'loss: {step}: {objective:5.3f}')
+                    if objective == 0.0:
+                        break
+            
+        # extract the dims map
+        dims = self.calc_dims()
+        return [dims]
+
+"""
+class IndexDimsGD(object):
     def __init__(self, comp_dims, min_nelem, max_nelem):
         self.lr = 5.0
         self.comp_dims = comp_dims
@@ -179,19 +348,18 @@ class IndexDimsGD(object):
         return m
 
     def __call__(self, **kwargs):
-        """
-        Expects args:
-        :ranks - ranks_map defining all indexes and their ranks
-        *:sig - set of all shape signatures to quantify 
-        *:dims - dims_maps that have been pre-generated
+        # Expects args:
+        # :ranks - ranks_map defining all indexes and their ranks
+        # *:sig - set of all shape signatures to quantify 
+        # *:dims - dims_maps that have been pre-generated
 
-        Perform gradient descent on all free indexes, such that:
-        1.  all computed index dimensions are >= 1
-        2.  the total number of elements over all signatures is within 
+        # Perform gradient descent on all free indexes, such that:
+        # 1.  all computed index dimensions are >= 1
+        # 2.  the total number of elements over all signatures is within certain
+            # bounds
 
-        free indexes are those indexes that are not pre-generated and not
-        computed.
-        """
+        # free indexes are those indexes that are not pre-generated and not
+        # computed.
         self.vars_map.clear()
         self.const_map.clear()
         self.sigs.clear()
@@ -249,6 +417,17 @@ class IndexDimsGD(object):
         # extract the dims map
         dims_map = self.dims_map()
         return [dims_map]
+"""
+
+class SingleIndexDims(object):
+    """
+    A simple node which extracts a single index dimension
+    """
+    def __init__(self, index_name):
+        self.name = index_name
+
+    def __call__(self, index_dims):
+        return [index_dims[self.name]]
 
 class TensorStub(object):
     """

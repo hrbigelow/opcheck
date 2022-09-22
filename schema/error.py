@@ -77,7 +77,7 @@ class TensorDTypeError(SchemaStatus):
         self.ten_name = ten_name
 
     def message(self, op):
-        msg = f'Tensor \'{self.ten_nane}\' has invalid dtype'
+        msg = f'Tensor \'{self.ten_name}\' has invalid dtype'
         return msg
 
 class DTypeNotEqual(SchemaStatus):
@@ -116,6 +116,23 @@ class IndexUsageError(SchemaStatus):
     def message(self, op):
         return op._index_usage_error(self.idx_usage, self.ranks,
                 self.sigs, self.shapes)
+
+class TextHighlightError(SchemaStatus):
+    def __init__(self, index_highlight, text): 
+        self.index_highlight = index_highlight
+        self.text = text
+
+class IndexConstraintError(SchemaStatus):
+    def __init__(self, index_highlight, text, ranks, sigs, shapes):
+        self.index_highlight = index_highlight
+        self.text = text
+        self.ranks = ranks
+        self.sigs = sigs
+        self.shapes = shapes
+
+    def message(self, op):
+        return op._index_constraint_error(self.text, self.index_highlight,
+                self.ranks, self.sigs, self.shapes)
 
 class NegativeDimsError(SchemaStatus):
     def __init__(self, idx, dims):

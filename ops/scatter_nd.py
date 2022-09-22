@@ -9,7 +9,7 @@ def init_schema(op):
 
     # def genc(rank_list):
         # return [([rank_list[0]],)]
-    # op.add_index_generator(genc, 'c', 'w')
+    # op.add_index_generator('c', genc, 'w')
 
     op.limit_ranks('r', 1, 3)
     op.limit_ranks('c', 1, 1)

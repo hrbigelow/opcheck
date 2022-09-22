@@ -10,7 +10,7 @@ def init_schema(op):
 
     # def genc(rank_list):
         # return [([rank_list[0]],)]
-    # op.add_index_generator(genc, 'c', 'r')
+    # op.add_index_generator('c', genc, 'r')
 
     # allowed rank combinations
     op.limit_ranks('bre', None, 8)

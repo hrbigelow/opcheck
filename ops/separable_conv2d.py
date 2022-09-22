@@ -29,14 +29,15 @@ def init_schema(op):
     op.equate_dtypes('depthwise_filter', 'input')
     op.equate_dtypes('pointwise_filter', 'input')
 
-    def pdims(idims_map):
-        cmul = idims_map['c']
-        ichan = idims_map['k']
-        flat = cmul * ichan
-        return flat
+    def pdims(c, k):
+        return c * k
 
-    op.computed_index('p', pdims, Kind.IDIMS)
-    op.computed_index('z', lambda: [1, 1])
+    def pdims_txt(c, k):
+        return f'{c} * {k}'
+
+    op.computed_index('p', pdims, pdims_txt, 'ck')
+
+    op.add_index_generator('z', lambda: [[1, 1]], '')
 
     op.arg_option('padding', ('VALID', 'SAME'))
 

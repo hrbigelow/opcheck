@@ -34,25 +34,26 @@ def init_schema(op):
 
     op.add_index_predicate('stride-dilation exclusion', flib.not_both_over_one,
             'sd')
-    op.add_index_generator(flib.gen_not_both_over_one, 'sd', 'sd', 1, 10)
-    op.add_index_generator(flib.gen_range, 'f', 'f', 3, 10)
+    op.add_index_generator('sd', flib.gen_not_both_over_one, 'sd', 1, 10)
+    op.add_index_generator('f', flib.gen_range, 'f', 3, 10)
     
     # compute output spatial dimension 
-    def odims(dims_map, padding):
-        idims = dims_map['i']
-        fdims = dims_map['f']
-        strides = dims_map['s']
-        dilations = dims_map['d']
-
+    def odims(i, f, s, d, padding):
         if padding == 'VALID':
-            pad_filter_dims = (fdims - 1) * dilations + 1
-            tmp = idims - pad_filter_dims + 1
+            pad_filter_dims = (f - 1) * d + 1
+            tmp = i - pad_filter_dims + 1
             out = flib.ceildiv(tmp, strides)
         else:
-            out = flib.ceildiv(idims, strides)
-        return out 
+            out = flib.ceildiv(i, s)
 
-    op.computed_index('o', odims, Kind.IDIMS, 'padding')
+    def odims_template(i, f, s, d, padding):
+        if padding == 'VALID':
+            tem = f'ceil(({i} - ({f} - 1) * {d}) / {s})'
+        else:
+            tem = f'ceil({i} / {s})' 
+        return tem
+
+    op.computed_index('o', odims, odims_template, 'ifsd', 'padding')
     op.return_tensor('blo', 'bol')
 
 opcheck.register('tf.nn.convolution', init_schema)

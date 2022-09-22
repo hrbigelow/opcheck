@@ -4,6 +4,7 @@ from schema import Kind, flib
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
     op.add_index('i', 'input spatial', 1, 3)
+    op.add_index('j', 'padded input spatial')
     op.add_index('k', 'block shape')
     op.add_index('r', 'remaining', 0, 10)
     op.add_index('s', 'padding start')
@@ -12,6 +13,7 @@ def init_schema(op):
     op.add_index('p', 'output batch', 1, 1)
 
     op.equate_ranks('s', 'i')
+    op.equate_ranks('j', 'i')
     op.equate_ranks('e', 'i')
     op.equate_ranks('o', 'i')
     op.equate_ranks('k', 'i')
@@ -22,32 +24,39 @@ def init_schema(op):
     op.arg_unchecked('name')
 
     # ensure that padded input is divisible by block size
-    op.add_index_predicate('pad_input_block', flib.pad_input_blocked, 'isek')
+    op.add_index_predicate('pad_input_block', flib.divis_by, 'jk')
+    # op.add_index_predicate('pad_input_block', flib.pad_input_blocked, 'isek')
 
     # generates i, s, e, and k dimensions compatible with the predicate
-    op.add_index_generator(flib.gen_pad_input_blocked, 'isek', 'i', 10, 50)
+    op.add_index_generator('isek', flib.gen_pad_input_blocked, 'i', 10, 50)
 
     op.valid_dtypes('input', ('int32', 'float32'))
 
-    def odims(idims_map):
-        input_spatial = idims_map['i']
-        block_shape = idims_map['k']
-        pad_start = idims_map['s']
-        pad_end = idims_map['e']
-        padded = input_spatial + pad_start + pad_end
-        output_spatial = flib.floordiv(padded, block_shape)
-        return output_spatial
+    def jdims(s, e, i):
+        return s + e + i
 
-    op.computed_index('o', odims, Kind.IDIMS)
+    def jdims_txt(s, e, i):
+        return f'{s} + {i} + {e}'
 
-    def pdims(idims_map):
-        block_shape = idims_map['k']
+    op.computed_index('j', jdims, jdims_txt, 'sei')
+
+    def odims(padded, block_shape):
+        return flib.floordiv(padded, block_shape)
+
+    def odims_txt(padded, block_shape):
+        return f'{padded} // {block_shape}'
+
+    op.computed_index('o', odims, odims_txt, 'jk')
+
+    def pdims(block_shape, batch):
         block_elems = flib.reduce_prod(block_shape)
-        batch = idims_map['b']
-        out_batch = block_elems * batch
-        return out_batch
+        return block_elems * batch
 
-    op.computed_index('p', pdims, Kind.IDIMS)
+    def pdims_txt(block_shape, batch):
+        return f'product({block_shape}) * {batch}'
+
+    op.computed_index('p', pdims, pdims_txt, 'kb')
+
     op.return_tensor('por')
 
 opcheck.register('tf.nn.space_to_batch', init_schema)

@@ -26,8 +26,10 @@ class Kind(object):
     DTYPES = ':dtypes'
     RANKS = ':ranks'
     IDIMS = ':input_dims'
-    CDIMS = ':computed_dims'
-    DIMS = ':dims'
+    SINGLE_DIMS = ':single_dims'
+    GEN_DIMS = ':gen_dims'
+    GD_DIMS = ':gd_dims'
+    COMP_DIMS_TEM = ':comp_dims_tem'
     PSHAPE = ':predicated_shape'
     NONE = ':none'
 
@@ -315,12 +317,11 @@ class DTypeConstraints(object):
     def all(self):
         return (*self.valid, *self.equiv)
 
+"""
 class CompDims(object):
-    """
-    Encapsulate the functions and arguments for computed index dimensions.
-    The funcs are executed with tf.float32 tensor inputs and outputs, despite
-    the fact that they are searching for integer dimensions.
-    """
+    # Encapsulate the functions and arguments for computed index dimensions.
+    # The funcs are executed with tf.float32 tensor inputs and outputs, despite
+    # the fact that they are searching for integer dimensions.
     def __init__(self):
         # idx => func
         self.funcs = {}
@@ -329,10 +330,8 @@ class CompDims(object):
         self.args = {}
 
     def add(self, index, comp_func, arg_knames):
-        """
-        Register {index} to be computed by {comp_func}, taking {arg_names} as
-        arguments
-        """
+        # Register {index} to be computed by {comp_func}, taking {arg_names} as
+        # arguments
         self.funcs[index] = comp_func
         self.args[index] = arg_knames
 
@@ -360,5 +359,7 @@ class CompDims(object):
                     f'tf.Tensor or np.ndarray.  Got \'{comp_dims}\'')
             comp_dims_map[index] = comp_dims
         return comp_dims_map
+"""
+
 
 

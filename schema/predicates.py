@@ -5,6 +5,7 @@ from collections import defaultdict
 from .error import *
 from . import util
 from .base import Kind, kind, kpfx, kname
+from .flib import Index
 
 """
 Functions or function objects to be used in PredNodes.  Implement the __call__
@@ -71,9 +72,9 @@ def dtype(tensor):
 def tensor_shape(tensor):
     return True, tensor.shape.as_list()
 
-def predicted_shape(idims_map, cdims_map, sig):
-    dims_map = { **idims_map, **cdims_map }
-    shape = [ d for s in sig for d in dims_map[s] ]
+def predicted_shape(sig, **kwargs):
+    # expect kwargs to be '*:single_dims' nodes
+    shape = [ kwargs[kname(s, Kind.SINGLE_DIMS)] for s in sig ]
     return True, shape
 
 class ShapeList(object):
@@ -306,9 +307,15 @@ def calc_sig_range(rank_map, idx, sig):
     rank = rank_map[idx] 
     return [start, start + rank]
 
-class IndexDims(object):
+class IndexDimsUsage(object):
     """
-    Used by the IDIMS node
+    Used by the IDIMS node.  Computes an index usage map:
+    idx => [component0_usage, component1_usage, ...]
+    where component_usage are maps of: dim_size => [arg1, arg2, ...]
+
+    If any component of the index has multiple dim_sizes in the map, then it is
+    an erroneous usage.
+
     """
     def __init__(self):
         pass
@@ -319,9 +326,6 @@ class IndexDims(object):
 
         # for each index and each component, produce a usage map 
         idx_usage = {} 
-                       # idx => [(dim => [arg1, ...]), 
-                       #         (dim => [arg1, ...]), 
-                       #         ...]
         for arg, sig in sigs.items():
             shape = shapes[arg]
             it = iter(shape)
@@ -333,36 +337,143 @@ class IndexDims(object):
                 for c, dim in enumerate(dims):
                     idx_usage[idx][c][dim].append(arg)
                 
-        idx_dims = {}
+        index_dims = {}
         for idx in list(idx_usage):
             comp = idx_usage[idx]
             if all(len(c) == 1 for c in comp):
                 idx_usage.pop(idx)
-                idx_dims[idx] = [i for c in comp for i in c] 
+                index_dims[idx] = [i for c in comp for i in c] 
         
         if len(idx_usage) != 0:
             return False, IndexUsageError(idx_usage, ranks, sigs, shapes)
         else:
-            return True, idx_dims
+            return True, index_dims
 
-class Dims(object):
+class SingleIndexDims(object):
     """
-    Validate the combination of index shapes using the enclosed function.
-    status_func accepts the shapes of indices in index_combo in order.
-    It returns an instance of SchemaStatus.
+    A simple node which extracts a single index dimension
     """
-    def __init__(self, name, status_func, index_combo):
+    def __init__(self, index_name):
+        self.index_name = index_name
+
+    def __call__(self, index_dims):
+        return True, index_dims[self.index_name]
+
+class IndexDimsConstraint(object):
+    """
+    Constrains the dimensions of {indices} by applying the predicate function
+    {status_func}, called as status_func(Index1, Index2, ...) where each Index
+    object is an flib.Index object derived from one of the indices.
+    """
+    def __init__(self, name, status_func):
         self.name = name
         self.func = status_func 
-        self.indices = index_combo
 
-    def __call__(self, idims_map, cdims_map):
-        dims_map = { **idims_map, **cdims_map }
-        shapes_list = [ np.array(dims_map[i]) for i in self.indices ]
+    def __call__(self, ranks, sigs, shapes, op, **kwargs):
+        shapes_list = []
+        indices = []
+        for node, dims in kwargs.items():
+            idx = kpfx(node)
+            ind = Index(idx, op.index[idx], np.array(dims))
+            shapes_list.append(ind)
+            indices.append(idx)
         status = self.func(*shapes_list)
-        valid = isinstance(status, Success)
+        if isinstance(status, Success):
+            return True, status
+        else:
+            # 
+            formula_texts = []
+            dimension_texts = []
+            ancestor_inds = list(indices)
+            for idx in indices:
+                tem = self.op.comp_dims_templates.get(idx, None)
+                if tem is not None:
+                    _, (ftxt, dtxt, ainds) = tem.value()
+                desc = self.op.index[idx].replace(' ', '_')
+                ftxt = f'{desc} = {ftxt}'
+                dtxt = f'{shapes[idx]} = {dtxt}'
+                formula_texts.extend(ftxt)
+                dimension_texts.extend(dtxt)
+                ancestor_inds.extend(ainds)
+
+            # apply broadcasting rules to each index
+            index_highlight = {}
+            for idx in ancestor_inds:
+                r = ranks[idx]
+                if r == 1:
+                    index_highlight[idx] = [True]
+                elif r == len(status.mask):
+                    index_highlight[idx] = status.mask
+                else:
+                    raise SchemaError(
+                        f'All source indices of computed indices must be '
+                        f'rank 1 or the same rank as the computed index. '
+                        )
+
+            # compile all texts into one message
+            pairs = zip(formula_texts, dimension_texts)
+            main_text = '\n\n'.join(f'{f}\n{d}\n' for f, d in pairs)
+            main_text += '\n{status.text}'
+
+            err = IndexConstraintError(index_highlight, main_text, ranks, sigs,
+                    shapes)
+            return False, err
         return valid, status
 
+class ComputedDims(object):
+    """
+    Apply a broadcasting function to compute dimensions
+    """
+    def __init__(self, index_name, func):
+        self.index = index_name
+        self.func = func
+
+    def __call__(self, *args):
+        return True, self.func(*args)
+
+class TemplateFunc(object):
+    """
+    Call the enclosed template function twice - once with the index
+    descriptions, and once with the dimensions.
+
+    Recursively calls any TemplateFunc nodes registered on parent indices, and
+    accumulates the resulting texts and indices
+    """
+    def __init__(self, template_func, op):
+        self.func = template_func
+        self.op = op
+
+    def __call__(self, **kwargs):
+        formula = [] 
+        indices = []
+        computation = list(kwargs.values())
+        ftexts = []
+        ctexts = []
+
+        for k, v in kwargs.items():
+            if kind(k) == Kind.DIMS:
+                idx = kpfx(k)
+                desc = self.op.index[idx].replace(' ', '_')
+                formula.append(desc)
+                indices.append(idx)
+                parent = self.op.comp_dims_templates.get(idx, None)
+                if parent is not None:
+                    _, vals = parent.value()
+                    ftext, ctext, inds = vals
+                    ftexts.extend(ftext)
+                    ctexts.extend(ctext)
+                    indices.extend(inds)
+
+            else:
+                formula.append(v)
+
+        formula_text = self.func(*formula)
+        computation_text = self.func(*computation)
+        ftexts.append(formula_text)
+        ctexts.append(computation_text)
+        return True, (ftexts, ctexts, indices)
+
+"""
 class ComputedDims(object):
     def __init__(self, comp_dims):
         self.comp_dims = comp_dims
@@ -382,6 +493,7 @@ class ComputedDims(object):
             if any(c < 0 for c in dims):
                 return False, NegativeDimsError(idx, dims)
         return True, comp_dims_map
+"""
 
 class ArgLayout(object):
     """

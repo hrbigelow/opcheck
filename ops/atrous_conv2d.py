@@ -19,17 +19,21 @@ def init_schema(op):
     op.valid_dtypes('value', ('float32',))
     op.equate_dtypes('filters', 'value')
 
-    def odims(dims_map, padding):
-        idims = dims_map['i']
-        fdims = dims_map['f']
-        rate = dims_map['r']
+    def odims(i, f, r, padding):
         if padding == 'VALID':
-            out = idims - (fdims - 1) * 2
+            out = i - (f - 1) * 2
         else:
-            out = idims
+            out = i
         return out
 
-    op.computed_index('o', odims, Kind.IDIMS, 'padding')
+    def odims_txt(i, f, r, padding):
+        if padding == 'VALID':
+            txt = f'{i} - ({f} - 1) * 2'
+        else:
+            txt = f'{i}'
+        return txt
+
+    op.computed_index('o', odims, odims_txt, 'ifr', 'padding')
     # op.return_tensor()
 
 opcheck.register('tf.nn.atrous_conv2d', init_schema)

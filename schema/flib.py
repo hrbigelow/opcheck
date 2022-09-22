@@ -4,6 +4,7 @@ import math
 from .error import *
 from numpy.random import randint
 from random import choice
+from collections import namedtuple
 
 """
 Library of custom generator functions and status functions to be used in
@@ -12,6 +13,10 @@ Schema API calls:
     add_index_predicate
     add_index_generator
 """
+
+# Used by predicate functions
+Index = namedtuple('Index', ['code', 'desc', 'dims'])
+
 def diff_ceil(x):
     if isinstance(x, (tf.Tensor, tf.Variable)):
         return tf.grad_pass_through(tf.math.ceil)(x)
@@ -56,25 +61,47 @@ def not_both_over_one(shape1, shape2):
     Return a status confirming that no more than one of the shapes has
     components greater than one.
     """
-    o1 = any(s > 1 for s in shape1)
-    o2 = any(s > 1 for s in shape2)
+    o1 = any(s > 1 for s in shape1.dims)
+    o2 = any(s > 1 for s in shape2.dims)
     if o1 and o2:
         return CustomError(
                 f'Both shapes had components greater than one: '
-                f'Got \'{shape1}\' and \'{shape2}\'')
+                f'Got \'{shape1.dims}\' and \'{shape2.dims}\'')
     else:
         return Success()
 
 def divis_by(numer, denom):
     """
-    Return a status confirming that {nuner} is evenly divisible by {denom}
+    Return a status confirming that {numer} is evenly divisible by {denom}
     """
-    if np.all(numer % denom == 0):
+    # this may broadcast
+    rem = numer.dims % denom.dims
+    if np.all(rem == 0):
         return Success()
     else:
-        return CustomError(
-            f'numerator must be divisible by denominator: '
-            f'Got numer={numer}, denom={denom}')
+        text = []
+        sn = numer.code
+        sd = denom.code
+        for i, mod in enumerate(rem):
+            if len(numer.dims) == 1:
+                ncode, nval = sn, numer.dims[0]
+            else:
+                ncode, nval = f'{sn}{i+1}', numer.dims[i]
+            if len(denom.dims) == 1:
+                dcode, dval = sd, denom.dims[0]
+            else:
+                dcode, dval = f'{sd}{i+1}', denom.dims[i]
+
+            if mod != 0:
+                line = (f'{ncode} is not divisible by {dcode}  '
+                        f'({nval} % {dval} = {mod})')
+                text.append(line)
+
+        error_mask = (rem != 0).tolist()
+        main = (f'\'{numer.desc}\' dimensions must be divisible by '
+                f'\'{denom.desc}\'')
+        all_text = main + '\n' + '\n'.join(text)
+        return ComponentConstraintError(all_text, error_mask)
 
 def gen_not_both_over_one(ranks_list, lo, hi):
     """
@@ -117,8 +144,8 @@ def gen_range_block(ranks_list, lo, hi, block_size):
     pass
 
 def pad_input_blocked(input_shape, pad_start, pad_end, block_size):
-    pad_size = input_shape + pad_start + pad_end
-    if np.all(pad_size % block_size == 0):
+    pad_size = input_shape.dims + pad_start.dims + pad_end.dims
+    if np.all(pad_size % block_size.dims == 0):
         return Success()
     else:
         return CustomError(

@@ -4,7 +4,7 @@ import io
 import sys
 import tensorflow as tf
 import numpy as np
-from collections import OrderedDict
+from collections import defaultdict, OrderedDict
 from . import predicates as pr
 from . import generators as ge
 from . import mutations
@@ -12,7 +12,7 @@ from . import base
 from .base import Kind, kname, kpfx, kind
 from . import fgraph
 from .error import *
-from .fgraph import PredNode as P, GenNode as G
+from .fgraph import PredNode as P, GenNode as G, FuncNode as F
 
 """
 Every API call will mutate the Generative Graph and the Predicate Graph
@@ -46,7 +46,8 @@ class SchemaApi(object):
         self.rank_candidates = base.RankCandidates(self)
         self.rank_cons = [] 
         self.dtype_cons = base.DTypeConstraints()
-        self.comp_dims = base.CompDims()
+        self.gd_dims = ge.IndexDimsGD(1e5, 2e5)
+        self.comp_dims_templates = {}
         self.num_returns = 0
         self.num_layouts = 1
 
@@ -59,6 +60,8 @@ class SchemaApi(object):
         self.returns = []
 
     def _init_schema(self, func_sig, init_schema_func):
+        # edges to create for the pred graph
+        self.pending_pred_edges = {} # kname -> [parent_kname, parent_kname, ...]
         self.func_sig = func_sig
         pars = func_sig.parameters.keys()
         self.params = OrderedDict({ k: None for k in pars })
@@ -130,31 +133,24 @@ class SchemaApi(object):
         """
         Generate the formatted signature inventory for this op
         """
-        names = [ Kind.SIG_MAP, Kind.DATA_FORMAT ]
-        nodes = tuple(self.gen_graph[n] for n in names if n in self.gen_graph)
-        tups = fgraph.all_values(*nodes)
-        if len(nodes) == 1:
-            tups = [ (*tup, None) for tup in tups ]
-        sig_plus_layout = tups
-
-        sig_map, _ = sig_plus_layout[0]
+        geometry = self._ranks_sigs_format()
+        _, sig_map, _ = geometry[0]
         args = [ *sig_map ]
         if self.layout_param is not None:
             args.append(self.layout_param)
         arg_order = self._shape_key_order(args)
 
         rows = [arg_order]
-        for sig_map, cand_format in sig_plus_layout:
-            for ranks in self.rank_candidates.all_index_ranks():
-                row = []
-                for arg in arg_order:
-                    if arg == self.layout_param:
-                        row.append(cand_format)
-                    else:
-                        sig = sig_map[arg]
-                        inst = ''.join(s * ranks[s] for s in sig)
-                        row.append(inst)
-                rows.append(row)
+        for rank_map, sig_map, cand_format in geometry:
+            row = []
+            for arg in arg_order:
+                if arg == self.layout_param:
+                    row.append(cand_format)
+                else:
+                    sig = sig_map[arg]
+                    inst = ''.join(s * rank_map[s] for s in sig)
+                    row.append(inst)
+            rows.append(row)
 
         table, _ = tabulate(rows, '  ', left_align=True)
         return table
@@ -284,43 +280,67 @@ class SchemaApi(object):
         full_report = '\n'.join(cand_reports)
         return full_report
 
-    def _index_usage_error(self, idx_usage, ranks, sigs, shapes):
-        """
-        Generate the message for an IndexUsageError.
-        {idx_usage} is: idx => [ (dim => [arg1, ...]),
-                                 (dim => [arg1, ...]),
-                                 ...
-                               ]
-        {sigs} is: arg => sig
-        {shapes} is: arg => shape
-        """
-        # gets argument order for shape arguments 
+    def _index_usage_phrase(self, idx, component_usages, ranks):
+        def phrase_join(names):
+            qnames = [f'\'{n}\'' for n in names]
+            phrase = ', '.join(qnames[:-1])
+            sep = '' if phrase == '' else ' and '
+            return sep.join((phrase, qnames[-1]))
+
+        phrases = []
+        r = ranks[idx]
+        for c, usage in enumerate(component_usages):
+            if len(usage) == 1:
+                continue
+            sep = ''
+            main_phrase = ''
+            for sz, arg_list in usage.items():
+                phrase = phrase_join(arg_list)
+                main_phrase += sep + f'size {sz} in {phrase}'
+                sep = ', '
+            idxc = idx if r == 1 else f'{idx}{c+1}'
+            msg = f'Index \'{idxc}\' ({self.index[idx]}) has {main_phrase}.'
+            phrases.append(msg)
+        return '\n'.join(phrases)
+
+    # compute the highlight mask from the component usage maps
+    @staticmethod
+    def _highlight_mask(ranks, sigs, shapes, idx_usage):
+        for arg, sig in sigs.items():
+            shape = shapes[arg]
+            highlight = defaultdict(list)
+            for idx in sig:
+                comp = idx_usage.get(idx, None)
+                if comp is None:
+                    mask = [False] * ranks[idx]
+                else:
+                    mask = [ (len(c) != 1) for c in comp ]
+                highlight[arg].extend(mask)
+        return highlight
+
+    def _index_diagram(self, highlight_map, ranks, sigs, shapes):
         arg_order = [ n for n in self.params.keys() if n in sigs.keys() ]
         dims = { n: [shp] for n, shp in shapes.items() }
         table_data = {} # arg => [shape, inst, highlight]
                         # shape is e.g.:     [15, 3, 10, 5]
                         # inst is e.g.       ['b', 'i1', 'i2', 'k']
                         # highlight is e.g.: ['', '', '^^', '']
+
         for arg, sig in sigs.items():
             shape = shapes[arg]
+            mask = highlight_map[arg]
             table_data[arg] = [shape]
             inst = []
             highlight = []
             for idx in sig:
-                r = ranks[idx]
-                rng = range(r)
-                if r == 1:
+                if ranks[idx] == 1:
                     inst.append(idx)
                 else:
-                    inst.extend(f'{idx}{i+1}' for i in rng)
+                    inst.extend(f'{idx}{i+1}' for i in range(ranks[idx]))
 
-                comp = idx_usage.get(idx, None)
-                if comp is None:
-                    hl = [''] * r
-                else:
-                    z = zip(comp, inst)
-                    hl = ['' if len(c) == 1 else '^' * len(i) for c,i in z]
-                highlight.extend(hl)
+            z = zip(mask, inst)
+            hl = ['^' * len(i) if m else '' for m, i in z]
+            highlight.extend(hl)
             table_data[arg].append(inst)
             table_data[arg].append(highlight)
         
@@ -331,31 +351,40 @@ class SchemaApi(object):
             columns.append(col)
         table = np.array(columns).transpose().tolist()
         fmt, _ = tabulate(table, '   ', left_align=True)
+        return '\n'.join(fmt)
 
-        def gjoin(names):
-            qnames = [f'\'{n}\'' for n in names]
-            phrase = ', '.join(qnames[:-1])
-            sep = '' if phrase == '' else ' and '
-            return sep.join((phrase, qnames[-1]))
+    def _index_usage_error(self, idx_usage, ranks, sigs, shapes):
+        """
+        Generate the message for an IndexUsageError.
+        {idx_usage} is: idx => [ (dim => [arg1, ...]),
+                                 (dim => [arg1, ...]),
+                                 ...
+                               ]
+        {sigs} is: arg => sig
+        {shapes} is: arg => shape
+        """
+        highlight_map = self._highlight_mask(ranks, sigs, shapes, idx_usage)
+        diagram = self._index_diagram(highlight_map, ranks, sigs, shapes)
 
         index_msgs = []
         for idx, comp in idx_usage.items():
-            r = ranks[idx]
-            for c, usage in enumerate(comp):
-                if len(usage) == 1:
-                    continue
-                sep = ''
-                main_phrase = ''
-                for sz, arg_list in usage.items():
-                    phrase = gjoin(arg_list)
-                    main_phrase += sep + f'size {sz} in {phrase}'
-                    sep = ', '
-                idxc = idx if r == 1 else f'{idx}{c+1}'
-                msg = f'Index \'{idxc}\' ({self.index[idx]}) has {main_phrase}.'
-                index_msgs.append(msg)
+            phrase = self._index_usage_phrase(idx, comp, ranks)
+            index_msgs.append(phrase)
 
-        main_msg = '\n'.join(fmt) + '\n' + '\n'.join(index_msgs)
-        return main_msg
+        text = '\n'.join(index_msgs)
+        return diagram + '\n' + text
+
+    def _index_constraint_error(self, text, index_highlight, ranks, sigs,
+            shapes):
+        # compute the arg => mask from idx => mask
+        arg_highlight = defaultdict(list)
+        for arg, sig in sigs.items():
+            for s in sig:
+                mask = index_highlight.get(s, [False] * ranks[s])
+                arg_highlight[arg].extend(mask)
+
+        diagram = self._index_diagram(arg_highlight, ranks, sigs, shapes)
+        return diagram + '\n' + text
 
     def _validate_schema(self):
         """
@@ -435,8 +464,10 @@ class SchemaApi(object):
                 new_dict[name] = val
             return new_dict
         
+        test = 1
         for arg_dict in dim_mutations + success_list + rank_mutations:
             arg_dict = gen_tensors(arg_dict)
+            print(f'Test {test}: ', self._call_string(arg_dict))
 
             string_err = io.StringIO()
             old_stderr = sys.stderr
@@ -470,13 +501,13 @@ class SchemaApi(object):
                 sys.stderr = old_stderr
 
             report = string_err.getvalue()
-            print(self._call_string(arg_dict))
             if isinstance(self.input_status, Success):
                 print('Success')
             else:
                 print(f'Report:\n{report}')
             framework_msg = self.framework_status.message(self)
             print(f'Framework: {framework_msg}\n')
+            test += 1
 
     def _passed(self):
         return (
@@ -615,21 +646,32 @@ class SchemaApi(object):
         index_ranks_obj = pr.IndexRanks(self, self.rank_candidates,
                 self.rank_cons)
         P.add_node(Kind.RANKS, index_ranks_obj, Kind.SHAPE_MAP)
-        P.add_node(Kind.IDIMS, pr.IndexDims(), Kind.RANKS, Kind.SIG_MAP,
+        P.add_node(Kind.IDIMS, pr.IndexDimsUsage(), Kind.RANKS, Kind.SIG_MAP,
                 Kind.SHAPE_MAP)
-        P.add_node(Kind.CDIMS, pr.ComputedDims(self.comp_dims), Kind.IDIMS)
 
     def _init_gen_graph(self):
         G.clear_registry()
+        F.clear_registry()
         G.add_node(Kind.SCHEMA, ge.Closure([self]))
         G.add_node(Kind.DTYPES, ge.DTypes(self.dtype_cons)) 
         G.add_node(Kind.RANKS, ge.Ranks(self, self.rank_candidates)) 
-        dims_obj = ge.IndexDimsGD(self.comp_dims, 1e5, 2e5)
-        G.add_node(Kind.DIMS, dims_obj, Kind.RANKS)
-        sig_obj = ge.SigMap()
-        G.add_node(Kind.SIG_MAP, sig_obj)
+        G.add_node(Kind.SIG_MAP, ge.SigMap())
+        G.add_node(Kind.GD_DIMS, self.gd_dims, Kind.RANKS, Kind.SIG_MAP)
 
     def _add_pred_graph(self):
+        # add single-index dims nodes that are not already added
+        for idx in self.index.keys():
+            kn = kname(idx, Kind.SINGLE_DIMS)
+            node = P.maybe_get_node(kn)
+            if node is None:
+                P.add_node(kn, pr.SingleIndexDims(idx), Kind.IDIMS) 
+
+        for kn, pknodes in self.pending_pred_edges.items():
+            node = P.get_node(kn)
+            for pkn in pknodes:
+                pnode = P.get_node(pkn)
+                node.append_parent(pnode)
+            
         pred_nodes = dict(P.registry)
         def is_return(node):
             ret_knames = (Kind.RETURN_TENSOR, Kind.VALID_RETURN)
@@ -642,6 +684,11 @@ class SchemaApi(object):
                 if is_return(nd) }
 
     def _add_gen_graph(self):
+        for idx in self.index.keys():
+            if idx in self.gd_dims.nonfree_inds():
+                continue
+            self.gd_dims.add_free_index(idx)
+        self.gd_dims.finalize()
         self.gen_graph = dict(G.registry)
 
     def _validate_constraints(self):
@@ -690,21 +737,53 @@ class SchemaApi(object):
         """
         self._set_arg_kname(arg_name, Kind.NONE)
 
-    def computed_index(self, index, comp_func, *comp_arg_names):
+    def computed_index(self, index, comp_func, template_func, indices,
+            *extra_args):
         """
-        Register {comp_func} to compute the dimensions of {index}.
-        Will be called as: comp_func(*comp_arg_vals)
+        Registers {comp_func} to compute the dimensions of {index}.
+        Registers {template_func} which produces a text string explaining how
+        the index is computed.
 
-        {comp_arg_names} 
+        The following calls are made:
+
+        comp_func(*index_dims, *extra_vals)
+        (index_dims are the resolved dimensions of {indices})
+        (extra_vals are the runtime values of {extra_args})
+
+        If a downstream constraint (registered with add_index_predicate) fails,
+        then OpCheck makes these calls:
+
+        template_func(*index_desc, *extra_vals)
+        template_func(*index_dims, *extra_vals)
+        (index_desc are the snake_cased descriptions of {indices})
+
+        for any computed indices that are used directly or indirectly by the
+        predicate (ancestor indices).  The output strings are then assembled to
+        create an explanatory error message.
         """
-        comp_knames = self._resolve_arg_names(self, P, comp_arg_names)
-        self.comp_dims.add(index, comp_func, comp_knames)
-        cdims_pnode = P.get_node(Kind.CDIMS)
-        dims_gnode = G.get_node(Kind.DIMS)
-        for kname in comp_knames:
-            cdims_pnode.maybe_append_parent(kname)
-            if kname != Kind.IDIMS:
-                dims_gnode.maybe_append_parent(kname)
+        if not all(idx in self.index for idx in indices):
+            raise SchemaError(
+                f'{type(self).__qualname__}: In schema \'{self.op_path}\'.\n'
+                f'Indices string \'{indices}\' contains unregistered indices.\n'
+                f'Registered indices are: {list(self.index.keys())}\n')
+
+        extra_knames = self._resolve_arg_names(self, P, extra_args)
+        cdims_kname = kname(index, Kind.SINGLE_DIMS)
+        cdims_pnode = P.add_node(cdims_kname, pr.ComputedDims(index, comp_func))
+        tem_kname = kname(index, Kind.COMP_DIMS_TEM)
+        tem_pnode = P.add_node(tem_kname, pr.TemplateFunc(template_func, self))
+        self.comp_dims_templates[index] = tem_pnode
+
+        pknames = [ kname(idx, Kind.SINGLE_DIMS) for idx in indices ]
+        pknames.extend(extra_knames)
+
+        self.pending_pred_edges[tem_kname] = pknames
+        self.pending_pred_edges[cdims_kname] = pknames
+
+        self.gd_dims.add_comp_index(index, comp_func, indices, *extra_args)
+        dims_gnode = G.get_node(Kind.GD_DIMS)
+        for kn in extra_knames:
+            dims_gnode.maybe_append_parent(kn)
 
     def equate_ranks(self, target_index, source_index):
         """
@@ -893,11 +972,16 @@ class SchemaApi(object):
                 f'layouts (as established by the call to \'arg_layout\') but '
                 f'{len(sigs)} elements of \'*sigs\' argument.')
 
-    def _arg_shape_func(self, arg_name, sigs, _type, arg_kind, pred_obj, gen_obj):
+    def _arg_shape_func(self, arg_name, sigs, _type, arg_kind, pred_obj,
+            gen_obj):
         """
         Backend function for arg_shape_* API functions 
+        {gen_obj} is a n object from generators.py which expects the GD_DIMS
+        node, and a SIG node.  It produces the current shape of that signature,
+        as interpreted by the object.
+
+        {pred_obj} 
         """
-        # TODO: add obj arguments
         self._check_sigs_layout(arg_name, *sigs)
 
         arg_kname = kname(arg_name, arg_kind)
@@ -924,9 +1008,7 @@ class SchemaApi(object):
         sig_pnode = P.add_node(sig_kname, sig_pobj, *layout)
         sig_gnode = G.add_node(sig_kname, sig_gobj, *layout)
 
-        G.add_node(arg_kname, gen_obj, Kind.DIMS, sig_kname)
-        dims_gnode = G.get_node(Kind.DIMS)
-        dims_gnode.append_parent(sig_gnode)
+        G.add_node(arg_kname, gen_obj, Kind.GD_DIMS, sig_kname)
 
         sig_map_gnode = G.get_node(Kind.SIG_MAP)
         sig_map_gnode.append_parent(sig_gnode)
@@ -1050,7 +1132,7 @@ class SchemaApi(object):
         arg_pobj = pr.ArgType(arg_name, tf.Tensor)
         arg_gobj = ge.ShapeTensor2D()
         P.add_node(arg_kname, arg_pobj, Kind.SCHEMA)
-        ten_gnode = G.add_node(arg_kname, arg_gobj, Kind.DIMS)
+        ten_gnode = G.add_node(arg_kname, arg_gobj, Kind.GD_DIMS)
         layout_kname = base.kname('layout', Kind.PSEUDO)
 
         sigmap_gnode = G.get_node(Kind.SIG_MAP)
@@ -1120,17 +1202,17 @@ class SchemaApi(object):
         rank_node.maybe_append_parent(shape_karg)
 
         # 'sum' simply sums up the individual ranks of indices in rank_sig 
-        dims_kname = kname(dims_index, Kind.DIMS)
+        dims_kname = kname(dims_index, Kind.SINGLE_DIMS)
         def gen_single_index(ranks_list):
             val = sum(ranks_list)
             return [([val],)]
 
         gobj = ge.Dims(gen_single_index, dims_index, rank_sig, tuple())
         gen_dims_gnode = G.add_node(dims_kname, gobj, Kind.RANKS)
-        dims_gnode = G.get_node(Kind.DIMS)
-        dims_gnode.append_parent(gen_dims_gnode)
+        gd_dims_gnode = G.get_node(Kind.GD_DIMS)
+        gd_dims_gnode.append_parent(gen_dims_gnode)
 
-    def add_index_predicate(self, pred_name, status_func, index_combo):
+    def add_index_predicate(self, pred_name, status_func, indices):
         """
         Registers {status_func} with the schema to be used as an additional
         predicate for {indexes} dimensions.
@@ -1139,18 +1221,23 @@ class SchemaApi(object):
         in error messages.
 
         Called as status_func(*index_shapes), where index_shapes are the
-        resolved shapes of each index, in order, in {index_combo}.  They are
+        resolved shapes of each index, in order, in {indices}.  They are
         provided as numpy arrays.
 
         status_func must return an instance of SchemaStatus
 
         Custom status functions are found in the flib module.
         """
-        pobj = pr.Dims(pred_name, status_func, index_combo)
+        pobj = pr.IndexDimsConstraint(pred_name, status_func)
         dims_kname = kname(pred_name, Kind.NONE)
-        dims_pnode = P.add_node(dims_kname, pobj, Kind.IDIMS, Kind.CDIMS)
+        dims_pnode = P.add_node(dims_kname, pobj, Kind.RANKS, Kind.SIG_MAP, 
+                Kind.SHAPE_MAP, Kind.SCHEMA)
 
-    def add_index_generator(self, gen_func, output_indices, input_indices, 
+        # cache the list of single index dims to add parents later
+        pknames = [ kname(idx, Kind.SINGLE_DIMS) for idx in indices ]
+        self.pending_pred_edges[dims_kname] = pknames
+
+    def add_index_generator(self, output_indices, gen_func, input_indices, 
             *gen_args):
         """
         Registers {gen_func} with the schema to be used to generate
@@ -1165,11 +1252,11 @@ class SchemaApi(object):
 
         Custom generator function objects are found in the flib module.
         """
-        dims_kname = kname(output_indices, Kind.DIMS)
+        dims_kname = kname(output_indices, Kind.GEN_DIMS)
         gobj = ge.Dims(gen_func, output_indices, input_indices, gen_args)
         gen_dims_gnode = G.add_node(dims_kname, gobj, Kind.RANKS)
-        dims_gnode = G.get_node(Kind.DIMS)
-        dims_gnode.append_parent(gen_dims_gnode)
+        gd_dims_gnode = G.get_node(Kind.GD_DIMS)
+        gd_dims_gnode.append_parent(gen_dims_gnode)
 
     def return_tensor(self, *sigs):
         """
@@ -1200,12 +1287,13 @@ class SchemaApi(object):
         rvalid_pobj = pr.ValidReturnShape(index)
         P.add_node(ret_kname, rten_pobj, Kind.SCHEMA)
         P.add_node(sig_kname, sig_pobj, *layout)  
-        P.add_node(pshape_kname, pr.predicted_shape, Kind.IDIMS, Kind.CDIMS,
-                sig_kname)
+        P.add_node(pshape_kname, pr.predicted_shape, sig_kname)
+
+        idx_knames = [kname(idx, Kind.SINGLE_DIMS) for idx in self.index.keys()]
+        self.pending_pred_edges[pshape_kname] = idx_knames 
+
         P.add_node(valid_return, rvalid_pobj, ret_kname, pshape_kname) 
         sig_gnode = G.add_node(sig_kname, sig_gobj, *layout) 
-        dims_gnode = G.get_node(Kind.DIMS)
-        dims_gnode.append_parent(sig_gnode)
         self.num_returns += 1
 
         sig_map_gnode = G.get_node(Kind.SIG_MAP)

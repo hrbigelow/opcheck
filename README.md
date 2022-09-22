@@ -59,5 +59,7 @@ convolution.  The total set of lines in this section list all of the valid
 geometries for this operation.
 
 The `data_format` argument, if it exists, is part of the shape-related
-arguments because it determines which set of valid 
+arguments because it controls which combination of signatures is valid.
+
+
 
