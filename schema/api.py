@@ -769,7 +769,7 @@ class SchemaApi(object):
 
         extra_knames = self._resolve_arg_names(self, P, extra_args)
         cdims_kname = kname(index, Kind.SINGLE_DIMS)
-        cdims_pnode = P.add_node(cdims_kname, pr.ComputedDims(index, comp_func))
+        P.add_node(cdims_kname, pr.ComputedDims(index, comp_func))
         tem_kname = kname(index, Kind.COMP_DIMS_TEM)
         tem_pnode = P.add_node(tem_kname, pr.TemplateFunc(template_func, self))
         self.comp_dims_templates[index] = tem_pnode
@@ -780,7 +780,7 @@ class SchemaApi(object):
         self.pending_pred_edges[tem_kname] = pknames
         self.pending_pred_edges[cdims_kname] = pknames
 
-        self.gd_dims.add_comp_index(index, comp_func, indices, *extra_args)
+        self.gd_dims.add_comp_index(index, comp_func, indices, *extra_knames)
         dims_gnode = G.get_node(Kind.GD_DIMS)
         for kn in extra_knames:
             dims_gnode.maybe_append_parent(kn)
@@ -1257,6 +1257,9 @@ class SchemaApi(object):
         gen_dims_gnode = G.add_node(dims_kname, gobj, Kind.RANKS)
         gd_dims_gnode = G.get_node(Kind.GD_DIMS)
         gd_dims_gnode.append_parent(gen_dims_gnode)
+
+        for idx in output_indices:
+            self.gd_dims.add_gen_index(idx)
 
     def return_tensor(self, *sigs):
         """

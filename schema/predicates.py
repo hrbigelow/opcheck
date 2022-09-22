@@ -419,7 +419,30 @@ class IndexDimsConstraint(object):
                     shapes)
             return False, err
         return valid, status
+"""
+class ComputedDims(object):
+    def __init__(self, comp_dims):
+        self.comp_dims = comp_dims
 
+    def __call__(self, dims_map, **kwargs):
+        # convert dims tuples to np.arrays
+        dims_map = { k: np.array(v) for k, v in dims_map.items() }
+        kwargs[Kind.IDIMS] = dims_map
+
+        comp_dims_map = self.comp_dims(**kwargs)
+        # convert back to integer tuples
+        comp_dims_map = { 
+                k: tuple(v.astype(np.int32).tolist()) 
+                for k, v in comp_dims_map.items() 
+                }
+        for idx, dims in comp_dims_map.items():
+            if any(c < 0 for c in dims):
+                return False, NegativeDimsError(idx, dims)
+        return True, comp_dims_map
+"""
+
+# TODO: Convert shapes to np.arrays, then back to integer tuples  
+# Need to know which arguments are shape-like
 class ComputedDims(object):
     """
     Apply a broadcasting function to compute dimensions
@@ -472,28 +495,6 @@ class TemplateFunc(object):
         ftexts.append(formula_text)
         ctexts.append(computation_text)
         return True, (ftexts, ctexts, indices)
-
-"""
-class ComputedDims(object):
-    def __init__(self, comp_dims):
-        self.comp_dims = comp_dims
-
-    def __call__(self, dims_map, **kwargs):
-        # convert dims tuples to np.arrays
-        dims_map = { k: np.array(v) for k, v in dims_map.items() }
-        kwargs[Kind.IDIMS] = dims_map
-
-        comp_dims_map = self.comp_dims(**kwargs)
-        # convert back to integer tuples
-        comp_dims_map = { 
-                k: tuple(v.astype(np.int32).tolist()) 
-                for k, v in comp_dims_map.items() 
-                }
-        for idx, dims in comp_dims_map.items():
-            if any(c < 0 for c in dims):
-                return False, NegativeDimsError(idx, dims)
-        return True, comp_dims_map
-"""
 
 class ArgLayout(object):
     """

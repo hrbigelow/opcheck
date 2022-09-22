@@ -8,7 +8,7 @@ import itertools
 from random import randint
 from functools import partial
 from .base import Kind, kind, kpfx
-from .fgraph import FuncNode as F
+from .fgraph import FuncNode as F, func_graph_evaluate
 from .error import SchemaError
 from . import util
 
@@ -120,7 +120,8 @@ class GenIndex(object):
         self.idx = index_name
 
     def __call__(self):
-        return self.gd.gen_index_dims[self.idx]
+        val = self.gd.gen_index_dims[self.idx]
+        return tf.constant(val, dtype=tf.float32)
 
 class CompIndex(object):
     # FuncNode object for indices registered with computed_index
@@ -134,7 +135,18 @@ class CompIndex(object):
         # const_args are non-index aruments and remain constant during
         # gradient descent
         const_args = tuple(self.gd.extra_args[a] for a in self.args)
-        return self.func(*args, *const_args)
+        comp_dims = self.func(*args, *const_args)
+        if not (
+                (isinstance(comp_dims, tf.Tensor) and
+                    comp_dims.shape.rank == 1) or
+                (isinstance(comp_dims, np.ndarray) and
+                    comp_dims.ndim == 1)
+                ):
+            raise SchemaError(
+                f'{type(self).__qualname__}: function \'{self.func.__name__}\' '
+                f'registered with computed_dims must return a 1D '
+                f'tf.Tensor or np.ndarray.  Got \'{comp_dims}\'')
+        return comp_dims
 
 class IndexDimsGD(object):
     """
@@ -191,9 +203,10 @@ class IndexDimsGD(object):
         self.extra_args.clear()
 
         for k, v in kwargs.items():
-            idx = kpfx(k)
             if kind(k) == Kind.GEN_DIMS:
-                self.gen_index_dims[idx] = v
+                dims_map = v
+                for idx, dims in dims_map.items():
+                    self.gen_index_dims[idx] = dims
             else:
                 self.extra_args[k] = v
         self.sigs = sigs
@@ -206,7 +219,7 @@ class IndexDimsGD(object):
             self.variables[idx] = var
 
     def all_dims(self):
-        dims = { n.name: n.value() for n in self.nodes }
+        dims = func_graph_evaluate(self.nodes)
         return dims
 
     def num_elem(self, sig):
@@ -231,7 +244,8 @@ class IndexDimsGD(object):
 
     def elem_loss(self):
         dims = self.all_dims()
-        nelem = tf.reduce_sum(tuple(self.num_elem(sig) for sig in self.sigs))
+        card = tuple(self.num_elem(sig) for sig in self.sigs.values())
+        nelem = tf.reduce_sum(card)
         log_nelem = tf.math.log(nelem)
         # the distance from interval [self.log_min_nelem, self.log_max_nelem]
         # done in log space since these are products of several variables
@@ -271,11 +285,13 @@ class IndexDimsGD(object):
                         break
             
         # extract the dims map
-        dims = self.calc_dims()
-        return [dims]
+        vars_map = self.all_dims()
+        dims_map = {}
+        for idx, var in vars_map.items():
+            dims_map[idx] = var.numpy().astype(np.int32).tolist() 
+        return [dims_map]
 
-"""
-class IndexDimsGD(object):
+class IndexDimsGDOld(object):
     def __init__(self, comp_dims, min_nelem, max_nelem):
         self.lr = 5.0
         self.comp_dims = comp_dims
@@ -417,7 +433,6 @@ class IndexDimsGD(object):
         # extract the dims map
         dims_map = self.dims_map()
         return [dims_map]
-"""
 
 class SingleIndexDims(object):
     """

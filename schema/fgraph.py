@@ -326,6 +326,13 @@ def pred_graph_evaluate(nodes):
             return n.get_cached_value()
     return None
 
+def func_graph_evaluate(nodes):
+    topo_nodes = _topo_sort(nodes)
+    for node in topo_nodes:
+        val = node.value()
+        node.set_cached_value(val)
+    return { n.name: n.get_cached_value() for n in topo_nodes }
+
 if __name__ == '__main__':
     def unit():
         return [1,2]
