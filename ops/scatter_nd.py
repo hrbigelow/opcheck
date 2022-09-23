@@ -2,19 +2,10 @@ import opcheck
 from schema import Kind, kname
 
 def init_schema(op):
-    op.add_index('r', 'read address')
-    op.add_index('c', 'write address component')
-    op.add_index('e', 'slice element')
-    op.add_index('w', 'write address')
-
-    # def genc(rank_list):
-        # return [([rank_list[0]],)]
-    # op.add_index_generator('c', genc, 'w')
-
-    op.limit_ranks('r', 1, 3)
-    op.limit_ranks('c', 1, 1)
-    op.limit_ranks('e', 0, 4)
-    op.limit_ranks('w', 1, 3)
+    op.add_index('r', 'read address', 1, 3)
+    op.add_index('c', 'write address component', 1, 1)
+    op.add_index('e', 'slice element', 0, 4)
+    op.add_index('w', 'write address', 1, 3)
 
     op.arg_tensor('indices', 'rc')
     op.arg_tensor('updates', 're')

@@ -347,6 +347,10 @@ class IndexDimsUsage(object):
         if len(idx_usage) != 0:
             return False, IndexUsageError(idx_usage, ranks, sigs, shapes)
         else:
+        # fill in None for any remaining dims?
+            for idx in ranks.keys():
+                if idx not in index_dims:
+                    index_dims[idx] = None
             return True, index_dims
 
 class SingleIndexDims(object):
@@ -381,19 +385,20 @@ class IndexDimsConstraint(object):
         if isinstance(status, Success):
             return True, status
         else:
-            # 
+            # The constraint was violated.  The explanatory message must now
+            # include descriptions of any computed dims, either directly or
+            # indirectly used by the constraint
             formula_texts = []
             dimension_texts = []
             ancestor_inds = list(indices)
-            for idx in indices:
-                tem = self.op.comp_dims_templates.get(idx, None)
-                if tem is not None:
-                    _, (ftxt, dtxt, ainds) = tem.value()
-                desc = self.op.index[idx].replace(' ', '_')
-                ftxt = f'{desc} = {ftxt}'
-                dtxt = f'{shapes[idx]} = {dtxt}'
-                formula_texts.extend(ftxt)
-                dimension_texts.extend(dtxt)
+            for idx, ind in zip(indices, shapes_list):
+                tem = op.comp_dims_templates.get(idx, None)
+                if tem is None:
+                    continue
+                _, (ftxts, dtxts, ainds) = tem.value()
+                desc = op.index[idx].replace(' ', '_')
+                formula_texts.extend(ftxts)
+                dimension_texts.extend(dtxts)
                 ancestor_inds.extend(ainds)
 
             # apply broadcasting rules to each index
@@ -412,86 +417,78 @@ class IndexDimsConstraint(object):
 
             # compile all texts into one message
             pairs = zip(formula_texts, dimension_texts)
-            main_text = '\n\n'.join(f'{f}\n{d}\n' for f, d in pairs)
-            main_text += '\n{status.text}'
-
+            comp_dims_text = '\n\n'.join(f'{f}\n{d}\n' for f, d in pairs)
+            if comp_dims_text != '':
+                main_text = comp_dims_text + '\n' + status.text
+            else:
+                main_text = status.text
             err = IndexConstraintError(index_highlight, main_text, ranks, sigs,
                     shapes)
             return False, err
         return valid, status
-"""
-class ComputedDims(object):
-    def __init__(self, comp_dims):
-        self.comp_dims = comp_dims
 
-    def __call__(self, dims_map, **kwargs):
-        # convert dims tuples to np.arrays
-        dims_map = { k: np.array(v) for k, v in dims_map.items() }
-        kwargs[Kind.IDIMS] = dims_map
-
-        comp_dims_map = self.comp_dims(**kwargs)
-        # convert back to integer tuples
-        comp_dims_map = { 
-                k: tuple(v.astype(np.int32).tolist()) 
-                for k, v in comp_dims_map.items() 
-                }
-        for idx, dims in comp_dims_map.items():
-            if any(c < 0 for c in dims):
-                return False, NegativeDimsError(idx, dims)
-        return True, comp_dims_map
-"""
-
-# TODO: Convert shapes to np.arrays, then back to integer tuples  
-# Need to know which arguments are shape-like
 class ComputedDims(object):
     """
     Apply a broadcasting function to compute dimensions
     """
-    def __init__(self, index_name, func):
+    def __init__(self, index_name, func, num_index_args):
         self.index = index_name
         self.func = func
+        self.nidx = num_index_args
 
     def __call__(self, *args):
-        return True, self.func(*args)
+        idx_args, extra_args = args[:self.nidx], args[self.nidx:]
+        idx_args = [ np.array(a) for a in idx_args ]
+        dims_ary = self.func(*idx_args, *extra_args)
+        dims = dims_ary.astype(np.int32).tolist()
+        return True, dims
 
 class TemplateFunc(object):
     """
-    Call the enclosed template function twice - once with the index
-    descriptions, and once with the dimensions.
+    Calls template_func(*inds, *extra)
+    where inds are a set of OpCheck indices, and extra are any non-index
+    arguments.
+
+    See API computed_index for more details.
 
     Recursively calls any TemplateFunc nodes registered on parent indices, and
     accumulates the resulting texts and indices
     """
-    def __init__(self, template_func, op):
+    def __init__(self, template_func, comp_idx, op):
         self.func = template_func
+        self.comp_idx = comp_idx
         self.op = op
 
-    def __call__(self, **kwargs):
+    def __call__(self, comp_dims, **kwargs):
         formula = [] 
         indices = []
+
+        # just takes the values as-is.  For indices, these are the dimensions
         computation = list(kwargs.values())
         ftexts = []
         ctexts = []
 
+        calc_desc = self.op.index[self.comp_idx].replace(' ', '_')
+        calc_comp = str(comp_dims)
+
         for k, v in kwargs.items():
-            if kind(k) == Kind.DIMS:
+            if kind(k) == Kind.SINGLE_DIMS:
                 idx = kpfx(k)
                 desc = self.op.index[idx].replace(' ', '_')
                 formula.append(desc)
                 indices.append(idx)
                 parent = self.op.comp_dims_templates.get(idx, None)
                 if parent is not None:
-                    _, vals = parent.value()
-                    ftext, ctext, inds = vals
+                    _, (ftext, ctext, inds) = parent.value()
                     ftexts.extend(ftext)
                     ctexts.extend(ctext)
                     indices.extend(inds)
 
             else:
                 formula.append(v)
-
-        formula_text = self.func(*formula)
-        computation_text = self.func(*computation)
+        
+        formula_text = calc_desc + ' = ' + self.func(*formula)
+        computation_text = calc_comp + ' = ' + self.func(*computation)
         ftexts.append(formula_text)
         ctexts.append(computation_text)
         return True, (ftexts, ctexts, indices)

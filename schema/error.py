@@ -117,10 +117,14 @@ class IndexUsageError(SchemaStatus):
         return op._index_usage_error(self.idx_usage, self.ranks,
                 self.sigs, self.shapes)
 
-class TextHighlightError(SchemaStatus):
-    def __init__(self, index_highlight, text): 
-        self.index_highlight = index_highlight
+class ComponentConstraintError(SchemaStatus):
+    """
+    Returned by an index dims constraint function.  The contents are then
+    incorporated into an IndexConstraintError
+    """
+    def __init__(self, text, error_mask):
         self.text = text
+        self.mask = error_mask
 
 class IndexConstraintError(SchemaStatus):
     def __init__(self, index_highlight, text, ranks, sigs, shapes):
@@ -133,16 +137,6 @@ class IndexConstraintError(SchemaStatus):
     def message(self, op):
         return op._index_constraint_error(self.text, self.index_highlight,
                 self.ranks, self.sigs, self.shapes)
-
-class NegativeDimsError(SchemaStatus):
-    def __init__(self, idx, dims):
-        self.idx = idx
-        self.dims = list(dims)
-
-    def message(self, op):
-        msg = f'Dimensions of index \'{self.idx}\' contain negative values: '
-        msg += f'{self.dims}'
-        return msg
 
 class NonOptionError(SchemaStatus):
     def __init__(self, arg_name, arg_val):

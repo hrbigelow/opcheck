@@ -38,7 +38,7 @@ def init_schema(op):
     def jdims_txt(s, e, i):
         return f'{s} + {i} + {e}'
 
-    op.computed_index('j', jdims, jdims_txt, 'sei')
+    op.computed_index('j', jdims, jdims_txt, 'sei', 1)
 
     def odims(padded, block_shape):
         return flib.floordiv(padded, block_shape)
@@ -46,7 +46,7 @@ def init_schema(op):
     def odims_txt(padded, block_shape):
         return f'{padded} // {block_shape}'
 
-    op.computed_index('o', odims, odims_txt, 'jk')
+    op.computed_index('o', odims, odims_txt, 'jk', 1)
 
     def pdims(block_shape, batch):
         block_elems = flib.reduce_prod(block_shape)
@@ -55,7 +55,7 @@ def init_schema(op):
     def pdims_txt(block_shape, batch):
         return f'product({block_shape}) * {batch}'
 
-    op.computed_index('p', pdims, pdims_txt, 'kb')
+    op.computed_index('p', pdims, pdims_txt, 'kb', 1)
 
     op.return_tensor('por')
 

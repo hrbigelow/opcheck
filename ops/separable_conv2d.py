@@ -35,9 +35,9 @@ def init_schema(op):
     def pdims_txt(c, k):
         return f'{c} * {k}'
 
-    op.computed_index('p', pdims, pdims_txt, 'ck')
+    op.computed_index('p', pdims, pdims_txt, 'ck', 1)
 
-    op.add_index_generator('z', lambda: [[1, 1]], '')
+    op.add_index_generator('z', lambda dummy: [([1, 1],)], '')
 
     op.arg_option('padding', ('VALID', 'SAME'))
 

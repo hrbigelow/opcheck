@@ -137,7 +137,7 @@ class CompIndex(object):
         const_args = tuple(self.gd.extra_args[a] for a in self.args)
         comp_dims = self.func(*args, *const_args)
         if not (
-                (isinstance(comp_dims, tf.Tensor) and
+                (isinstance(comp_dims, (tf.Tensor, tf.Variable)) and
                     comp_dims.shape.rank == 1) or
                 (isinstance(comp_dims, np.ndarray) and
                     comp_dims.ndim == 1)
@@ -233,11 +233,10 @@ class IndexDimsGD(object):
         return nelem
 
     def index_loss(self):
+        # print('in index loss')
         dims = self.all_dims()
         comp_dims = [ dim for idx, dim in dims.items() if idx in
                 self.computed_indexes ]
-        if len(comp_dims) == 0:
-            return 0
         st = tf.concat(comp_dims, axis=0)
         loss = tf.reduce_sum(tf.nn.relu(1.0 - st))
         return loss
@@ -264,7 +263,16 @@ class IndexDimsGD(object):
         # all extra arguments declared in calls to computed_index
         self.prepare(ranks, sigs, **kwargs)
         opt = tf.keras.optimizers.Adam(learning_rate=self.lr)
-        losses = [ lambda: self.index_loss(), lambda: self.elem_loss() ]
+        losses = []
+        if len(self.computed_indexes) > 0:
+            losses.append(lambda: self.index_loss())
+        losses.append(lambda: self.elem_loss())
+
+        # Calling apply_gradients on any variables with zero elements results
+        # in: ./tensorflow/core/util/gpu_launch_config.h:129] Check failed:
+        # work_element_count > 0 (0 vs. 0)
+        # when calling apply_gradients
+        free_vars = [ v for v in self.variables.values() if v.shape[0] > 0 ]
 
         # The first phase (index_loss) ensures that all index dims are positive
         # (free, generated, and computed). Under that condition, the next
@@ -276,7 +284,6 @@ class IndexDimsGD(object):
                 for step in range(100):
                     with tf.GradientTape() as tape:
                         objective = loss_func()
-                    free_vars = self.variables.values()
                     grads = tape.gradient(objective, free_vars)
                     opt.apply_gradients(zip(grads, free_vars))
                     if step % 10 == 0:

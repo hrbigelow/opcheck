@@ -54,7 +54,7 @@ def init_schema(op):
             tem = f'ceil({i} / {s})' 
         return tem
 
-    op.computed_index('o', odims, odims_template, 'ifsd', 'padding')
+    op.computed_index('o', odims, odims_template, 'ifsd', 1, 'padding')
     op.return_tensor('blo', 'bol')
 
 opcheck.register('tf.nn.convolution', init_schema)

@@ -8,10 +8,6 @@ def init_schema(op):
     op.add_index('e', 'slice element')
     op.add_index('c', 'read address component', 1, 1)
 
-    # def genc(rank_list):
-        # return [([rank_list[0]],)]
-    # op.add_index_generator('c', genc, 'r')
-
     # allowed rank combinations
     op.limit_ranks('bre', None, 8)
     op.limit_ranks('bwc', None, 8)

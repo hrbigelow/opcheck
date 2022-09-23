@@ -33,7 +33,7 @@ def init_schema(op):
             txt = f'{i}'
         return txt
 
-    op.computed_index('o', odims, odims_txt, 'ifr', 'padding')
+    op.computed_index('o', odims, odims_txt, 'ifr', 1, 'padding')
     # op.return_tensor()
 
 opcheck.register('tf.nn.atrous_conv2d', init_schema)

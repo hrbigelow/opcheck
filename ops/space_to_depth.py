@@ -16,7 +16,7 @@ def init_schema(op):
 
     def cdims(dummy):
         return [([4],)]
-    op.add_index_generator('c', cdims, 'c')
+    op.add_index_generator('c', cdims, '')
     op.add_index_generator('is', flib.gen_blocked_sizes, 'i', 2, 8, 10, 100)
 
     data_formats = [ 
@@ -39,7 +39,7 @@ def init_schema(op):
     def odims_template(i, s):
         return f'{i} // {s}'
 
-    op.computed_index('o', odims, odims_template, 'is')
+    op.computed_index('o', odims, odims_template, 'is', 1)
 
     def fdims(z, c, s, k, layout):
         if layout == 'NCHW_VECT_C':
@@ -55,7 +55,7 @@ def init_schema(op):
             tmp = f'{s} * {s} * product({k})'
         return tmp
 
-    op.computed_index('f', fdims, fdims_template, 'zcsk', Kind.DATA_FORMAT)
+    op.computed_index('f', fdims, fdims_template, 'zcsk', 1, Kind.DATA_FORMAT)
 
 opcheck.register('tf.nn.space_to_depth', init_schema)
 

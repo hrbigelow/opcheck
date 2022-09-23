@@ -53,20 +53,19 @@ def reduce_prod(a):
     else:
         return np.array([np.prod(a)])
 
-def to_dims(a):
-    """
-    """
 def not_both_over_one(shape1, shape2):
     """
     Return a status confirming that no more than one of the shapes has
     components greater than one.
     """
-    o1 = any(s > 1 for s in shape1.dims)
-    o2 = any(s > 1 for s in shape2.dims)
-    if o1 and o2:
-        return CustomError(
-                f'Both shapes had components greater than one: '
-                f'Got \'{shape1.dims}\' and \'{shape2.dims}\'')
+    o1 = shape1.dims > 1
+    o2 = shape2.dims > 1
+    both = o1 & o2
+    if any(both):
+        return ComponentConstraintError(
+                f'One or more components of \'{shape1.desc}\' and '
+                f'\'{shape2.desc}\' were above 1 at the same time',
+                both.tolist())
     else:
         return Success()
 
@@ -98,11 +97,33 @@ def divis_by(numer, denom):
                 text.append(line)
 
         error_mask = (rem != 0).tolist()
-        main = (f'\'{numer.desc}\' dimensions must be divisible by '
-                f'\'{denom.desc}\'')
+        main = (f'\'{numer.desc}\' ({numer.code}) dimensions must be '
+                f'divisible by \'{denom.desc}\' ({denom.code})')
         all_text = main + '\n' + '\n'.join(text)
         return ComponentConstraintError(all_text, error_mask)
 
+class PredAbove(object):
+    """
+    Test that components are >= min_val
+    """
+    def __init__(self, min_val):
+        self.min_val = min_val
+
+    def __call__(self, idx):
+        error_mask = (idx.dims < self.min_val).tolist()
+        if not any(error_mask):
+            return Success()
+
+        text = []
+        for i, err in enumerate(error_mask):
+            if err:
+                suffix = str(i) if len(idx.dims) > 1 else ''
+                line = f'{idx.code}{suffix} < {self.min_val}'
+                text.append(line)
+        main = f'\'{idx.desc}\' ({idx.code}) must be >= {self.min_val}'
+        all_text = main + '\n' + '\n'.join(text)
+        return ComponentConstraintError(all_text, error_mask)
+        
 def gen_not_both_over_one(ranks_list, lo, hi):
     """
     Generate a list of shape tuples in range [lo, hi], in which no more than

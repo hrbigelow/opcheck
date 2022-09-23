@@ -11,6 +11,7 @@ from . import mutations
 from . import base
 from .base import Kind, kname, kpfx, kind
 from . import fgraph
+from . import flib
 from .error import *
 from .fgraph import PredNode as P, GenNode as G, FuncNode as F
 
@@ -47,7 +48,7 @@ class SchemaApi(object):
         self.rank_cons = [] 
         self.dtype_cons = base.DTypeConstraints()
         self.gd_dims = ge.IndexDimsGD(1e5, 2e5)
-        self.comp_dims_templates = {}
+        self.comp_dims_templates = {} # idx => PredNode with TemplateFunc
         self.num_returns = 0
         self.num_layouts = 1
 
@@ -737,17 +738,20 @@ class SchemaApi(object):
         """
         self._set_arg_kname(arg_name, Kind.NONE)
 
-    def computed_index(self, index, comp_func, template_func, indices,
-            *extra_args):
+    def computed_index(self, comp_index, comp_func, template_func,
+            input_indexes, min_val, *extra_args):
         """
-        Registers {comp_func} to compute the dimensions of {index}.
+        Registers {comp_func} to compute the dimensions of {comp_index}.
         Registers {template_func} which produces a text string explaining how
         the index is computed.
+
+        Adds an index predicate to ensure all components of the computed index
+        are >= {min_val}
 
         The following calls are made:
 
         comp_func(*index_dims, *extra_vals)
-        (index_dims are the resolved dimensions of {indices})
+        (index_dims are the resolved dimensions of {input_indexes})
         (extra_vals are the runtime values of {extra_args})
 
         If a downstream constraint (registered with add_index_predicate) fails,
@@ -755,35 +759,44 @@ class SchemaApi(object):
 
         template_func(*index_desc, *extra_vals)
         template_func(*index_dims, *extra_vals)
-        (index_desc are the snake_cased descriptions of {indices})
+        (index_desc are the snake_cased descriptions of {input_indexes})
 
         for any computed indices that are used directly or indirectly by the
         predicate (ancestor indices).  The output strings are then assembled to
         create an explanatory error message.
         """
-        if not all(idx in self.index for idx in indices):
+        if not all(idx in self.index for idx in input_indexes):
             raise SchemaError(
                 f'{type(self).__qualname__}: In schema \'{self.op_path}\'.\n'
-                f'Indices string \'{indices}\' contains unregistered indices.\n'
-                f'Registered indices are: {list(self.index.keys())}\n')
+                f'Indices string \'{input_indexes}\' contains unregistered '
+                f'indices.\nRegistered indices are: {list(self.index.keys())}\n'
+                )
 
         extra_knames = self._resolve_arg_names(self, P, extra_args)
-        cdims_kname = kname(index, Kind.SINGLE_DIMS)
-        P.add_node(cdims_kname, pr.ComputedDims(index, comp_func))
-        tem_kname = kname(index, Kind.COMP_DIMS_TEM)
-        tem_pnode = P.add_node(tem_kname, pr.TemplateFunc(template_func, self))
-        self.comp_dims_templates[index] = tem_pnode
+        cdims_kname = kname(comp_index, Kind.SINGLE_DIMS)
+        comp_pobj = pr.ComputedDims(comp_index, comp_func, len(input_indexes))
+        P.add_node(cdims_kname, comp_pobj)
+        tem_kname = kname(comp_index, Kind.COMP_DIMS_TEM)
+        temp_pobj = pr.TemplateFunc(template_func, comp_index, self)
+        tem_pnode = P.add_node(tem_kname, temp_pobj, cdims_kname)
+        self.comp_dims_templates[comp_index] = tem_pnode
 
-        pknames = [ kname(idx, Kind.SINGLE_DIMS) for idx in indices ]
+        pknames = [ kname(idx, Kind.SINGLE_DIMS) for idx in input_indexes ]
         pknames.extend(extra_knames)
 
         self.pending_pred_edges[tem_kname] = pknames
         self.pending_pred_edges[cdims_kname] = pknames
 
-        self.gd_dims.add_comp_index(index, comp_func, indices, *extra_knames)
+        self.gd_dims.add_comp_index(comp_index, comp_func, input_indexes,
+                *extra_knames)
         dims_gnode = G.get_node(Kind.GD_DIMS)
         for kn in extra_knames:
             dims_gnode.maybe_append_parent(kn)
+
+        # add a predicate to ensure the computed index is >= some minimum value
+        bounds_pobj = flib.PredAbove(min_val)
+        self.add_index_predicate(f'{comp_index} >= {min_val}', bounds_pobj,
+                comp_index)  
 
     def equate_ranks(self, target_index, source_index):
         """
