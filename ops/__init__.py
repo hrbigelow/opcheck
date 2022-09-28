@@ -6,5 +6,7 @@ from . import separable_conv2d
 from . import atrous_conv2d
 from . import atrous_conv2d_transpose
 from . import space_to_batch
+from . import avg_pool
+from . import depth_to_space
 
 

@@ -7,44 +7,98 @@ import numpy as np
 import itertools
 from random import randint
 from functools import partial
+from collections import defaultdict
 from .base import Kind, kind, kpfx
 from .fgraph import FuncNode as F, func_graph_evaluate
-from .error import SchemaError
+from .error import *
 from . import util
 
 class DTypes(object):
     def __init__(self, dtype_cons):
         self.dtype_cons = dtype_cons
+        # double is alias for float64
+        # half is alias for float16
+        # tf.string, tf.variant, tf.resource are omitted
+        self.all_dtypes = (
+                tf.int8, tf.int16, tf.int32, tf.int64,
+                tf.uint8, tf.uint16, tf.uint32, tf.uint64,
+                tf.float16, tf.float32, tf.float64,
+                tf.qint8, tf.qint16, tf.qint32,
+                tf.bfloat16, 
+                tf.bool,
+                tf.complex64, tf.complex128
+                )
 
     def __call__(self):
         """
-        Generate all allowed dtype combinations.  Generates a list of maps.
+        Generate all valid dtype combinations.  Generates a list of maps.
         Each map has a full tensor_name => dtype for each input tensor
         """
-        # src_ten are tensor names which have independent dtypes
-        src_ten, allowed_dtypes = zip(*self.dtype_cons.valid.items())
-        # tensor_name => index 
+        tests = self.dtype_cons.make_tests()
+        tensor_names = self.dtype_cons.all()
+        k = len(tensor_names)
+        max_errors = 1
+
+        # list of (type, dtype_tuple), where <type> is a SchemaStatus expected
+        # to be produced from this tuple.
+        combo_gen = util.dtype_combos(k, self.all_dtypes, tests, max_errors)
+        combos = list(combo_gen)
+        combo_maps = [ (s, dict(zip(tensor_names, d))) for s, d in combos ]
+
+        """
+        # src_ten: list of ten_name
+        # valid_dtypes: list of tuples of dtypes
+        src_ten, valid_dtypes = zip(*self.dtype_cons.valid.items())
+
+        # tensor_name => index into src_ten
         equiv_map = { trg: src_ten.index(src) for trg, src in
                 self.dtype_cons.equiv.items() }
         equiv_map.update({v: i for i, v in enumerate(src_ten)})
 
         combos = []
-        for combo in itertools.product(*allowed_dtypes):
+        for combo in itertools.product(*valid_dtypes):
             el = { name: combo[ind] for name,ind in equiv_map.items() }
             combos.append(el)
-        return combos
+        """
+        return combo_maps
 
 class Ranks(object):
     def __init__(self, op, rank_candidates):
         self.op = op
         self.rcands = rank_candidates
 
-    def __call__(self):
+    def __call__(self, arg_sigs):
         """
         Generate all allowed rank combinations.  Generates a list of maps.
         Each map has index => rank for each index in self.index
         """
-        return list(self.rcands.all_index_ranks())
+        def sig_ranks(ranks, arg_sigs):
+            tup = tuple(sum(ranks[s] for s in sig) for sig in arg_sigs.values())
+            return tup
+
+        idx_ranks_list = list(self.rcands.all_index_ranks())
+        arg_ranks = set()
+        for ranks in idx_ranks_list:
+            tup = sig_ranks(ranks, arg_sigs)
+            arg_ranks.add(tup)
+
+        # Now, create mutations
+        idx_tests_list = [] # items are (<expected_status_class>, idx_ranks)
+        for ranks in idx_ranks_list:
+            idx_tests_list.append((Success, ranks)) 
+            mut = dict(ranks)
+            for idx, rank in ranks.items():
+                for adj in (-1, 1):
+                    if rank + adj < 0:
+                        continue
+                    mut[idx] = rank + adj
+                    tup = sig_ranks(ranks, arg_sigs)
+                    if tup in arg_ranks:
+                        continue
+                    idx_tests_list.append((NoMatchingRanks, dict(mut)))
+                mut[idx] = rank
+
+        return idx_tests_list
 
 class Rank(object):
     """
@@ -153,7 +207,8 @@ class IndexDimsGD(object):
     Perform gradient descent on two objectives to find suitable testing index
     dimensions.
     """
-    def __init__(self, min_nelem, max_nelem):
+    def __init__(self, op, min_nelem, max_nelem):
+        self.op = op
         self.lr = 5.0
         self.log_min_nelem = math.log(min_nelem)
         self.log_max_nelem = math.log(max_nelem)
@@ -198,7 +253,7 @@ class IndexDimsGD(object):
                 pnode = F.get_node(pn)
                 node.append_parent(pnode)
 
-    def prepare(self, ranks, sigs, **kwargs):
+    def prepare(self, ranks, arg_sigs, **kwargs):
         # split kwargs into index and non-index
         self.extra_args.clear()
 
@@ -209,7 +264,7 @@ class IndexDimsGD(object):
                     self.gen_index_dims[idx] = dims
             else:
                 self.extra_args[k] = v
-        self.sigs = sigs
+        self.arg_sigs = arg_sigs
         for idx in self.variables.keys():
             rank = ranks[idx]
             # hard-coded reasonable choices for initialization
@@ -243,7 +298,7 @@ class IndexDimsGD(object):
 
     def elem_loss(self):
         dims = self.all_dims()
-        card = tuple(self.num_elem(sig) for sig in self.sigs.values())
+        card = tuple(self.num_elem(sig) for sig in self.arg_sigs.values())
         nelem = tf.reduce_sum(card)
         log_nelem = tf.math.log(nelem)
         # the distance from interval [self.log_min_nelem, self.log_max_nelem]
@@ -257,11 +312,11 @@ class IndexDimsGD(object):
         # should I use ival_dist**2 instead?
         return 2.0 * ival_dist
 
-    def __call__(self, ranks, sigs, **kwargs):
+    def __call__(self, ranks, arg_sigs, **kwargs):
         # kwargs should have:
         # all generated index dims declared with add_index_generator
         # all extra arguments declared in calls to computed_index
-        self.prepare(ranks, sigs, **kwargs)
+        self.prepare(ranks, arg_sigs, **kwargs)
         opt = tf.keras.optimizers.Adam(learning_rate=self.lr)
         losses = []
         if len(self.computed_indexes) > 0:
@@ -293,153 +348,67 @@ class IndexDimsGD(object):
             
         # extract the dims map
         vars_map = self.all_dims()
-        dims_map = {}
+        index_dims = {}
         for idx, var in vars_map.items():
-            dims_map[idx] = var.numpy().astype(np.int32).tolist() 
-        return [dims_map]
+            index_dims[idx] = var.numpy().astype(np.int32).tolist() 
 
-class IndexDimsGDOld(object):
-    def __init__(self, comp_dims, min_nelem, max_nelem):
-        self.lr = 5.0
-        self.comp_dims = comp_dims
-        self.log_min_nelem = math.log(min_nelem)
-        self.log_max_nelem = math.log(max_nelem)
-        self.vars_map = {}
-        self.const_map = {}
-        self.calc_map = {}
-        self.sigs = []
+        # create a map of free index usage for input args
+        idx_usage = defaultdict(list)
+        free_idxs = list(self.variables.keys())
+        for arg, sig in arg_sigs.items():
+            if arg not in self.op.params:
+                continue
+            for idx in sig:
+                if idx not in free_idxs:
+                    continue
+                idx_usage[idx].append(arg) 
 
-    def calc_dims(self, kwargs):
-        idims_map = { **self.vars_map, **self.const_map }
-        arg_names = self.comp_dims.get_args()
-        call = {}
-        for a in arg_names:
-            if a == Kind.IDIMS:
-                call[a] = idims_map
-            else:
-                call[a] = kwargs[a]
-        self.calc_map = self.comp_dims(**call)
+        idx_usage = { i: u for i, u in idx_usage.items() if len(u) > 1 }
+        # create arg_shapes
+        tests = []
+        arg_shapes = {}
+        for arg, sig in arg_sigs.items():
+            arg_shapes[arg] = [ d for s in sig for d in index_dims[s] ]
+        tests.append((Success, arg_shapes))
+        for idx, args in idx_usage.items():
+            for mut_arg in args:
+                arg_shapes = defaultdict(list)
+                for arg, sig in arg_sigs.items():
+                    for usage in sig:
+                        snip = list(index_dims[usage])
+                        if arg == mut_arg and idx == usage:
+                            # randomly mutate snip
+                            c = randint(0, len(snip)-1)
+                            s = randint(-snip[c]+1, 10)
 
-    def add_var(self, index, lo, hi, rank):
-        with tf.device('/device:CPU:0'):
-            val = tf.random.uniform([rank], lo, hi)
-            cons_fun = lambda v: tf.clip_by_value(tf.round(v), 1.0, 1e10)
-            var = tf.Variable(val, constraint = cons_fun, dtype=tf.float32)
-            self.vars_map[index] = var
+                            # ensure we actually change it by a non-zero amount
+                            snip[c] += s + int(s == 0)
+                        arg_shapes[arg].extend(snip)
+                tests.append((IndexUsageError, dict(arg_shapes)))
+        return tests 
 
-    def add_const(self, index, val):
-        with tf.device('/device:CPU:0'):
-            self.const_map[index] = tf.constant(val, dtype=tf.float32)
+class StatusAggregator(object):
+    """
+    Collects the first element of every pair tuple input.
+    Expects each to be a SchemaStatus type, and returns the first non-Success
+    one.
+    """
+    def __init__(self):
+        pass
 
-    def num_elem(self, sig):
-        all_map = { **self.vars_map, **self.const_map, **self.calc_map }
-        v = [all_map[s] for s in sig]
-        c = tf.concat(v, axis=0) 
-        nelem = tf.reduce_min(tf.sign(c)) * tf.abs(tf.reduce_prod(c))
-        return nelem
+    def __call__(self, *args):
+        statuses = tuple(a[0] for a in args)
+        return [statuses]
 
-    def elem_loss(self, kwargs):
-        self.calc_dims(kwargs)
-        nelem = tf.reduce_sum(tuple(self.num_elem(s) for s in self.sigs))
-        log_nelem = tf.math.log(nelem)
-        # the distance from interval [self.log_min_nelem, self.log_max_nelem]
-        # done in log space since these are products of several variables
-        ival_dist = tf.maximum(
-                tf.nn.relu(self.log_min_nelem - log_nelem),
-                tf.nn.relu(log_nelem - self.log_max_nelem)
-                )
+class SecondInPair(object):
+    """
+    Return the second member of a tuple pair 
+    """
+    def __init__(self):
+        pass
 
-        # should I use ival_dist**2 instead?
-        return 2.0 * ival_dist
-
-    def index_loss(self, kwargs):
-        # ensure all computed dimensions are >= 1
-        self.calc_dims(kwargs)
-        v = list(self.calc_map.values())
-        if len(v) == 0:
-            raise SchemaError(
-                f'Cannot use index_loss if no computed dims exist')
-        c = tf.concat(v, axis=0)
-        loss = tf.reduce_sum(tf.nn.relu(1.0 - c))
-        return loss
-
-    def dims_map(self):
-        m = {}
-        all_map = { **self.vars_map, **self.const_map, **self.calc_map }
-        for idx, var in all_map.items():
-            m[idx] = var.numpy().astype(np.int32).tolist() 
-        return m
-
-    def __call__(self, **kwargs):
-        # Expects args:
-        # :ranks - ranks_map defining all indexes and their ranks
-        # *:sig - set of all shape signatures to quantify 
-        # *:dims - dims_maps that have been pre-generated
-
-        # Perform gradient descent on all free indexes, such that:
-        # 1.  all computed index dimensions are >= 1
-        # 2.  the total number of elements over all signatures is within certain
-            # bounds
-
-        # free indexes are those indexes that are not pre-generated and not
-        # computed.
-        self.vars_map.clear()
-        self.const_map.clear()
-        self.sigs.clear()
-
-        input_dims_map = {}
-        for k, v in kwargs.items():
-            if kind(k) == Kind.DIMS: 
-                input_dims_map.update(v)
-        for i, v in input_dims_map.items():
-            self.add_const(i, v)
-
-        ranks_map = kwargs[Kind.RANKS]
-        all_inds = set(ranks_map.keys())
-        computed_inds = self.comp_dims.indices()
-        pregen_inds = set(input_dims_map.keys())
-        free_inds = all_inds.difference(*computed_inds, *pregen_inds)
-        for i in free_inds:
-            rank = ranks_map[i]
-            self.add_var(i, 1.0, 4.0, rank)
-
-        for k, v in kwargs.items():
-            if kind(k) == Kind.SIG:
-                self.sigs.append(v)
-        # TODO: exclude unnecessary sigs of single indices
-        # TODO: include sigs for return tensors
-
-        opt = tf.keras.optimizers.Adam(learning_rate=self.lr)
-        losses = []
-        if len(computed_inds) != 0:
-            # ensure computed inds are >= 1
-            losses.append(lambda kw: self.index_loss(kw))
-
-        # adjusts dims so total number of elements are within a range 
-        losses.append(lambda kw: self.elem_loss(kw))
-            
-
-        # The first phase (index_loss) ensures that all index dims are positive
-        # (free, generated, and computed). Under that condition, the next
-        # surface (elem_loss) is monotonically increasing in all free
-        # dimensions.  And, because of the finite interval solution, zero loss
-        # is achievable
-        with tf.device('/device:CPU:0'):
-            for loss_func in losses:
-                for step in range(100):
-                    with tf.GradientTape() as tape:
-                        objective = loss_func(kwargs)
-                    free_vars = self.vars_map.values() 
-                    grads = tape.gradient(objective, free_vars)
-                    opt.apply_gradients(zip(grads, free_vars))
-                    if step % 10 == 0:
-                        print(f'loss: {step}: {objective:5.3f}')
-                    if objective == 0.0:
-                        break
-            
-        # extract the dims map
-        dims_map = self.dims_map()
-        return [dims_map]
+    def __call__(self, pair):
+        return [pair[1]]
 
 class SingleIndexDims(object):
     """
@@ -458,19 +427,40 @@ class TensorStub(object):
     def __init__(self, arg_name):
         self.arg_name = arg_name
 
-    def __call__(self, dims_map, sig, **kwargs):
+    def __call__(self, arg_shapes, **kwargs):
         dtype_map = kwargs[Kind.DTYPES]
         dtype = dtype_map[self.arg_name]
-        shape = [ d for s in sig for d in dims_map[s] ]
+        shape = arg_shapes[self.arg_name]
         return [(shape, dtype)]
 
 def from_stub(stub):
     shape, dtype = stub
     if dtype.is_integer:
-        ten = tf.random.uniform(shape, minval=-10, maxval=10,
-                dtype=dtype)
+        lo = max(dtype.min, -1000)
+        hi = min(dtype.max, 1000) 
+        ten = tf.random.uniform(shape, lo, hi, dtype=tf.int64)
+        ten = tf.cast(ten, dtype)
+    elif dtype.is_floating:
+        lo = max(dtype.min, -1.0)
+        hi = min(dtype.max, 1.0)
+        ten = tf.random.uniform(shape, lo, hi, dtype=tf.float64)
+        ten = tf.cast(ten, dtype)
+    elif dtype.is_bool:
+        ten = tf.random.uniform(shape, 0, 2, dtype=tf.int32)
+        ten = tf.cast(ten, dtype)
+    elif dtype.is_quantized:
+        lo, hi = -1000, 1000
+        ten = tf.random.uniform(shape, lo, hi, dtype=tf.float32)
+        quant = tf.quantization.quantize(ten, lo, hi, dtype)
+        ten = quant.output
+    elif dtype.is_complex:
+        lo, hi = -1.0, 1.0
+        real = tf.random.uniform(shape, lo, hi, dtype=tf.float64)
+        imag = tf.random.uniform(shape, lo, hi, dtype=tf.float64)
+        ten = tf.complex(real, imag, dtype)
     else:
-        ten = tf.random.normal(shape, dtype=dtype)
+        raise SchemaError(
+            f'Unexpected dtype when generating tensor: dtype=\'{dtype.name}\'')
     return ten
 
 class ShapeInt(object):
@@ -478,11 +468,11 @@ class ShapeInt(object):
     Expect the shape of index to be rank 1 and extract the first component as
     an integer.  
     """
-    def __init__(self):
-        pass
+    def __init__(self, arg_name):
+        self.arg_name = arg_name
 
-    def __call__(self, dims_map, index):
-        shape = dims_map[index]
+    def __call__(self, arg_shapes):
+        shape = arg_shapes[self.arg_name]
         if len(shape) != 1:
             raise SchemaError(
                 f'{type(self).__qualname__}: index \'{index}\' has a '
@@ -494,22 +484,22 @@ class ShapeList(object):
     """
     Generate the current shape of the input signature
     """
-    def __init__(self):
-        pass
+    def __init__(self, arg_name):
+        self.arg_name = arg_name
 
-    def __call__(self, dims_map, sig):
-        shape = [ d for s in sig for d in dims_map[s] ]
+    def __call__(self, arg_shapes):
+        shape = arg_shapes[self.arg_name]
         return [shape]
 
 class ShapeTensor(object):
     """
     Generate the current shape of the input signature as a tensor
     """
-    def __init__(self):
-        pass
+    def __init__(self, arg_name):
+        self.arg_name = arg_name
 
-    def __call__(self, dims_map, sig):
-        shape = [ d for s in sig for d in dims_map[s] ]
+    def __call__(self, arg_shapes):
+        shape = arg_shapes[self.arg_name]
         ten = tf.constant(shape, dtype=tf.int32)
         return [ten]
 
@@ -517,14 +507,13 @@ class ShapeTensor2D(object):
     """
     Generate a 2D tensor from dims and a list of signatures
     """
-    def __init__(self):
-        pass
+    def __init__(self, arg_name, num_rows):
+        self.arg_name = arg_name
+        self.num_rows = num_rows
 
-    def __call__(self, dims_map, *sigs):
-        rows = []
-        for sig in sigs:
-            shape = [ d for s in sig for d in dims_map[s] ]
-            rows.append(shape)
+    def __call__(self, arg_shapes):
+        names = [ f'{self.arg_name}.{i}' for i in range(self.num_rows) ]
+        rows = [ arg_shapes[n] for n in names ]
         ten = tf.constant(rows, dtype=tf.int32)
         ten = tf.transpose(ten, (1,0))
         return [ten]

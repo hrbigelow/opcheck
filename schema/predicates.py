@@ -165,7 +165,7 @@ class ValidDTypes(object):
         for ten_name, valid_dtypes in self.dtype_cons.valid.items():
             dtype = dtype_map[ten_name]
             if dtype not in valid_dtypes:
-                return False, DTypeNotAllowed(ten_name, dtype, valid_dtypes)
+                return False, DTypeNotValid(ten_name, dtype, valid_dtypes)
         for trg_name, src_name in self.dtype_cons.equiv.items():
             src_dtype = dtype_map[src_name]
             trg_dtype = dtype_map[trg_name]

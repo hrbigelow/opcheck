@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 from collections import namedtuple, defaultdict
-from .error import SchemaError
+from .error import SchemaError, DTypeNotValid, DTypeNotEqual
 from . import util
 
 def kpfx(kname):
@@ -23,20 +23,24 @@ def karg(prefix):
 class Kind(object):
     # these cannot have prefixes
     SCHEMA = ':schema'
+    DTYPES_STATUS = ':dtypes_status'
     DTYPES = ':dtypes'
-    RANKS = ':ranks'
+    RANKS_STATUS = ':ranks_status'
+    RANKS = ':idx_ranks'
     IDIMS = ':input_dims'
     SINGLE_DIMS = ':single_dims'
     GEN_DIMS = ':gen_dims'
-    GD_DIMS = ':gd_dims'
+    GD_DIMS_STATUS = ':gd_dims_status'
+    GD_DIMS = ':grad_desc_dims'
     COMP_DIMS_TEM = ':comp_dims_tem'
     PSHAPE = ':predicated_shape'
     NONE = ':none'
+    EXPECT_STATUS = ':expect_status'
 
     # these must have prefixes
     DTYPE = ':dtype'
     SIG = ':sig'
-    SIG_MAP = ':sig_map'
+    SIG_MAP = ':arg_sigs'
     SHAPE_MAP = ':shape_map'
 
     ARG = ':arg'
@@ -303,6 +307,44 @@ class DimRankConstraint(RankConstraint):
             return (f'Decrease the dimension of index \'{self.source_idx}\' by '
                     f'{rank_error}')
     
+class DTypeTest(object):
+    def __init__(self, schema_status):
+        self.status = schema_status
+
+    def __call__(self, dtype_tuple):
+        # evaluate the dtype_tuple, returning True or False
+        raise NotImplementedError
+
+    def left_ind(self):
+        # return index of left-most input
+        raise NotImplementedError
+
+class DTypeValidTest(DTypeTest):
+    def __init__(self, valid_dtypes, index):
+        super().__init__(DTypeNotValid)
+        self.valid_dtypes = valid_dtypes
+        self.index = index
+
+    def left_ind(self):
+        return self.index
+
+    def __call__(self, dtype_tuple):
+        return dtype_tuple[self.index] in self.valid_dtypes
+
+class DTypeEquivTest(DTypeTest):
+    def __init__(self, target_index, source_index):
+        super().__init__(DTypeNotEqual)
+        self.src = source_index
+        self.trg = target_index
+
+    def left_ind(self):
+        return min(self.src, self.trg)
+
+    def __call__(self, dtype_tuple):
+        src_dtype = dtype_tuple[self.src]
+        trg_dtype = dtype_tuple[self.trg]
+        return src_dtype == trg_dtype
+
 class DTypeConstraints(object):
     def __init__(self):
         self.valid = {}
@@ -314,6 +356,21 @@ class DTypeConstraints(object):
     def add_equiv(self, target_tensor, source_tensor):
         self.equiv[target_tensor] = source_tensor
 
+    def make_tests(self):
+        tests = []
+        tensor_names = self.all()
+        for name, valid_dtypes in self.valid.items():
+            index = tensor_names.index(name)
+            test = DTypeValidTest(valid_dtypes, index)
+            tests.append(test)
+        for trg, src in self.equiv.items():
+            src_index = tensor_names.index(src)
+            trg_index = tensor_names.index(trg)
+            test = DTypeEquivTest(trg_index, src_index)
+            tests.append(test)
+        return tests
+
     def all(self):
         return (*self.valid, *self.equiv)
+
 

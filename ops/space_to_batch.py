@@ -1,5 +1,5 @@
 import opcheck
-from schema import Kind, flib
+from schema import flib
 
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)

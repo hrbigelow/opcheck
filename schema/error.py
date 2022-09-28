@@ -72,14 +72,6 @@ class ArgValueError(SchemaStatus):
                 f'{self.arg_val}')
         return msg
 
-class TensorDTypeError(SchemaStatus):
-    def __init__(self, ten_name):
-        self.ten_name = ten_name
-
-    def message(self, op):
-        msg = f'Tensor \'{self.ten_name}\' has invalid dtype'
-        return msg
-
 class DTypeNotEqual(SchemaStatus):
     def __init__(self, src_name, src_dtype, trg_name, trg_dtype):
         self.src_name = src_name
@@ -94,7 +86,7 @@ class DTypeNotEqual(SchemaStatus):
                 f'{self.src_name}.dtype = {self.src_dtype.name}')
         return msg
 
-class DTypeNotAllowed(SchemaStatus):
+class DTypeNotValid(SchemaStatus):
     def __init__(self, ten_name, ten_dtype, valid_dtypes):
         self.ten_name = ten_name
         self.ten_dtype = ten_dtype

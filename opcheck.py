@@ -75,6 +75,30 @@ def explain(op_path):
 def inventory():
     print('\n'.join(REGISTRY.keys()))
 
+
+def _dot_graph(op, nodes, out_file):
+    import graphviz
+    dot = graphviz.Digraph(graph_attr={'rankdir': 'BT'})
+    names = { n.name: n.name.replace(':', '_') for n in nodes }
+    for node in nodes:
+        is_arg = (node.name in op.params.values())
+        color = 'red' if is_arg else 'black'
+        dot.node(names[node.name], node.name, color=color)
+        for pa in node.parents:
+            dot.edge(names[node.name], names[pa.name])
+    dot.render(out_file)
+    print(f'Wrote {out_file}.pdf')
+
+def gen_graph_viz(op_path, out_dir):
+    op = REGISTRY[op_path]
+    nodes = op.gen_graph.values()
+    _dot_graph(op, nodes, f'{out_dir}/{op_path}.gen')
+
+def pred_graph_viz(op_path, out_dir):
+    op = REGISTRY[op_path]
+    nodes = op.input_pred_graph.values()
+    _dot_graph(op, nodes, f'{out_dir}/{op_path}.pred')
+
 def init():
     import ops
 

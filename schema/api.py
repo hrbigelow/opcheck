@@ -7,7 +7,6 @@ import numpy as np
 from collections import defaultdict, OrderedDict
 from . import predicates as pr
 from . import generators as ge
-from . import mutations
 from . import base
 from .base import Kind, kname, kpfx, kind
 from . import fgraph
@@ -47,7 +46,7 @@ class SchemaApi(object):
         self.rank_candidates = base.RankCandidates(self)
         self.rank_cons = [] 
         self.dtype_cons = base.DTypeConstraints()
-        self.gd_dims = ge.IndexDimsGD(1e5, 2e5)
+        self.gd_dims = ge.IndexDimsGD(self, 1e5, 2e5)
         self.comp_dims_templates = {} # idx => PredNode with TemplateFunc
         self.num_returns = 0
         self.num_layouts = 1
@@ -389,72 +388,35 @@ class SchemaApi(object):
 
     def _validate_schema(self):
         """
-        Generate a set of input argument value configurations for the op, and
-        run the op on each configuration.  The set includes all possible
-        combinations of valid index ranks, input tensor dtypes, and settings
-        for parameters that are not declared with arg_unchecked in the schema.
-        Also generates some invalid configurations.  Checks that opcheck will
-        pass the valid ones, and log the appropriate errors for the invalid
-        ones. 
+        Uses the gen_graph to produce a list of (<target_status>, <arg_dict>)
+        pairs for the op.  <target_status> is the correct type of SchemaStatus.
+        Runs the wrapped op on the <arg_dict> and collects the actual
+        SchemaStatus and any possible exception from the framework.
 
-        It can be thought of as a systematic 'sampling procedure' from a
-        generative model with a set of hidden variables (index dims and ranks,
-        and others) and observed variables (values of arguments)
+        It is a SchemaError if the target status type does not equal the
+        returned status type.
+
+        For each result, the following four outcomes are possible, where
+        'positive' denotes detection of error, and 'negative' the absence of an
+        error.
+
+        <opcheck_status>    <framework>      <category>
+        Success             Success          true negative
+        Success             FrameworkError   false negative
+        not Success         Success          false positive
+        not Success         FrameworkError   true positive
         """
 
         # list of successful arg_dict settings
-        success_list = []
+        tests = []
         for config in fgraph.gen_graph_iterate(self.gen_graph.values()):
             arg_dict = { p: config.get(k, None) for p,k in self.params.items() }
-            success_list.append(arg_dict)
-
-        rank_mutations = []
-        shape_kinds = (Kind.DATA_TENSOR, Kind.SHAPE_LIST, Kind.SHAPE_TENSOR,
-                Kind.SHAPE_TENSOR2D) 
-        shape_args = [ (n, kind(kn)) for n, kn in self.params.items() if kn is
-                not None and kind(kn) in shape_kinds ]
-
-        dim_mutations = []
-
-        def get_ranks(args):
-            return tuple(mutations.get_rank(args[n], k) for n,k in shape_args)
-
-        success_ranks = set(get_ranks(args) for args in success_list)
-        for args in success_list:
-            ranks = get_ranks(args)
-            for i in range(len(ranks)):
-                arg_name, arg_kind = shape_args[i]
-                val = args[arg_name]
-                aug_ranks = tuple(r+int(i == j) for j,r in enumerate(ranks)) 
-                if aug_ranks in success_ranks:
-                    continue
-                else:
-                    val_aug = mutations.increase_rank(val, arg_kind)
-                    new_args = dict(args)
-                    new_args[arg_name] = val_aug
-                    rank_mutations.append(new_args)
-
-                del_ranks = tuple(r-int(i == j) for j,r in enumerate(ranks))
-                if del_ranks in success_ranks:
-                    continue
-                else:
-                    val_del = mutations.decrease_rank(val, arg_kind)
-                    new_args = dict(args)
-                    new_args[arg_name] = val_del
-                    rank_mutations.append(new_args)
-
-        # apply the increase_dim function to each of these kinds
-        mutation_kinds = (Kind.DATA_TENSOR, Kind.SHAPE_LIST, Kind.SHAPE_TENSOR,
-                Kind.SHAPE_TENSOR2D, Kind.SHAPE_INT) 
-        for arg_map in success_list:
-            for arg_name, arg_val in arg_map.items():
-                arg_kind = kind(self.params[arg_name])
-                if arg_kind not in mutation_kinds:
-                    continue
-                val_mut = mutations.increase_dim(arg_val, arg_kind)
-                new_args = dict(arg_map)
-                new_args[arg_name] = val_mut
-                dim_mutations.append(new_args)
+            statuses = config.get(Kind.EXPECT_STATUS)
+            err = list(s for s in statuses if s != Success)
+            if len(err) > 1:
+                continue
+            stat = err[0] if len(err) > 0 else Success
+            tests.append((stat, arg_dict))
 
         def gen_tensors(arg_dict):
             new_dict = {}
@@ -465,10 +427,10 @@ class SchemaApi(object):
                 new_dict[name] = val
             return new_dict
         
-        test = 1
-        for arg_dict in dim_mutations + success_list + rank_mutations:
+        stats = { 'TP': 0, 'TN': 0, 'FP': 0, 'FN': 0 }
+        for test, (expect_status_type, arg_dict) in enumerate(tests):
             arg_dict = gen_tensors(arg_dict)
-            print(f'Test {test}: ', self._call_string(arg_dict))
+            # print(f'Test {test}: ', self._call_string(arg_dict))
 
             string_err = io.StringIO()
             old_stderr = sys.stderr
@@ -501,14 +463,29 @@ class SchemaApi(object):
             finally:
                 sys.stderr = old_stderr
 
-            report = string_err.getvalue()
-            if isinstance(self.input_status, Success):
-                print('Success')
+            if not isinstance(self.input_status, expect_status_type):
+                raise SchemaError(
+                    f'Expected status was \'{expect_status_type}\' but '
+                    f'returned status was \'{type(self.input_status)}\'')
+
+            op_neg = isinstance(self.input_status, Success)
+            fr_neg = isinstance(self.framework_status, Success)
+
+            if op_neg:
+                category = 'TN' if fr_neg else 'FN'
             else:
-                print(f'Report:\n{report}')
-            framework_msg = self.framework_status.message(self)
-            print(f'Framework: {framework_msg}\n')
+                category = 'FP' if fr_neg else 'TP'
+            stats[category] += 1
+
+            if category == 'FN':
+                framework_msg = self.framework_status.message(self)
+                print(f'{category}: Framework: {framework_msg}\n')
+            elif category == 'FP':
+                report = string_err.getvalue()
+                print(f'{category}: Report:\n{report}')
+
             test += 1
+        print(stats)
 
     def _passed(self):
         return (
@@ -653,11 +630,16 @@ class SchemaApi(object):
     def _init_gen_graph(self):
         G.clear_registry()
         F.clear_registry()
-        G.add_node(Kind.SCHEMA, ge.Closure([self]))
-        G.add_node(Kind.DTYPES, ge.DTypes(self.dtype_cons)) 
-        G.add_node(Kind.RANKS, ge.Ranks(self, self.rank_candidates)) 
+        G.add_node(Kind.DTYPES_STATUS, ge.DTypes(self.dtype_cons)) 
+        G.add_node(Kind.DTYPES, ge.SecondInPair(), Kind.DTYPES_STATUS)
         G.add_node(Kind.SIG_MAP, ge.SigMap())
-        G.add_node(Kind.GD_DIMS, self.gd_dims, Kind.RANKS, Kind.SIG_MAP)
+        ranks_gobj = ge.Ranks(self, self.rank_candidates)
+        G.add_node(Kind.RANKS_STATUS, ranks_gobj, Kind.SIG_MAP) 
+        G.add_node(Kind.RANKS, ge.SecondInPair(), Kind.RANKS_STATUS)
+        G.add_node(Kind.GD_DIMS_STATUS, self.gd_dims, Kind.RANKS, Kind.SIG_MAP)
+        G.add_node(Kind.GD_DIMS, ge.SecondInPair(), Kind.GD_DIMS_STATUS)
+        G.add_node(Kind.EXPECT_STATUS, ge.StatusAggregator(), 
+                Kind.DTYPES_STATUS, Kind.RANKS_STATUS, Kind.GD_DIMS_STATUS)
 
     def _add_pred_graph(self):
         # add single-index dims nodes that are not already added
@@ -789,7 +771,7 @@ class SchemaApi(object):
 
         self.gd_dims.add_comp_index(comp_index, comp_func, input_indexes,
                 *extra_knames)
-        dims_gnode = G.get_node(Kind.GD_DIMS)
+        dims_gnode = G.get_node(Kind.GD_DIMS_STATUS)
         for kn in extra_knames:
             dims_gnode.maybe_append_parent(kn)
 
@@ -1021,7 +1003,7 @@ class SchemaApi(object):
         sig_pnode = P.add_node(sig_kname, sig_pobj, *layout)
         sig_gnode = G.add_node(sig_kname, sig_gobj, *layout)
 
-        G.add_node(arg_kname, gen_obj, Kind.GD_DIMS, sig_kname)
+        G.add_node(arg_kname, gen_obj, Kind.GD_DIMS)
 
         sig_map_gnode = G.get_node(Kind.SIG_MAP)
         sig_map_gnode.append_parent(sig_gnode)
@@ -1068,7 +1050,7 @@ class SchemaApi(object):
         # arg_name:shape (int list, the same value as :arg)
         # arg_name:sig (str, the associated signature)
         pred_obj = pr.ShapeList(arg_name)
-        gen_obj = ge.ShapeList()
+        gen_obj = ge.ShapeList(arg_name)
         self._arg_shape_func(arg_name, sigs, list, Kind.SHAPE_LIST, pred_obj,
                 gen_obj)
 
@@ -1086,7 +1068,7 @@ class SchemaApi(object):
         # value broadcasted {rank} times.  But, the rank is not determined from
         # this input
         pred_obj = pr.ShapeInt(arg_name)
-        gen_obj = ge.ShapeInt()
+        gen_obj = ge.ShapeInt(arg_name)
         self._arg_shape_func(arg_name, (index,), int, Kind.SHAPE_INT, pred_obj,
                 gen_obj) 
 
@@ -1101,7 +1083,7 @@ class SchemaApi(object):
         # arg_name:sig (str, the associated signature)
         # (no dtype node is created)
         pred_obj = pr.ShapeTensor(arg_name)
-        gen_obj = ge.ShapeTensor()
+        gen_obj = ge.ShapeTensor(arg_name)
         self._arg_shape_func(arg_name, sigs, tf.Tensor, Kind.SHAPE_TENSOR,
                 pred_obj, gen_obj)
 
@@ -1143,7 +1125,7 @@ class SchemaApi(object):
         arg_kname = kname(arg_name, Kind.SHAPE_TENSOR2D)
         self._set_arg_kname(arg_name, arg_kname)
         arg_pobj = pr.ArgType(arg_name, tf.Tensor)
-        arg_gobj = ge.ShapeTensor2D()
+        arg_gobj = ge.ShapeTensor2D(arg_name, len(sigs))
         P.add_node(arg_kname, arg_pobj, Kind.SCHEMA)
         ten_gnode = G.add_node(arg_kname, arg_gobj, Kind.GD_DIMS)
         layout_kname = base.kname('layout', Kind.PSEUDO)
@@ -1172,7 +1154,7 @@ class SchemaApi(object):
                 sig_gnode = G.add_node(sig_kname, sig_gobj, layout_kname) 
 
             shp_pnode = P.add_node(shp_kname, shp_pobj, arg_kname)
-            ten_gnode.append_parent(sig_gnode)
+            # ten_gnode.append_parent(sig_gnode)
 
             sigmap_gnode.append_parent(sig_gnode)
             shapemap_pnode.append_parent(shp_pnode)
@@ -1222,7 +1204,7 @@ class SchemaApi(object):
 
         gobj = ge.Dims(gen_single_index, dims_index, rank_sig, tuple())
         gen_dims_gnode = G.add_node(dims_kname, gobj, Kind.RANKS)
-        gd_dims_gnode = G.get_node(Kind.GD_DIMS)
+        gd_dims_gnode = G.get_node(Kind.GD_DIMS_STATUS)
         gd_dims_gnode.append_parent(gen_dims_gnode)
 
     def add_index_predicate(self, pred_name, status_func, indices):
@@ -1268,7 +1250,7 @@ class SchemaApi(object):
         dims_kname = kname(output_indices, Kind.GEN_DIMS)
         gobj = ge.Dims(gen_func, output_indices, input_indices, gen_args)
         gen_dims_gnode = G.add_node(dims_kname, gobj, Kind.RANKS)
-        gd_dims_gnode = G.get_node(Kind.GD_DIMS)
+        gd_dims_gnode = G.get_node(Kind.GD_DIMS_STATUS)
         gd_dims_gnode.append_parent(gen_dims_gnode)
 
         for idx in output_indices:

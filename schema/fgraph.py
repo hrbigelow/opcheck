@@ -363,3 +363,15 @@ if __name__ == '__main__':
     topo_order = GenNode.get_ordered_nodes()
     print(list(gen_graph_iterate(topo_order)))
 
+def make_dot(title, filename, nodes):
+    import graphviz
+    dot = graphviz.Digraph(comment=title, graph_attr={'rankdir': 'BT'})
+    names = { n.name: n.name.replace(':', '_') for n in nodes }
+    for node in nodes:
+        dot.node(names[node.name], node.name)
+        for pa in node.parents:
+            dot.edge(names[node.name], names[pa.name])
+    dot.render(filename)
+
+
+

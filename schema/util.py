@@ -1,6 +1,6 @@
 import random
 import math
-from .error import SchemaError
+from .error import SchemaError, Success
 
 def feasible_region(k, min_map, max_map):
     """
@@ -43,4 +43,45 @@ def is_iterable(obj):
     except TypeError:
         return False
     return True
+
+
+def dtype_combos(k, dtypes, tests, max_errors):
+    """
+    Yield all k-wise dtype combos of {dtypes} which fail at most {max_errors}
+    tests.  Each test in {tests} is a function object with the following
+    members:
+    
+    t.status:  a SchemaStatus object describing the error
+    t.__call__(self, config):  returns True or False
+    t.left_ind(self):  returns the index of the left-most input digit
+    """
+    def increment(digits, s, e, D):
+        # increment the sub-space digits[s:e], assuming alphabet size D
+        t = s
+        while t != e and digits[t] == D-1:
+            digits[t] = 0
+            t += 1
+        if t == e:
+            return False
+        digits[t] += 1
+        return True
+
+    digits = [0] * k
+    D = len(dtypes)
+
+    while True:
+        cfg = tuple(dtypes[d] for d in digits)
+        fail = tuple(t for t in tests if not t(cfg))
+        if len(fail) <= max_errors:
+            l = 0
+            if len(fail) == 0:
+                yield Success, cfg
+            else:
+                yield fail[0].status, cfg
+        else:
+            l = min(t.left_ind() for t in fail)
+            digits[:l] = [0] * l
+
+        if not increment(digits, l, k, D):
+            break
 
