@@ -210,8 +210,8 @@ class IndexDimsGD(object):
     def __init__(self, op, min_nelem, max_nelem):
         self.op = op
         self.lr = 5.0
-        self.log_min_nelem = math.log(min_nelem)
-        self.log_max_nelem = math.log(max_nelem)
+        self.min_nelem = min_nelem
+        self.max_nelem = max_nelem
         self.nodes = []
         self.variables = {} # idx => tf.Variable
         self.gen_index_dims = {}  # idx => 
@@ -288,6 +288,7 @@ class IndexDimsGD(object):
         return nelem
 
     def index_loss(self):
+        # Ensures all computed dims are >= 1
         # print('in index loss')
         dims = self.all_dims()
         comp_dims = [ dim for idx, dim in dims.items() if idx in
@@ -296,32 +297,68 @@ class IndexDimsGD(object):
         loss = tf.reduce_sum(tf.nn.relu(1.0 - st))
         return loss
 
+    def max_product_degree(self):
+        # compute the largest degree (number of non-constant terms) of any
+        # product in the elem_loss.
+        all_vars = self.all_dims().items()
+        live_vars = [(k,v) for k,v in all_vars if k not in self.gen_index_dims]
+        ranks = { k: v.numpy().size for k, v in live_vars } 
+        sigs = self.arg_sigs.values()
+        max_degree = max(sum(ranks.get(s, 0) for s in sig) for sig in sigs)
+        return max_degree
+
     def elem_loss(self):
-        dims = self.all_dims()
-        card = tuple(self.num_elem(sig) for sig in self.arg_sigs.values())
+        """
+        The objective is just a sum of product terms (the numbers of elements),
+        with the added complication that some of the products may be functions
+        of others.
+
+        The max_degree is the largest degree of any product term, counting only
+        the variables in the products (not the generated indices, which are
+        constant during gradient descent).
+
+        The objective is then the d'th root of the sum, which roughly makes it
+        a constant gradient.  If all inputs are zero, the objective is the d'th
+        root of min_nelem and has a slope of -1 (hitting zero when each
+        variable is equal to the d'th root of min_nelem as well).
+
+        Therefore, to ensure about the same number of gradient steps regardless
+        of degree, we scale the objective (and hence the gradient) by this
+        the d'th root of min_nelem.
+
+        The objective is basically monotonically decreasing in every free
+        variable.
+        """
+        max_degree = self.max_product_degree()
+        sigs = self.arg_sigs.values()
+        card = tuple(self.num_elem(sig) for sig in sigs)
         nelem = tf.reduce_sum(card)
-        log_nelem = tf.math.log(nelem)
-        # the distance from interval [self.log_min_nelem, self.log_max_nelem]
-        # done in log space since these are products of several variables
-        # should it be k'th root instead, for k the maximum rank of a
-        # signature?
+        expon = 1.0 / max_degree
+        objective = tf.math.pow(nelem, expon)
+        min_objective = tf.math.pow(self.min_nelem, expon)
+        max_objective = tf.math.pow(self.max_nelem, expon)
+
         ival_dist = tf.maximum(
-                tf.nn.relu(self.log_min_nelem - log_nelem),
-                tf.nn.relu(log_nelem - self.log_max_nelem)
+                tf.nn.relu(min_objective - objective),
+                tf.nn.relu(objective - max_objective)
                 )
-        # should I use ival_dist**2 instead?
-        return 2.0 * ival_dist
+        mul = tf.math.pow(self.min_nelem, 1.0 / max_degree)
+        mul *= 0.05
+        return ival_dist * mul
 
     def __call__(self, ranks, arg_sigs, **kwargs):
         # kwargs should have:
         # all generated index dims declared with add_index_generator
         # all extra arguments declared in calls to computed_index
         self.prepare(ranks, arg_sigs, **kwargs)
-        opt = tf.keras.optimizers.Adam(learning_rate=self.lr)
+        opt = tf.keras.optimizers.SGD(learning_rate=self.lr)
+        index_lambda = lambda: self.index_loss()
+        elem_lambda = lambda: self.elem_loss()
+
         losses = []
         if len(self.computed_indexes) > 0:
-            losses.append(lambda: self.index_loss())
-        losses.append(lambda: self.elem_loss())
+            losses.append(('index_loss', index_lambda))
+        losses.append(('elem_loss', elem_lambda))
 
         # Calling apply_gradients on any variables with zero elements results
         # in: ./tensorflow/core/util/gpu_launch_config.h:129] Check failed:
@@ -335,22 +372,42 @@ class IndexDimsGD(object):
         # dimensions.  And, because of the finite interval solution, zero loss
         # is achievable
         with tf.device('/device:CPU:0'):
-            for loss_func in losses:
-                for step in range(100):
+            for loss_name, loss_func in losses:
+                for step in range(10000):
                     with tf.GradientTape() as tape:
                         objective = loss_func()
-                    grads = tape.gradient(objective, free_vars)
-                    opt.apply_gradients(zip(grads, free_vars))
                     if step % 10 == 0:
-                        print(f'loss: {step}: {objective:5.3f}')
+                        max_degree = self.max_product_degree()
+                        s = ', '.join(f'{n}: {f():5.3f}' for n, f in losses)
+                        dims = { n: v.numpy().astype(np.int32).tolist() for n,
+                                v in self.variables.items() }
+                        print(f'{step}: minimizing {loss_name}, max-rank: '
+                                f'{max_degree} dims: {dims}, {s}')
                     if objective == 0.0:
                         break
+                    grads = tape.gradient(objective, free_vars)
+                    for grad, var in zip(grads, free_vars):
+                        if grad is None:
+                            continue
+                        var.assign_sub(self.lr * grad)
+                    # opt.apply_gradients(zip(grads, free_vars))
+                    # if loss_name == 'elem_loss' and index_lambda() > 0.0:
+                        # raise SchemaError(f'Nonzero index_loss')
             
         # extract the dims map
         vars_map = self.all_dims()
         index_dims = {}
         for idx, var in vars_map.items():
             index_dims[idx] = var.numpy().astype(np.int32).tolist() 
+
+        if any(d < 1 for dims in index_dims.values() for d in dims):
+            raise SchemaError(
+                f'Failed to find positive computed dims: {index_dims}')
+
+        if self.elem_loss() > 0.0:
+            raise SchemaError(
+                f'Failed to achieve zero elem loss.  Final elem_loss: '
+                f'{self.elem_loss():5.3f}')
 
         # create a map of free index usage for input args
         idx_usage = defaultdict(list)
@@ -363,7 +420,6 @@ class IndexDimsGD(object):
                     continue
                 idx_usage[idx].append(arg) 
 
-        idx_usage = { i: u for i, u in idx_usage.items() if len(u) > 1 }
         # create arg_shapes
         tests = []
         arg_shapes = {}
@@ -371,6 +427,10 @@ class IndexDimsGD(object):
             arg_shapes[arg] = [ d for s in sig for d in index_dims[s] ]
         tests.append((Success, arg_shapes))
         for idx, args in idx_usage.items():
+            if ranks[idx] == 0:
+                continue
+            if len(args) == 1:
+                continue
             for mut_arg in args:
                 arg_shapes = defaultdict(list)
                 for arg, sig in arg_sigs.items():
@@ -380,7 +440,6 @@ class IndexDimsGD(object):
                             # randomly mutate snip
                             c = randint(0, len(snip)-1)
                             s = randint(-snip[c]+1, 10)
-
                             # ensure we actually change it by a non-zero amount
                             snip[c] += s + int(s == 0)
                         arg_shapes[arg].extend(snip)

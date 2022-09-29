@@ -29,7 +29,8 @@ def init_schema(op):
     op.arg_shape_list('dilations', 'd')
     op.arg_unchecked('name')
 
-    op.valid_dtypes('input', ('int32', 'bfloat16', 'float16', 'float32', 'float64'))
+    op.valid_dtypes('input', ('int32', 'bfloat16', 'float16', 'float32',
+        'float64'))
     op.equate_dtypes('filters', 'input')
 
     op.add_index_predicate('stride-dilation exclusion', flib.not_both_over_one,

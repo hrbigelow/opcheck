@@ -345,6 +345,8 @@ class IndexDimsUsage(object):
                 index_dims[idx] = [i for c in comp for i in c] 
         
         if len(idx_usage) != 0:
+            for k, v in idx_usage.items():
+                idx_usage[k] = [dict(dd) for dd in v]
             return False, IndexUsageError(idx_usage, ranks, sigs, shapes)
         else:
         # fill in None for any remaining dims?

@@ -31,7 +31,7 @@ class Kind(object):
     SINGLE_DIMS = ':single_dims'
     GEN_DIMS = ':gen_dims'
     GD_DIMS_STATUS = ':gd_dims_status'
-    GD_DIMS = ':grad_desc_dims'
+    GD_DIMS = ':gd_dims'
     COMP_DIMS_TEM = ':comp_dims_tem'
     PSHAPE = ':predicated_shape'
     NONE = ':none'

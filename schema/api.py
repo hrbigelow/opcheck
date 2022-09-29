@@ -2,12 +2,14 @@ import traceback
 import inspect
 import io
 import sys
+import os
 import tensorflow as tf
 import numpy as np
 from collections import defaultdict, OrderedDict
 from . import predicates as pr
 from . import generators as ge
 from . import base
+from .redirect import stderr_redirector
 from .base import Kind, kname, kpfx, kind
 from . import fgraph
 from . import flib
@@ -46,7 +48,7 @@ class SchemaApi(object):
         self.rank_candidates = base.RankCandidates(self)
         self.rank_cons = [] 
         self.dtype_cons = base.DTypeConstraints()
-        self.gd_dims = ge.IndexDimsGD(self, 1e5, 2e5)
+        self.gd_dims = ge.IndexDimsGD(self, 1e5, 5e5)
         self.comp_dims_templates = {} # idx => PredNode with TemplateFunc
         self.num_returns = 0
         self.num_layouts = 1
@@ -306,9 +308,9 @@ class SchemaApi(object):
     # compute the highlight mask from the component usage maps
     @staticmethod
     def _highlight_mask(ranks, sigs, shapes, idx_usage):
+        highlight = defaultdict(list)
         for arg, sig in sigs.items():
             shape = shapes[arg]
-            highlight = defaultdict(list)
             for idx in sig:
                 comp = idx_usage.get(idx, None)
                 if comp is None:
@@ -316,7 +318,7 @@ class SchemaApi(object):
                 else:
                     mask = [ (len(c) != 1) for c in comp ]
                 highlight[arg].extend(mask)
-        return highlight
+        return dict(highlight)
 
     def _index_diagram(self, highlight_map, ranks, sigs, shapes):
         arg_order = [ n for n in self.params.keys() if n in sigs.keys() ]
@@ -430,14 +432,15 @@ class SchemaApi(object):
         stats = { 'TP': 0, 'TN': 0, 'FP': 0, 'FN': 0 }
         for test, (expect_status_type, arg_dict) in enumerate(tests):
             arg_dict = gen_tensors(arg_dict)
+            # print(test)
             # print(f'Test {test}: ', self._call_string(arg_dict))
 
-            string_err = io.StringIO()
-            old_stderr = sys.stderr
+            string_err = io.BytesIO()
             try:
-                sys.stderr = string_err 
-                self.wrapped_op(**arg_dict)
+                with stderr_redirector(string_err):
+                    self.wrapped_op(**arg_dict)
             except OpCheckInternalError as e:
+                print(string_err.getvalue().decode('UTF-8'))
                 raise e
             except BaseException as e:
                 # this should always be from TensorFlow
@@ -457,16 +460,12 @@ class SchemaApi(object):
                     print('exception outside of tensorflow')
                     traceback.print_stack()
                     raise e
-            else:
-                pass
-                # print('in validate_schema: else')
-            finally:
-                sys.stderr = old_stderr
 
             if not isinstance(self.input_status, expect_status_type):
                 raise SchemaError(
                     f'Expected status was \'{expect_status_type}\' but '
-                    f'returned status was \'{type(self.input_status)}\'')
+                    f'returned status was \'{type(self.input_status)}\'\n'
+                    f'{self.input_status.message(self)}')
 
             op_neg = isinstance(self.input_status, Success)
             fr_neg = isinstance(self.framework_status, Success)
@@ -479,10 +478,10 @@ class SchemaApi(object):
 
             if category == 'FN':
                 framework_msg = self.framework_status.message(self)
-                print(f'{category}: Framework: {framework_msg}\n')
+                print(f'Test {test}, {category}: Framework:\n{framework_msg}')
             elif category == 'FP':
-                report = string_err.getvalue()
-                print(f'{category}: Report:\n{report}')
+                report = string_err.getvalue().decode('UTF-8')
+                print(f'Test {test}, {category}: OpCheck:\n{report}')
 
             test += 1
         print(stats)
@@ -1197,7 +1196,7 @@ class SchemaApi(object):
         rank_node.maybe_append_parent(shape_karg)
 
         # 'sum' simply sums up the individual ranks of indices in rank_sig 
-        dims_kname = kname(dims_index, Kind.SINGLE_DIMS)
+        dims_kname = kname(dims_index, Kind.GEN_DIMS)
         def gen_single_index(ranks_list):
             val = sum(ranks_list)
             return [([val],)]
@@ -1206,6 +1205,7 @@ class SchemaApi(object):
         gen_dims_gnode = G.add_node(dims_kname, gobj, Kind.RANKS)
         gd_dims_gnode = G.get_node(Kind.GD_DIMS_STATUS)
         gd_dims_gnode.append_parent(gen_dims_gnode)
+        self.gd_dims.add_gen_index(dims_index)
 
     def add_index_predicate(self, pred_name, status_func, indices):
         """
