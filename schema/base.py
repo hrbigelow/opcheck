@@ -35,6 +35,7 @@ class Kind(object):
     COMP_DIMS_TEM = ':comp_dims_tem'
     PSHAPE = ':predicated_shape'
     NONE = ':none'
+    UNCHECKED = ':unchecked'
     EXPECT_STATUS = ':expect_status'
 
     # these must have prefixes
@@ -45,6 +46,7 @@ class Kind(object):
 
     ARG = ':arg'
     PSEUDO = ':pseudo'
+    LAYOUT = ':layout'
     DATA_FORMAT = ':data_format'
     DATA_TENSOR = ':data_tensor'
     SHAPE_LIST = ':shape_list'
@@ -328,7 +330,7 @@ class DTypeValidTest(DTypeTest):
     def left_ind(self):
         return self.index
 
-    def __call__(self, dtype_tuple):
+    def __call__(self, dtype_tuple, kwargs):
         return dtype_tuple[self.index] in self.valid_dtypes
 
 class DTypeEquivTest(DTypeTest):
@@ -340,37 +342,65 @@ class DTypeEquivTest(DTypeTest):
     def left_ind(self):
         return min(self.src, self.trg)
 
-    def __call__(self, dtype_tuple):
+    def __call__(self, dtype_tuple, kwargs):
         src_dtype = dtype_tuple[self.src]
         trg_dtype = dtype_tuple[self.trg]
         return src_dtype == trg_dtype
 
-class DTypeConstraints(object):
-    def __init__(self):
-        self.valid = {}
-        self.equiv = {}
+class DTypeExcludedComboTest(DTypeTest):
+    """
+    Tests whether a given combination of dtypes is excluded.
+    """
+    def __init__(self, index_tuple, dtype_tuple, layout, rank_combo):
+        super().__init__(DTypeComboExcluded)
+        self.inds = index_tuple
+        self.dtypes = dtype_tuple
+        self.layout = layout
+        self.rank_combo = rank_combo
 
-    def add_valid(self, tensor_name, dtypes):
-        self.valid[tensor_name] = tuple(dtypes)
+    def left_ind(self):
+        return min(self.inds)
+
+    def __call__(self, dtype_tuple, kwargs):
+        pseudo_kname = kname('layout', Kind.PSEUDO)
+        layout = kwargs.get(pseudo_kname, None)
+        layout_equal = (self.layout is not None and self.layout == layout)
+
+        ranks = kwargs.get(Kind.RANKS, None) 
+        if self.ranks is None:
+            ranks_equal = False
+        else:
+            ranks_equal = all(self.ranks[k] == ranks[k] for k in self.ranks) 
+
+        dtypes_equal = all(self.dtypes[i] == dtype_tuple[i] for i in self.inds)
+        return layout_equal and ranks_equal and dtypes_equal
+
+class DTypeConstraints(object):
+    def __init__(self, tensor_names):
+        self.tensors = tensor_names
+        self.tests = []
+
+    def add_valid(self, tensor, dtypes):
+        # add a constraint that tensor.dtype must be in dtypes
+        index = self.tensors.index(tensor)
+        test = DTypeValidTest(tuple(dtypes), index)
+        self.tests.append(test)
 
     def add_equiv(self, target_tensor, source_tensor):
-        self.equiv[target_tensor] = source_tensor
+        # add a constraint target_tensor.dtype == source_tensor.dtype
+        src_index = self.tensors.index(source_tensor)
+        trg_index = self.tensors.index(target_tensor)
+        test = DTypeEquivTest(trg_index, src_index)
+        self.tests.append(test)
 
-    def make_tests(self):
-        tests = []
-        tensor_names = self.all()
-        for name, valid_dtypes in self.valid.items():
-            index = tensor_names.index(name)
-            test = DTypeValidTest(valid_dtypes, index)
-            tests.append(test)
-        for trg, src in self.equiv.items():
-            src_index = tensor_names.index(src)
-            trg_index = tensor_names.index(trg)
-            test = DTypeEquivTest(trg_index, src_index)
-            tests.append(test)
-        return tests
-
-    def all(self):
-        return (*self.valid, *self.equiv)
-
+    def add_excluded(self, tensors, dtypes, layout, rank_combo):
+        # add a constraint that:
+        # (tensor[0].dtype, tensor[1].dtype, ..., tensor[k].dtype,
+        # rank_combo) must not equal:
+        # (dtypes[0], dtypes[1], ..., dtypes[k], layout, rank_combo)
+        # in combination with the values in layout and rank_combo, if they are
+        # provided
+        indexes = (self.tensors.index(n) for n in tensors)
+        test = DTypeExcludedComboTest(indexes, dtypes, layout, rank_combo)
+        self.tests.append(test)
 

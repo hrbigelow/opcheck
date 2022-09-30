@@ -53,13 +53,13 @@ def _get_from_path(op_path):
     op = REGISTRY[op_path]
     return op
 
-def validate(op_path):
+def validate(op_path, out_dir):
     """
     Run generated test configurations and confirm opcheck flags errors
     appropriately, and does not flag errors where none exist.
     """
     op = _get_from_path(op_path)
-    op._validate_schema()
+    op._validate_schema(out_dir)
 
 def explain(op_path):
     """

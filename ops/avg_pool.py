@@ -22,7 +22,7 @@ def init_schema(op):
     op.arg_option('padding', ('VALID', 'SAME'))
     op.arg_unchecked('name')
 
-    op.valid_dtypes('input', ('float32',))
+    op.valid_dtypes('input', ('bfloat', 'float',))
 
     op.return_tensor('bic')
 

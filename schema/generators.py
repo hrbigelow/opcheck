@@ -29,37 +29,22 @@ class DTypes(object):
                 tf.complex64, tf.complex128
                 )
 
-    def __call__(self):
+    def __call__(self, **kwargs):
         """
         Generate all valid dtype combinations.  Generates a list of maps.
         Each map has a full tensor_name => dtype for each input tensor
         """
-        tests = self.dtype_cons.make_tests()
-        tensor_names = self.dtype_cons.all()
+        tests = self.dtype_cons.tests
+        tensor_names = self.dtype_cons.tensors
         k = len(tensor_names)
         max_errors = 1
 
         # list of (type, dtype_tuple), where <type> is a SchemaStatus expected
         # to be produced from this tuple.
-        combo_gen = util.dtype_combos(k, self.all_dtypes, tests, max_errors)
+        combo_gen = util.dtype_combos(k, self.all_dtypes, tests, max_errors,
+                kwargs)
         combos = list(combo_gen)
         combo_maps = [ (s, dict(zip(tensor_names, d))) for s, d in combos ]
-
-        """
-        # src_ten: list of ten_name
-        # valid_dtypes: list of tuples of dtypes
-        src_ten, valid_dtypes = zip(*self.dtype_cons.valid.items())
-
-        # tensor_name => index into src_ten
-        equiv_map = { trg: src_ten.index(src) for trg, src in
-                self.dtype_cons.equiv.items() }
-        equiv_map.update({v: i for i, v in enumerate(src_ten)})
-
-        combos = []
-        for combo in itertools.product(*valid_dtypes):
-            el = { name: combo[ind] for name,ind in equiv_map.items() }
-            combos.append(el)
-        """
         return combo_maps
 
 class Ranks(object):
@@ -209,7 +194,7 @@ class IndexDimsGD(object):
     """
     def __init__(self, op, min_nelem, max_nelem):
         self.op = op
-        self.lr = 5.0
+        self.lr = 2.0
         self.min_nelem = min_nelem
         self.max_nelem = max_nelem
         self.nodes = []

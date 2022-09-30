@@ -29,12 +29,18 @@ def init_schema(op):
     op.arg_shape_list('dilations', 'd')
     op.arg_unchecked('name')
 
-    op.valid_dtypes('input', ('int32', 'bfloat16', 'float16', 'float32',
-        'float64'))
+    op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))
     op.equate_dtypes('filters', 'input')
 
-    op.add_index_predicate('stride-dilation exclusion', flib.not_both_over_one,
-            'sd')
+    op.exclude_dtypes(
+            ('input', 'i', Kind.LAYOUT),
+            ('int32', None, 0), # all int32 channel-first layout
+            ('int32', 3, 1),    # 3D int32, channel-last layout
+            ('bfloat16', 1, None), # 1D bfloat16, any layout
+            ('bfloat16', 3, None)  # 3D bfloat16, any layout
+            )
+
+    op.add_index_predicate('s-d exclusion', flib.not_both_over_one, 'sd')
     op.add_index_generator('sd', flib.gen_not_both_over_one, 'sd', 1, 10)
     op.add_index_generator('f', flib.gen_range, 'f', 3, 10)
     

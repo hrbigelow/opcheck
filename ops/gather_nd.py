@@ -19,8 +19,8 @@ def init_schema(op):
     op.arg_unchecked('name')
 
     # dtypes
-    op.valid_dtypes('indices', ('int32', 'int64'))
-    op.valid_dtypes('params', ('int32', 'float32'))
+    op.valid_dtypes('indices', ('int32+',))
+    op.valid_dtypes('params', ('int32+', 'float'))
 
     def rankr(indices_shape):
         return indices_shape[-1]

@@ -45,7 +45,7 @@ def is_iterable(obj):
     return True
 
 
-def dtype_combos(k, dtypes, tests, max_errors):
+def dtype_combos(k, dtypes, tests, max_errors, **kwargs):
     """
     Yield all k-wise dtype combos of {dtypes} which fail at most {max_errors}
     tests.  Each test in {tests} is a function object with the following
@@ -71,7 +71,7 @@ def dtype_combos(k, dtypes, tests, max_errors):
 
     while True:
         cfg = tuple(dtypes[d] for d in digits)
-        fail = tuple(t for t in tests if not t(cfg))
+        fail = tuple(t for t in tests if not t(cfg, kwargs))
         if len(fail) <= max_errors:
             l = 0
             if len(fail) == 0:

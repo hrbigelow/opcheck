@@ -1,8 +1,7 @@
 import traceback
 import inspect
-import io
-import sys
-import os
+import os, io, sys
+import re
 import tensorflow as tf
 import numpy as np
 from collections import defaultdict, OrderedDict
@@ -32,7 +31,143 @@ Both finished graphs must have exactly one node corresponding to each input
 argument, either the arg_name:tensor node (for tensor arguments) or the
 arg_name:arg node for non-tensors.
 """
+class _TestResult(object):
+    """
+    One schema test result.  Holds all sufficient information about the test.
+    Provides convenient reporting and classification functions
+    """
+    def __init__(self, op, config):
+        self.op = op
+        self.config = config
 
+        statuses = self.config[Kind.EXPECT_STATUS]
+        err = list(s for s in statuses if s != Success)
+        if len(err) > 1:
+            stat = None
+        else:
+            stat = err[0] if len(err) > 0 else Success
+        self.config['EXPECT_STATUS'] = stat
+
+    def add_result(self):
+        self.config['OPCHECK_STATUS'] = self.op.input_status
+        self.config['FRAMEWORK_STATUS'] = self.op.framework_status
+        ex_stat_cls = self.config['EXPECT_STATUS']
+        op_stat = self.config['OPCHECK_STATUS']
+        fr_stat = self.config['FRAMEWORK_STATUS']
+        if not isinstance(op_stat, ex_stat_cls):
+            cat = 'FAIL'
+
+        op_neg = isinstance(op_stat, Success)
+        fr_neg = isinstance(fr_stat, Success)
+        if op_neg:
+            cat = 'TN' if fr_neg else 'FN'
+        else:
+            cat = 'FP' if fr_neg else 'TP'
+        self.config['CATEGORY'] = cat
+
+    def make_args(self):
+        # create arguments 
+        d = { p: self.config.get(k, None) for p,k in self.op.params.items() }
+        arg_dict = {}
+        for name, val in d.items():
+            kname = self.op.params[name]
+            if kname is not None and kind(kname) == Kind.DATA_TENSOR:
+                val = ge.from_stub(val)
+            arg_dict[name] = val
+        return arg_dict
+
+    def stat_keys(self):
+        # return an ordered set of keys
+        keys = ['CATEGORY', 'EXPECT_STATUS', 'OPCHECK_STATUS',
+                'FRAMEWORK_STATUS', Kind.DATA_FORMAT, Kind.RANKS, Kind.DTYPES]
+        for n,kn in self.op.params.items():
+            if kind(kn) in (Kind.DATA_TENSOR, Kind.UNCHECKED,
+                    Kind.DATA_FORMAT):
+                continue
+            if kn not in self.config:
+                raise SchemaError(
+                    f'Node \'{kn}\' is listed as a parameter node, but '
+                    f'not found in the test config object')
+            keys.append(kn)
+        return keys
+
+    def stats(self):
+        # retrieve sufficient statistics to determine the kind of test
+        stats = []
+        keys = self.stat_keys()
+        for k in keys:
+            item = self.config.get(k, None)
+            if k == 'EXPECT_STATUS':
+                v = item.__name__
+            elif k == 'OPCHECK_STATUS':
+                v = item.__class__.__name__
+            elif k == 'FRAMEWORK_STATUS':
+                if isinstance(item, FrameworkError):
+                    item = item.ex
+                v = item.__class__.__name__
+            elif k == Kind.DTYPES:
+                v = ','.join(d.name for d in item.values())
+            elif k == Kind.RANKS:
+                v = ','.join(str(r) for r in item.values())
+            elif k == Kind.DATA_FORMAT:
+                v = '<none>' if item is None else item
+            else:
+                v = str(item)
+            stats.append(v)
+        return stats
+
+    def stats_report(self):
+        stats = self.stats()
+
+    def run(self):
+        # run the op and store the results
+        string_err = io.BytesIO()
+        arg_dict = self.make_args()
+        try:
+            with stderr_redirector(string_err):
+                self.op.wrapped_op(**arg_dict)
+        except OpCheckInternalError as e:
+            print(string_err.getvalue().decode('UTF-8'))
+            raise e
+        except BaseException as e:
+            # this should always be from TensorFlow
+            trace = inspect.trace()
+            for frame in reversed(trace):
+                mod = inspect.getmodule(frame[0])
+                if mod is not None:
+                    break
+            modname = mod.__name__
+            # print(modname, flush=True)
+            if modname.split('.')[0] == 'tensorflow':
+                # print('exception inside tensorflow:')
+                # traceback.print_stack()
+                pass
+            else:
+                assert False, 'exception outside tf should not be possible'
+                print('exception outside of tensorflow')
+                traceback.print_stack()
+                raise e
+        self.add_result()
+
+    def report(self):
+        """
+        Generate a human-readable report
+        """
+        cat = self.config['CATEGORY']
+        op_stat = self.config['OPCHECK_STATUS']
+        fr_stat = self.config['FRAMEWORK_STATUS']
+        op_msg = op_stat.message(self.op)
+        fr_msg = fr_stat.message(self.op)
+        if cat == 'TP':
+            return f'Framework\n{fr_msg}\nOpCheck\n{op_msg}\n'
+        elif cat == 'TN':
+            return ''
+        elif cat == 'FP':
+            return f'OpCheck\n{op_msg}\n'
+        else:
+            return f'Framework\n{fr_msg}\n'
+
+        
 class SchemaApi(object):
     def __init__(self, op_path):
         self.op_path = op_path
@@ -48,7 +183,7 @@ class SchemaApi(object):
         self.rank_candidates = base.RankCandidates(self)
         self.rank_cons = [] 
         self.dtype_cons = base.DTypeConstraints()
-        self.gd_dims = ge.IndexDimsGD(self, 1e5, 5e5)
+        self.gd_dims = ge.IndexDimsGD(self, 1e5, 2e6)
         self.comp_dims_templates = {} # idx => PredNode with TemplateFunc
         self.num_returns = 0
         self.num_layouts = 1
@@ -388,7 +523,7 @@ class SchemaApi(object):
         diagram = self._index_diagram(arg_highlight, ranks, sigs, shapes)
         return diagram + '\n' + text
 
-    def _validate_schema(self):
+    def _validate_schema(self, out_dir):
         """
         Uses the gen_graph to produce a list of (<target_status>, <arg_dict>)
         pairs for the op.  <target_status> is the correct type of SchemaStatus.
@@ -408,83 +543,41 @@ class SchemaApi(object):
         not Success         Success          false positive
         not Success         FrameworkError   true positive
         """
+        if not os.path.exists(out_dir):
+            raise RuntimeError(
+                f'{type(self).__qualname__}: Could not open output path '
+                f'\'{out_dir}\' for report generation')
 
         # list of successful arg_dict settings
         tests = []
         for config in fgraph.gen_graph_iterate(self.gen_graph.values()):
-            arg_dict = { p: config.get(k, None) for p,k in self.params.items() }
-            statuses = config.get(Kind.EXPECT_STATUS)
-            err = list(s for s in statuses if s != Success)
-            if len(err) > 1:
+            t = _TestResult(self, config)
+            if t.config['EXPECT_STATUS'] is None:
                 continue
-            stat = err[0] if len(err) > 0 else Success
-            tests.append((stat, arg_dict))
+            tests.append(t)
 
-        def gen_tensors(arg_dict):
-            new_dict = {}
-            for name, val in arg_dict.items():
-                kname = self.params[name]
-                if kname is not None and kind(kname) == Kind.DATA_TENSOR:
-                    val = ge.from_stub(val)
-                new_dict[name] = val
-            return new_dict
-        
-        stats = { 'TP': 0, 'TN': 0, 'FP': 0, 'FN': 0 }
-        for test, (expect_status_type, arg_dict) in enumerate(tests):
-            arg_dict = gen_tensors(arg_dict)
-            # print(test)
-            # print(f'Test {test}: ', self._call_string(arg_dict))
+        stats_fname = f'{self.op_path}.stats.txt'
+        with open(os.path.join(out_dir, stats_fname), 'w') as fh:
+            for t in tests:
+                t.run()
+                row = t.stats()
+                line = '\t'.join(r for r in row)
+                print(line, file=fh)
 
-            string_err = io.BytesIO()
-            try:
-                with stderr_redirector(string_err):
-                    self.wrapped_op(**arg_dict)
-            except OpCheckInternalError as e:
-                print(string_err.getvalue().decode('UTF-8'))
-                raise e
-            except BaseException as e:
-                # this should always be from TensorFlow
-                trace = inspect.trace()
-                for frame in reversed(trace):
-                    mod = inspect.getmodule(frame[0])
-                    if mod is not None:
-                        break
-                modname = mod.__name__
-                # print(modname, flush=True)
-                if modname.split('.')[0] == 'tensorflow':
-                    # print('exception inside tensorflow:')
-                    # traceback.print_stack()
-                    pass
-                else:
-                    assert False, 'exception outside tf should not be possible'
-                    print('exception outside of tensorflow')
-                    traceback.print_stack()
-                    raise e
+        stats = { 'TP': [], 'FP': [], 'TN': [], 'FN': [], 'FAIL': [] }
+        for t in tests:
+            cat = t.config['CATEGORY']
+            stats[cat].append(t)
 
-            if not isinstance(self.input_status, expect_status_type):
-                raise SchemaError(
-                    f'Expected status was \'{expect_status_type}\' but '
-                    f'returned status was \'{type(self.input_status)}\'\n'
-                    f'{self.input_status.message(self)}')
+        for cat in ('FP', 'FN', 'FAIL', 'TP'):
+            file_name = f'{self.op_path}.{cat.lower()}.txt'
+            with open(os.path.join(out_dir, file_name), 'w') as fh: 
+                for t in stats[cat]:
+                    print(t.report(), file=fh)
 
-            op_neg = isinstance(self.input_status, Success)
-            fr_neg = isinstance(self.framework_status, Success)
-
-            if op_neg:
-                category = 'TN' if fr_neg else 'FN'
-            else:
-                category = 'FP' if fr_neg else 'TP'
-            stats[category] += 1
-
-            if category == 'FN':
-                framework_msg = self.framework_status.message(self)
-                print(f'Test {test}, {category}: Framework:\n{framework_msg}')
-            elif category == 'FP':
-                report = string_err.getvalue().decode('UTF-8')
-                print(f'Test {test}, {category}: OpCheck:\n{report}')
-
-            test += 1
-        print(stats)
+        print('Summary')
+        for cat, res in stats.items():
+            print(f'{cat}: {len(res)}')
 
     def _passed(self):
         return (
@@ -717,7 +810,7 @@ class SchemaApi(object):
         """
         Declare {arg_name} to be an argument unchecked by OpCheck 
         """
-        self._set_arg_kname(arg_name, Kind.NONE)
+        self._set_arg_kname(arg_name, Kind.UNCHECKED)
 
     def computed_index(self, comp_index, comp_func, template_func,
             input_indexes, min_val, *extra_args):
@@ -807,6 +900,47 @@ class SchemaApi(object):
         self._check_sig(sig, 'rank limits')
         self.rank_candidates.add_rank_limits(sig, min_val, max_val)
 
+    @staticmethod
+    def _dtype_expr(type_expr):
+        exprs = {
+                'int': [8, 16, 32, 64],
+                'uint': [8, 16, 32, 64],
+                'float': [16, 32, 64],
+                'qint': [8, 16, 32],
+                'bfloat': [16],
+                'bool': [''],
+                'complex': [64, 128]
+                }
+        # expect format to be {pfx}{q}[+-]*
+        ma = re.match('([a-z]+)(8|16|32|64|128)?([\+\-])?', type_expr)
+        if ma is None:
+            types = [ ', '.join(f'{k}{v}' for v in exprs[k]) for k in exprs ]
+            type_str = '\n'.join(t for t in types)
+
+            raise SchemaError(
+                f'Received invalid dtype expression \'{type_expr}\'.\n'
+                f'Must be one of the following formats:\n'
+                f'<data_type>  : specifies all sizes of the data type.\n'
+                f'<data_type><quantity> : specifies the exact data type '
+                f'and size\n'
+                f'<data_type><quantity>+: specifies the sized type and '
+                f'all larger sizes of this type.\n'
+                f'<data_type><quantity>-: specifies the sized type and '
+                f'all smaller sizes of this type\n'
+                f'\n'
+                f'The list of valid constructed types are:\n'
+                f'{type_str}\n')
+        pfx, q, rng = ma.groups()
+        if q is None:
+            return [ f'{pfx}{sz}' for sz in exprs[pfx] ]
+        else:
+            if rng is None:
+                return [ type_expr ]
+            elif rng == '+':
+                return [ f'{pfx}{sz}' for sz in exprs[pfx] if sz >= int(q) ]
+            else:
+                return [ f'{pfx}{sz}' for sz in exprs[pfx] if sz <= int(q) ]
+
     def valid_dtypes(self, tensor_name, type_list):
         """
         Declare that {tensor_name} can have any of the dtype strings in
@@ -824,7 +958,8 @@ class SchemaApi(object):
                 f'registered with valid dtypes')
 
         dtypes = []
-        for t in type_list:
+        all_dtypes = [ t for ex in type_list for t in self._dtype_expr(ex) ]
+        for t in all_dtypes:
             try:
                 dt = tf.dtypes.as_dtype(t)
                 dtypes.append(dt)
@@ -857,6 +992,34 @@ class SchemaApi(object):
                 f'{self.__qualname__}: trg_tensor (\'{trg_tensor}\') '
                 f'already has a dtype constraint')
         self.dtype_cons.add_equiv(trg_tensor, src_tensor)
+
+    def exclude_dtypes(self, fields, *exclude):
+        """
+        This API call allows to mark any combinations of tensor dtypes, index
+        ranks and layouts as excluded.  It is useful in cases where such
+        combinations are not implemented by the framework.
+
+        Register {exclude} combinations of tensor dtypes, index ranks and
+        layout to be excluded.
+
+        {fields} is a comma-separated list of fields, with any of:
+        - data tensor names registered with arg_tensor
+        - one-letter index names registered with add_index
+        - the constant Kind.LAYOUT
+
+        Each member of {exclude} contains a tuple corresponding to {fields}.
+        - data tensor fields have a dtype string, such as 'int32'
+        - one-letter indexes have an integer specifying a rank of that index
+        - the Kind.LAYOUT field has an integer in [0, num_layouts), as defined
+          by the call to arg_layout.
+
+        A value of None for any field indicates a wild-card, meaning 'exclude
+        all values'.
+
+        In the rare case a tensor is a one-letter name and conflicts with an
+        index name, the first occurrence is interpreted as a tensor name, and
+        the second as an index name.
+        """
 
     def arg_int(self, arg_name, lo=None, hi=None):
         """
