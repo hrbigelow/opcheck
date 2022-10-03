@@ -29,7 +29,7 @@ class Kind(object):
     DTYPES_STATUS = ':dtypes_status'
     DTYPES = ':dtypes'
     RANKS_STATUS = ':ranks_status'
-    RANKS = ':idx_ranks'
+    RANKS = ':index_ranks'
     IDIMS = ':input_dims'
     SINGLE_DIMS = ':single_dims'
     GEN_DIMS = ':gen_dims'
@@ -623,15 +623,6 @@ class CompDimsGraph(object):
         return index_inputs
 
     def finalize(self):
-        # add all pending edges
-        """
-        for n, pnodes in self.index_edges.items():
-            node = F.get_node(n)
-            for pn in pnodes:
-                pnode = F.get_node(pn)
-                node.append_parent(pnode)
-        """
-
         for node in self.comp.values():
             node.append_parent(self.kwnode)
 

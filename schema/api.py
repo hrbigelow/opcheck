@@ -127,6 +127,7 @@ class _TestResult(object):
         # run the op and store the results
         string_err = io.BytesIO()
         arg_dict = self.make_args()
+
         try:
             with stderr_redirector(string_err):
                 self.op.wrapped_op(**arg_dict)
@@ -182,6 +183,7 @@ class SchemaApi(object):
         self.params = None # will be an ordered dict
         self.layout_param = None 
         self.gen_graph = None
+        self.rsf_graph = {} # Kind => node
         self.input_pred_graph = None
         self.return_pred_graph = None
         self.rank_candidates = base.RankCandidates(self)
@@ -252,10 +254,10 @@ class SchemaApi(object):
         Generates all valid combinations of ranks_map, sigs_map, and
         data_format as ordered tuples
         """
-        names = [Kind.RANKS, Kind.SIG_MAP, Kind.DATA_FORMAT]
-        ngen = (self.gen_graph[nn] for nn in names if nn in self.gen_graph)
-        nodes = tuple(ngen)
-        tups = fgraph.all_values(*nodes)
+        kinds = (Kind.RANKS, Kind.SIG_MAP, Kind.DATA_FORMAT)
+        nodes = tuple(self.rsf_graph[k] for k in kinds if k in self.rsf_graph)
+        gen = fgraph.all_values(*nodes)
+        tups = list(gen)
         if len(nodes) == 2:
             return [ (*tup, None) for tup in tups ]
         else:
@@ -564,12 +566,15 @@ class SchemaApi(object):
         msg = '\n'.join(main)
         return msg
 
-    def _validate_schema(self, out_dir):
+    def _validate_schema(self, out_dir, test_ids=None):
         """
         Uses the gen_graph to produce a list of (<target_status>, <arg_dict>)
         pairs for the op.  <target_status> is the correct type of SchemaStatus.
         Runs the wrapped op on the <arg_dict> and collects the actual
         SchemaStatus and any possible exception from the framework.
+
+        If {test_ids} is provided, it is an iterable of integers which specify
+        a subset of tests to run.  This is useful for speeding up debugging.
 
         It is a SchemaError if the target status type does not equal the
         returned status type.
@@ -598,20 +603,29 @@ class SchemaApi(object):
                 continue
             tests.append(t)
             test_id += 1
+            print('\r', end='')
+            print(f'Generating test: {test_id:-4d}', end='')
+        print(f'\nGenerated tests: {test_id:-4d}')
 
+        if test_ids is not None:
+            tests = [ t for t in tests if t.id in test_ids ]
+
+        stats = { 'TP': [], 'FP': [], 'TN': [], 'FN': [], 'FAIL': [] }
         stats_fname = f'{self.op_path}.stats.txt'
         with open(os.path.join(out_dir, stats_fname), 'w') as fh:
             for t in tests:
+                print('\r', end='')
+                print(f'Running test: {t.id:-4d}', end='')
                 t.run()
+                cat = t.config['CATEGORY']
                 row = t.stats()
+                stats[cat].append(t)
+                mat = ', '.join(f'{c}:{len(l):3d}' for c, l in stats.items())
+                print('  Stats: ', mat, end='')
                 line = '\t'.join(r for r in row)
                 print(line, file=fh)
 
-        stats = { 'TP': [], 'FP': [], 'TN': [], 'FN': [], 'FAIL': [] }
-        for t in tests:
-            cat = t.config['CATEGORY']
-            stats[cat].append(t)
-
+        print()
         for cat in ('FP', 'FN', 'FAIL', 'TP'):
             file_name = f'{self.op_path}.{cat.lower()}.txt'
             with open(os.path.join(out_dir, file_name), 'w') as fh: 
@@ -768,7 +782,12 @@ class SchemaApi(object):
     def _init_gen_graph(self):
         G.clear_registry()
         F.clear_registry()
-        G.add_node(Kind.SIG_MAP, ge.SigMap())
+        sig_gnode = G.add_node(Kind.SIG_MAP, ge.SigMap())
+        self.rsf_graph[Kind.SIG_MAP] = sig_gnode
+        ranks_gobj = ge.Ranks(self, self.rank_candidates)
+        ranks_kname = kname('pred', Kind.RANKS)
+        ranks_pred_node = G.add_node(ranks_kname, ranks_gobj)
+        self.rsf_graph[Kind.RANKS] = ranks_pred_node
         shape_gobj = ge.SignatureShapes(self.dims_graph, self.rank_candidates,
                 self.gen_indices, 1e6)
         G.add_node(Kind.ARG_SHAPES_RANKS, shape_gobj, Kind.SIG_MAP) 
@@ -776,14 +795,9 @@ class SchemaApi(object):
         G.add_node(Kind.ARG_SHAPES_STATUS, ge.TupleElement(1),
                 Kind.ARG_SHAPES_RANKS)
         G.add_node(Kind.ARG_SHAPES, ge.TupleElement(1), Kind.ARG_SHAPES_STATUS)
-        # ranks_gobj = ge.Ranks(self, self.rank_candidates)
-        # G.add_node(Kind.RANKS_STATUS, ranks_gobj, Kind.SIG_MAP) 
-        # G.add_node(Kind.RANKS, ge.SecondInPair(), Kind.RANKS_STATUS)
         dtypes_obj = ge.DTypes(self.dtype_cons)
         G.add_node(Kind.DTYPES_STATUS, dtypes_obj, Kind.RANKS) 
         G.add_node(Kind.DTYPES, ge.TupleElement(1), Kind.DTYPES_STATUS)
-        # G.add_node(Kind.GD_DIMS_STATUS, self.gd_dims, Kind.RANKS, Kind.SIG_MAP)
-        # G.add_node(Kind.GD_DIMS, ge.TupleElement(1), Kind.GD_DIMS_STATUS)
         G.add_node(Kind.EXPECT_STATUS, ge.StatusAggregator(), 
                 Kind.DTYPES_STATUS, Kind.ARG_SHAPES_STATUS)
 
@@ -1231,6 +1245,13 @@ class SchemaApi(object):
         arg_gen = ge.DataFormat(layouts, rank_idx)
         self._arg_func(arg_name, Kind.DATA_FORMAT, arg_pred, arg_gen,
                 Kind.RANKS, Kind.LAYOUT)
+
+        # extra nodes specifically for use in _ranks_sigs_format
+        pred_ranks_kname = kname('pred', Kind.RANKS)
+        pred_fmt_kname = kname('pred', Kind.DATA_FORMAT)
+        pred_format_gnode = G.add_node(pred_fmt_kname, arg_gen,
+                pred_ranks_kname, Kind.LAYOUT)
+        self.rsf_graph[Kind.DATA_FORMAT] = pred_format_gnode
 
         layout_gnode = G.get_node(Kind.LAYOUT)
         dtypes_gnode = G.get_node(Kind.DTYPES_STATUS)

@@ -5,7 +5,7 @@ import logging
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import numpy as np
 import itertools
-from random import randint, choice
+from random import randint, choice, sample
 from functools import partial
 from collections import defaultdict
 from .base import Kind, kind, kpfx
@@ -54,38 +54,13 @@ class Ranks(object):
         self.op = op
         self.rcands = rank_candidates
 
-    def __call__(self, arg_sigs):
+    def __call__(self):
         """
         Generate all allowed rank combinations.  Generates a list of maps.
         Each map has index => rank for each index in self.index
         """
-        def sig_ranks(ranks, arg_sigs):
-            tup = tuple(sum(ranks[s] for s in sig) for sig in arg_sigs.values())
-            return tup
-
         idx_ranks_list = list(self.rcands.all_index_ranks())
-        arg_ranks = set()
-        for ranks in idx_ranks_list:
-            tup = sig_ranks(ranks, arg_sigs)
-            arg_ranks.add(tup)
-
-        # Now, create mutations
-        idx_tests_list = [] # items are (<expected_status_class>, idx_ranks)
-        for ranks in idx_ranks_list:
-            idx_tests_list.append((Success, ranks)) 
-            mut = dict(ranks)
-            for idx, rank in ranks.items():
-                for adj in (-1, 1):
-                    if rank + adj < 0:
-                        continue
-                    mut[idx] = rank + adj
-                    tup = sig_ranks(mut, arg_sigs)
-                    if tup in arg_ranks:
-                        continue
-                    idx_tests_list.append((NoMatchingRanks, dict(mut)))
-                mut[idx] = rank
-
-        return idx_tests_list
+        return idx_ranks_list 
 
 class Rank(object):
     """
@@ -457,7 +432,7 @@ def shape_indels(index_dims, arg_sigs, indel, max_dimsize):
             shape.insert(p, new_dim) 
     return arg_shapes
 
-def shape_mutations(index_dims, arg_sigs, idx_usage):
+def shape_mutations(index_dims, arg_sigs, idx_usage, max_dimsize):
     """
     Mutate individual dims of correct shapes to create IndexUsageErrors.
     Only mutate indices which have multiple usage.
@@ -474,14 +449,11 @@ def shape_mutations(index_dims, arg_sigs, idx_usage):
                 for usage in sig:
                     snip = list(index_dims[usage])
                     if arg == mut_arg and idx == usage:
-                        # randomly mutate snip
                         c = randint(0, len(snip)-1)
-                        s = randint(-snip[c]+1, 10)
-                        # ensure we actually change it by a non-zero amount
-                        snip[c] += s + int(s == 0)
+                        new_val, alt_val = sample(range(1, max_dimsize), 2)
+                        snip[c] = new_val if new_val != snip[c] else alt_val
                     arg_shapes[arg].extend(snip)
-            item = (IndexUsageError, dict(arg_shapes))
-            results.append(item)
+            results.append(dict(arg_shapes))
     return results 
 
 class SignatureShapes(object):
@@ -518,6 +490,10 @@ class SignatureShapes(object):
         # computation)
         sig_indexes = { idx for sig in arg_sigs.values() for idx in sig }
 
+        # create deterministic order
+        sig_indexes = list(sorted(sig_indexes))
+        gen_indexes = ''.join(gen_index_dims.keys())
+
         # generated dims will not change during the below iteration
         input_dims = dict(gen_index_dims) 
         for idx in sig_indexes:
@@ -534,8 +510,8 @@ class SignatureShapes(object):
             # fix any visible computed dims which are negative
             # TODO: zero could need to be 1 for some dims.
             todo = next(((idx, c, dim) 
-                for c, dim in enumerate(dims)
                 for idx, dims in comp_dims.items()
+                for c, dim in enumerate(dims)
                 if idx in sig_indexes
                 and dim < 0), None)
             if todo is None:
@@ -549,6 +525,8 @@ class SignatureShapes(object):
             # input indices
             comp_rank = index_ranks[comp_idx]
             for input_idx in comp_inputs:
+                if input_idx in gen_indexes:
+                    continue
                 input_rank = index_ranks[input_idx]
                 if input_rank == comp_rank:
                     inc = c
@@ -562,6 +540,16 @@ class SignatureShapes(object):
                         f'Computed indices must either be component-wise or '
                         f'broadcasting.')
                 input_dims[input_idx][inc] += 1
+
+        # print(index_dims)
+        arg_shapes = get_arg_shapes(index_dims, arg_sigs)
+        for arg, shape in arg_shapes.items():
+            nelem = np.prod(shape)
+            if nelem < 1e8:
+                continue
+            raise SchemaError(
+                f'Generated shape for argument \'{arg}\' was {shape} with '
+                f'{nelem} elements, exceeding the maximum allowed 1e8')
         return index_dims
 
     def __call__(self, arg_sigs, **kwargs):
@@ -588,7 +576,8 @@ class SignatureShapes(object):
                 item = (index_ranks, (Success, arg_shapes))
                 shapes_list.append(item)
 
-                point_muts = shape_mutations(index_dims, arg_sigs, idx_usage)
+                point_muts = shape_mutations(index_dims, arg_sigs, idx_usage,
+                        max_dimsize)
                 for arg_shapes in point_muts:
                     item = (index_ranks, (IndexUsageError, arg_shapes))
                     shapes_list.append(item)
@@ -603,7 +592,7 @@ class SignatureShapes(object):
                         gen_index_dims, max_dimsize, **kwargs)
                 arg_shapes = shape_indels(index_dims, arg_sigs, indel,
                         max_dimsize)
-                item = (index_ranks, (NoMatchingRanks, arg_shapes))
+                item = (indel.index_ranks, (NoMatchingRanks, arg_shapes))
                 shapes_list.append(item)
         return shapes_list
 
@@ -630,16 +619,6 @@ class TupleElement(object):
     def __call__(self, tup):
         return [tup[self.index]]
 
-class SecondInPair(object):
-    """
-    Return the second member of a tuple pair 
-    """
-    def __init__(self):
-        pass
-
-    def __call__(self, pair):
-        return [pair[1]]
-
 class SingleIndexDims(object):
     """
     A simple node which extracts a single index dimension
@@ -665,6 +644,10 @@ class TensorStub(object):
 
 def from_stub(stub):
     shape, dtype = stub
+    nelem = np.prod(shape)
+    if nelem > 1e7:
+        raise SchemaError(f'Shape \'{shape}\' has {nelem} elements, '
+        f'which exceeds 1e7 elements')
     if dtype.is_integer:
         lo = max(dtype.min, -1000)
         hi = min(dtype.max, 1000) 
