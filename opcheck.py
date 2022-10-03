@@ -75,6 +75,12 @@ def explain(op_path):
 def inventory():
     print('\n'.join(REGISTRY.keys()))
 
+def list_configs(op_path):
+    """
+    Produce the list of all available dtype x rank x layout configurations
+    """
+    pass
+
 
 def _dot_graph(op, nodes, out_file):
     import graphviz

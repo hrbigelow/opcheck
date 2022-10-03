@@ -34,8 +34,8 @@ def init_schema(op):
 
     op.exclude_dtypes(
             ('input', 'i', Kind.LAYOUT),
-            ('int32', None, 0), # all int32 channel-first layout
-            ('int32', 3, 1),    # 3D int32, channel-last layout
+            ('int32', None, 0),    # all int32 channel-first layout
+            ('int32', 3, 1),       # 3D int32, channel-last layout
             ('bfloat16', 1, None), # 1D bfloat16, any layout
             ('bfloat16', 3, None)  # 3D bfloat16, any layout
             )
@@ -61,7 +61,7 @@ def init_schema(op):
             tem = f'ceil({i} / {s})' 
         return tem
 
-    op.computed_index('o', odims, odims_template, 'ifsd', 1, 'padding')
+    op.computed_index('o', odims, odims_template, 'ifsd', 0, 'padding')
     op.return_tensor('blo', 'bol')
 
 opcheck.register('tf.nn.convolution', init_schema)

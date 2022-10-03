@@ -276,12 +276,7 @@ class PredNode(FuncNode):
     def all_children(self):
         return self.pred_children + self.children
 
-def all_values(*nodes):
-    """
-    Collects the slice of value combinations for {nodes} induced by the
-    subgraph of {nodes} and all of their ancestors
-    """
-    # collect all ancestors
+def get_ancestors(*nodes):
     found = set()
     def dfs(n):
         if n.name in found:
@@ -289,11 +284,17 @@ def all_values(*nodes):
         found.add(n)
         for pa in n.parents:
             dfs(pa)
-
     for node in nodes:
         dfs(node)
+    return found
 
-    topo_nodes = _topo_sort(found)
+def all_values(*nodes):
+    """
+    Collects the slice of value combinations for {nodes} induced by the
+    subgraph of {nodes} and all of their ancestors
+    """
+    ancestors = get_ancestors(*nodes)
+    topo_nodes = _topo_sort(ancestors)
     config = gen_graph_iterate(topo_nodes)
     results = [ tuple(c[n.name] for n in nodes) for c in config ]
     return results

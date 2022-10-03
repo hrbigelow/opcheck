@@ -159,20 +159,15 @@ class ValidDTypes(object):
 
     def __call__(self, **kwargs):
         """Check that all tensor arguments have valid dtypes"""
-        dtype_map = { kpfx(k): v for k,v in kwargs.items() }
-        assert (len(dtype_map) == len(kwargs)), 'ValidDTypes internal error'
-        
-        for ten_name, valid_dtypes in self.dtype_cons.valid.items():
-            dtype = dtype_map[ten_name]
-            if dtype not in valid_dtypes:
-                return False, DTypeNotValid(ten_name, dtype, valid_dtypes)
-        for trg_name, src_name in self.dtype_cons.equiv.items():
-            src_dtype = dtype_map[src_name]
-            trg_dtype = dtype_map[trg_name]
-            if trg_dtype != src_dtype:
-                stat = DTypeNotEqual(src_name, src_dtype, trg_name, trg_dtype)
-                return False, stat
-        return True, None
+        arg_dtypes = { kpfx(kn): v for kn, v in kwargs.items() if kind(kn) ==
+                Kind.DTYPE }
+        index_ranks = kwargs.get(Kind.RANKS, {})
+        fmt_layout = kwargs.get(Kind.LAYOUT, (None, None))
+        layout = fmt_layout[1]
+
+        stat = self.dtype_cons.status(arg_dtypes, index_ranks, layout)
+        valid = isinstance(stat, Success)
+        return valid, stat
 
 class ShapeMap(object):
     """
@@ -236,8 +231,7 @@ class IndexRanks(object):
         valid_map = None
         candidates = []
 
-        pseudo_kname = kname('layout', Kind.PSEUDO)
-        data_format, layout = kwargs.get(pseudo_kname, (None, None))
+        data_format, layout = kwargs.get(Kind.LAYOUT, (None, None))
         # replace this with a single generative node which generates
         # Ranks, Sigs, Layout 
         for cand_ranks, sig_map, cand_format in self.op._ranks_sigs_format():

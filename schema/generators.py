@@ -5,7 +5,7 @@ import logging
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import numpy as np
 import itertools
-from random import randint
+from random import randint, choice
 from functools import partial
 from collections import defaultdict
 from .base import Kind, kind, kpfx
@@ -29,7 +29,7 @@ class DTypes(object):
                 tf.complex64, tf.complex128
                 )
 
-    def __call__(self, **kwargs):
+    def __call__(self, ranks, **kwargs):
         """
         Generate all valid dtype combinations.  Generates a list of maps.
         Each map has a full tensor_name => dtype for each input tensor
@@ -39,10 +39,12 @@ class DTypes(object):
         k = len(tensor_names)
         max_errors = 1
 
+        layout = kwargs.get(Kind.LAYOUT, None)
+
         # list of (type, dtype_tuple), where <type> is a SchemaStatus expected
         # to be produced from this tuple.
         combo_gen = util.dtype_combos(k, self.all_dtypes, tests, max_errors,
-                kwargs)
+                ranks, layout)
         combos = list(combo_gen)
         combo_maps = [ (s, dict(zip(tensor_names, d))) for s, d in combos ]
         return combo_maps
@@ -77,7 +79,7 @@ class Ranks(object):
                     if rank + adj < 0:
                         continue
                     mut[idx] = rank + adj
-                    tup = sig_ranks(ranks, arg_sigs)
+                    tup = sig_ranks(mut, arg_sigs)
                     if tup in arg_ranks:
                         continue
                     idx_tests_list.append((NoMatchingRanks, dict(mut)))
@@ -141,51 +143,6 @@ class Dims(object):
                 f'].\n'
                 f'Got: {vals}\n')
         return [ dict(zip(self.output_indices,v)) for v in vals ]
-
-
-class FreeIndex(object):
-    # FuncNode object for free indices
-    def __init__(self, gd, index_name):
-        self.gd = gd
-        self.idx = index_name
-
-    def __call__(self):
-        return self.gd.variables[self.idx]
-
-class GenIndex(object):
-    # FuncNode object for indices registered with add_index_generator
-    def __init__(self, gd, index_name):
-        self.gd = gd
-        self.idx = index_name
-
-    def __call__(self):
-        val = self.gd.gen_index_dims[self.idx]
-        return tf.constant(val, dtype=tf.float32)
-
-class CompIndex(object):
-    # FuncNode object for indices registered with computed_index
-    def __init__(self, gd, comp_func, const_args):
-        self.gd = gd
-        self.args = const_args
-        self.func = comp_func
-
-    def __call__(self, *args):
-        # args will be index shapes, which change during gradient descent
-        # const_args are non-index aruments and remain constant during
-        # gradient descent
-        const_args = tuple(self.gd.extra_args[a] for a in self.args)
-        comp_dims = self.func(*args, *const_args)
-        if not (
-                (isinstance(comp_dims, (tf.Tensor, tf.Variable)) and
-                    comp_dims.shape.rank == 1) or
-                (isinstance(comp_dims, np.ndarray) and
-                    comp_dims.ndim == 1)
-                ):
-            raise SchemaError(
-                f'{type(self).__qualname__}: function \'{self.func.__name__}\' '
-                f'registered with computed_dims must return a 1D '
-                f'tf.Tensor or np.ndarray.  Got \'{comp_dims}\'')
-        return comp_dims
 
 class IndexDimsGD(object):
     """
@@ -255,7 +212,8 @@ class IndexDimsGD(object):
             # hard-coded reasonable choices for initialization
             val = tf.random.uniform([rank], 1.0, 4.0)
             cons_fun = lambda v: tf.clip_by_value(tf.round(v), 1.0, 1e10)
-            var = tf.Variable(val, constraint = cons_fun, dtype=tf.float32)
+            # var = tf.Variable(val, constraint = cons_fun, dtype=tf.float32)
+            var = tf.Variable(val, dtype=tf.float32)
             self.variables[idx] = var
 
     def all_dims(self):
@@ -268,6 +226,9 @@ class IndexDimsGD(object):
         # negative of absolute number
         dims = self.all_dims()
         vals = [dims[s] for s in sig]
+        # this allows returning '1' for rank 0 sig (this is incorrect but
+        # good enough)
+        vals.append(tf.constant([1.0]))
         st = tf.concat(vals, axis=0)
         nelem = tf.reduce_min(tf.sign(st)) * tf.abs(tf.reduce_prod(st))
         return nelem
@@ -374,10 +335,9 @@ class IndexDimsGD(object):
                     for grad, var in zip(grads, free_vars):
                         if grad is None:
                             continue
-                        var.assign_sub(self.lr * grad)
-                    # opt.apply_gradients(zip(grads, free_vars))
-                    # if loss_name == 'elem_loss' and index_lambda() > 0.0:
-                        # raise SchemaError(f'Nonzero index_loss')
+                        # var.assign_sub(self.lr * grad)
+                        var.assign(tf.maximum(var - self.lr * grad, 1.0))
+                        assert all(c >= 1.0 for c in var.numpy()), 'after'
             
         # extract the dims map
         vars_map = self.all_dims()
@@ -394,6 +354,11 @@ class IndexDimsGD(object):
                 f'Failed to achieve zero elem loss.  Final elem_loss: '
                 f'{self.elem_loss():5.3f}')
 
+        # create arg_shapes
+        arg_shapes = {}
+        for arg, sig in arg_sigs.items():
+            arg_shapes[arg] = [ d for s in sig for d in index_dims[s] ]
+
         # create a map of free index usage for input args
         idx_usage = defaultdict(list)
         free_idxs = list(self.variables.keys())
@@ -405,11 +370,7 @@ class IndexDimsGD(object):
                     continue
                 idx_usage[idx].append(arg) 
 
-        # create arg_shapes
         tests = []
-        arg_shapes = {}
-        for arg, sig in arg_sigs.items():
-            arg_shapes[arg] = [ d for s in sig for d in index_dims[s] ]
         tests.append((Success, arg_shapes))
         for idx, args in idx_usage.items():
             if ranks[idx] == 0:
@@ -431,6 +392,221 @@ class IndexDimsGD(object):
                 tests.append((IndexUsageError, dict(arg_shapes)))
         return tests 
 
+# Specifies a set of data tensor shapes, in which one tensor has an insertion
+# or deletion relative to a valid set.
+IndelMutation = namedtuple('IndelMutation', ['index_ranks', 'arg', 'delta'])
+
+def make_indel_mutations(index_ranks_list, arg_sigs):
+    """
+    returns a list of IndelMutations 
+    """
+    arg_names = list(arg_sigs.keys())
+    num_arg = len(arg_names)
+    # arg rank values tuple => (index_ranks, changed_arg, delta)
+    ranks_to_aug = {} 
+    for index_ranks in index_ranks_list:
+        arg_ranks = get_arg_ranks(index_ranks, arg_sigs)
+        ranks_tup = tuple(arg_ranks.values())
+        for t in range(num_arg):
+            for delta in (-1, 1):
+                mut_ranks = tuple(r + delta if i == t else r
+                        for i, r in enumerate(ranks_tup))
+                if mut_ranks in ranks_to_aug:
+                    continue
+                if any(r < 0 for r in mut_ranks):
+                    continue
+                mut = IndelMutation(index_ranks, arg_names[t], delta)
+                ranks_to_aug[mut_ranks] = mut 
+    return list(ranks_to_aug.values())
+
+def get_arg_shapes(index_dims, arg_sigs):
+    arg_shapes = defaultdict(list)
+    for arg, sig in arg_sigs.items():
+        for idx in sig:
+            dims = index_dims[idx]
+            arg_shapes[arg].extend(dims)
+    return dict(arg_shapes)
+
+def get_arg_ranks(index_ranks, arg_sigs):
+    arg_ranks = {}
+    for arg, sig in arg_sigs.items():
+        arg_ranks[arg] = sum(index_ranks[idx] for idx in sig)
+    return arg_ranks
+
+def shape_indels(index_dims, arg_sigs, indel, max_dimsize):
+    """
+    Create one set of data tensor shapes according to the {indel}.
+    The indel specifies index_ranks, a changed data tensor, and a delta.
+
+    Dimension sizes are found such that the highest-rank (post-mutated) tensor
+    will have in the ball-park of {target_nelem} elements.
+    """
+    # create the augmented shapes.  if changed_arg and rank_delta are None,
+    # no augmentation is performed.
+    arg_shapes = get_arg_shapes(index_dims, arg_sigs)
+    shape = arg_shapes[indel.arg]
+    if indel.delta < 0:
+        # delete dimensions from the shape
+        for _ in range(abs(indel.delta)):
+            p = choice(range(len(shape)))
+            shape.pop(p)
+    else:
+        for _ in range(indel.delta):
+            p = choice(range(len(shape) + 1))
+            new_dim = randint(1, max_dimsize)
+            shape.insert(p, new_dim) 
+    return arg_shapes
+
+def shape_mutations(index_dims, arg_sigs, idx_usage):
+    """
+    Mutate individual dims of correct shapes to create IndexUsageErrors.
+    Only mutate indices which have multiple usage.
+    """
+    results = []
+    for idx, args in idx_usage.items():
+        if len(index_dims[idx]) == 0:
+            continue
+        if len(args) == 1:
+            continue
+        for mut_arg in args:
+            arg_shapes = defaultdict(list)
+            for arg, sig in arg_sigs.items():
+                for usage in sig:
+                    snip = list(index_dims[usage])
+                    if arg == mut_arg and idx == usage:
+                        # randomly mutate snip
+                        c = randint(0, len(snip)-1)
+                        s = randint(-snip[c]+1, 10)
+                        # ensure we actually change it by a non-zero amount
+                        snip[c] += s + int(s == 0)
+                    arg_shapes[arg].extend(snip)
+            item = (IndexUsageError, dict(arg_shapes))
+            results.append(item)
+    return results 
+
+class SignatureShapes(object):
+    """
+    Generate shapes for all registered input signatures, plus point-mutated
+    shapes, plus indel-mutated shapes.
+    """
+    def __init__(self, dims_graph, index_ranks_gen, index_dims_gen,
+            target_nelem):
+        self.dims_graph = dims_graph
+        self.ranks_gen = index_ranks_gen
+        self.dims_gen = index_dims_gen
+        self.target_nelem = target_nelem
+
+    def max_dimsize(self, index_ranks, arg_sigs, indel):
+        ranks = get_arg_ranks(index_ranks, arg_sigs)
+        if indel is not None:
+            ranks[indel.arg] += indel.delta
+        max_rank = max(ranks.values())
+        return math.ceil(math.pow(self.target_nelem, 1.0 / max_rank))
+
+    def index_dims(self, index_ranks, arg_sigs, gen_index_dims, max_dimsize,
+            **dims_comp_args):
+        """
+        Resolve a set of all index dims consistent with {index_ranks}.  First,
+        any indexes registered with add_index_generator or rank_dims_constraint
+        will be computed.  Then, remaining indexes not registered with
+        computed_index will be randomly generated in [1, max_dimsize].
+        Finally, the computed index dims are created.  The system iterates
+        until all computed index dims are non-negative.
+        """
+        # indexes appearing in at least one data tensor signature.  (some
+        # indexes are merely used as intermediate quantities to simplify
+        # computation)
+        sig_indexes = { idx for sig in arg_sigs.values() for idx in sig }
+
+        # generated dims will not change during the below iteration
+        input_dims = dict(gen_index_dims) 
+        for idx in sig_indexes:
+            if idx in input_dims:
+                continue
+            if idx in self.dims_graph.computed_indexes():
+                continue
+            dims = [ randint(1, max_dimsize) for _ in range(index_ranks[idx]) ]
+            input_dims[idx] = dims
+
+        while True:
+            comp_dims = self.dims_graph(input_dims, **dims_comp_args) 
+
+            # fix any visible computed dims which are negative
+            # TODO: zero could need to be 1 for some dims.
+            todo = next(((idx, c, dim) 
+                for c, dim in enumerate(dims)
+                for idx, dims in comp_dims.items()
+                if idx in sig_indexes
+                and dim < 0), None)
+            if todo is None:
+                index_dims = { **comp_dims, **input_dims }
+                break
+            comp_idx, c, dim = todo
+            comp_inputs = self.dims_graph.get_index_inputs(comp_idx)
+            # apply the assumption that computed indexes are either
+            # component-wise or broadcasting.  secondly, assume that the
+            # computed index is monotonically increasing in the values of the
+            # input indices
+            comp_rank = index_ranks[comp_idx]
+            for input_idx in comp_inputs:
+                input_rank = index_ranks[input_idx]
+                if input_rank == comp_rank:
+                    inc = c
+                elif input_rank == 1:
+                    inc = 0
+                else:
+                    raise SchemaError(
+                        f'Computed index \'{comp_idx}\' has rank {comp_rank} '
+                        f'but has input index \'{input_idx}\' with rank '
+                        f'{input_rank}.\n'
+                        f'Computed indices must either be component-wise or '
+                        f'broadcasting.')
+                input_dims[input_idx][inc] += 1
+        return index_dims
+
+    def __call__(self, arg_sigs, **kwargs):
+
+        # idx => [arg1, arg2, ...] (arguments that the index appears in)
+        idx_usage = defaultdict(list)
+        indexes = { idx for sig in arg_sigs.values() for idx in sig }
+        for arg, sig in arg_sigs.items():
+            for idx in sig:
+                if idx not in indexes:
+                    continue
+                idx_usage[idx].append(arg) 
+
+        index_ranks_list = list(self.ranks_gen.all_index_ranks())
+        shapes_list = []
+        # Success and IndexUsageError lists
+        for index_ranks in index_ranks_list:
+            max_dimsize = self.max_dimsize(index_ranks, arg_sigs, None)
+            gen_dims_list = self.dims_gen(index_ranks)
+            for gen_index_dims in gen_dims_list:
+                index_dims = self.index_dims(index_ranks, arg_sigs,
+                        gen_index_dims, max_dimsize, **kwargs)
+                arg_shapes = get_arg_shapes(index_dims, arg_sigs)
+                item = (index_ranks, (Success, arg_shapes))
+                shapes_list.append(item)
+
+                point_muts = shape_mutations(index_dims, arg_sigs, idx_usage)
+                for arg_shapes in point_muts:
+                    item = (index_ranks, (IndexUsageError, arg_shapes))
+                    shapes_list.append(item)
+
+        # NoMatchingRanks list
+        indel_list = make_indel_mutations(index_ranks_list, arg_sigs)
+        for indel in indel_list:
+            max_dimsize = self.max_dimsize(indel.index_ranks, arg_sigs, indel)
+            gen_dims_list = self.dims_gen(indel.index_ranks)
+            for gen_index_dims in gen_dims_list:
+                index_dims = self.index_dims(indel.index_ranks, arg_sigs,
+                        gen_index_dims, max_dimsize, **kwargs)
+                arg_shapes = shape_indels(index_dims, arg_sigs, indel,
+                        max_dimsize)
+                item = (index_ranks, (NoMatchingRanks, arg_shapes))
+                shapes_list.append(item)
+        return shapes_list
+
 class StatusAggregator(object):
     """
     Collects the first element of every pair tuple input.
@@ -443,6 +619,16 @@ class StatusAggregator(object):
     def __call__(self, *args):
         statuses = tuple(a[0] for a in args)
         return [statuses]
+
+class TupleElement(object):
+    """
+    Expect a tuple and return a particular element
+    """
+    def __init__(self, index):
+        self.index = index
+
+    def __call__(self, tup):
+        return [tup[self.index]]
 
 class SecondInPair(object):
     """
@@ -600,7 +786,10 @@ class DataFormat(object):
     def __call__(self, rank_map, layout):
         rank = rank_map[self.rank_index]
         rmap = self.layouts[layout]
-        data_format = rmap[rank]
+        # rank may be outside of the range of valid ranks, due to being a
+        # mutation.  if so, choose a default
+        default = next(iter(rmap.values()))
+        data_format = rmap.get(rank, default)
         return [data_format]
 
 class LayoutOption(object):

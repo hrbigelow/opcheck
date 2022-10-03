@@ -98,6 +98,22 @@ class DTypeNotValid(SchemaStatus):
                 f'{", ".join(d.name for d in self.valid_dtypes)}')
         return msg
 
+class DTypeComboExcluded(SchemaStatus):
+    """
+    Represents a combination of dtypes and optionally ranks and/or layout
+    which are excluded from being considered valid
+    """
+    def __init__(self, ten_names, ten_dtypes, rank_map, data_format):
+        self.names = ten_names
+        self.dtypes = ten_dtypes
+        self.rank_map = rank_map
+        self.data_format = data_format
+
+    def message(self, op):
+        msg = op._dtype_excluded_report(self.names, self.dtypes, self.rank_map,
+                self.data_format)
+        return msg
+
 class IndexUsageError(SchemaStatus):
     def __init__(self, idx_usage, ranks, sigs, shapes):
         self.idx_usage = idx_usage

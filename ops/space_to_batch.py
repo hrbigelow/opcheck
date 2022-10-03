@@ -25,12 +25,11 @@ def init_schema(op):
 
     # ensure that padded input is divisible by block size
     op.add_index_predicate('pad_input_block', flib.divis_by, 'jk')
-    # op.add_index_predicate('pad_input_block', flib.pad_input_blocked, 'isek')
 
     # generates i, s, e, and k dimensions compatible with the predicate
     op.add_index_generator('isek', flib.gen_pad_input_blocked, 'i', 10, 50)
 
-    op.valid_dtypes('input', ('int32', 'float32'))
+    op.valid_dtypes('input', ('int', 'uint', 'float', 'bfloat'))
 
     def jdims(s, e, i):
         return s + e + i
