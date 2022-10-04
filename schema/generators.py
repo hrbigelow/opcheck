@@ -31,8 +31,11 @@ class DTypes(object):
 
     def __call__(self, ranks, **kwargs):
         """
-        Generate all valid dtype combinations.  Generates a list of maps.
-        Each map has a full tensor_name => dtype for each input tensor
+        Generate a list of all possible dtype combinations for data tensors.
+        Each combination is expressed as a map of arg => dtype.
+
+        Each item in the list is paired with the expected SchemaStatus object
+        that it would produce when validated.
         """
         tests = self.dtype_cons.tests
         tensor_names = self.dtype_cons.tensors
@@ -446,6 +449,7 @@ def shape_mutations(index_dims, arg_sigs, idx_usage, max_dimsize):
         for mut_arg in args:
             arg_shapes = defaultdict(list)
             for arg, sig in arg_sigs.items():
+                # create a shape for arg, possibly mutated
                 for usage in sig:
                     snip = list(index_dims[usage])
                     if arg == mut_arg and idx == usage:
@@ -553,7 +557,6 @@ class SignatureShapes(object):
         return index_dims
 
     def __call__(self, arg_sigs, **kwargs):
-
         # idx => [arg1, arg2, ...] (arguments that the index appears in)
         idx_usage = defaultdict(list)
         indexes = { idx for sig in arg_sigs.values() for idx in sig }

@@ -41,31 +41,34 @@ class _TestResult(object):
         self.op = op
         self.id = _id
         self.config = config
-
         statuses = self.config[Kind.EXPECT_STATUS]
         err = list(s for s in statuses if s != Success)
         if len(err) > 1:
             stat = None
         else:
             stat = err[0] if len(err) > 0 else Success
-        self.config['EXPECT_STATUS'] = stat
+        self.expect_class = stat
 
     def add_result(self):
-        self.config['OPCHECK_STATUS'] = self.op.input_status
-        self.config['FRAMEWORK_STATUS'] = self.op.framework_status
-        ex_stat_cls = self.config['EXPECT_STATUS']
-        op_stat = self.config['OPCHECK_STATUS']
-        fr_stat = self.config['FRAMEWORK_STATUS']
-        if not isinstance(op_stat, ex_stat_cls):
-            cat = 'FAIL'
-
-        op_neg = isinstance(op_stat, Success)
-        fr_neg = isinstance(fr_stat, Success)
-        if op_neg:
-            cat = 'TN' if fr_neg else 'FN'
+        self.opcheck_status = self.op.input_status
+        if isinstance(self.op.framework_status, Success):
+            self.framework_status = self.op.framework_status
         else:
-            cat = 'FP' if fr_neg else 'TP'
-        self.config['CATEGORY'] = cat
+            self.framework_status = self.op.framework_status.ex
+
+        ex_stat_cls = self.expect_class
+        op_stat = self.opcheck_status
+        fr_stat = self.framework_status
+        if type(op_stat) != ex_stat_cls:
+            cat = 'FAIL'
+        else:
+            op_neg = isinstance(op_stat, Success)
+            fr_neg = isinstance(fr_stat, Success)
+            if op_neg:
+                cat = 'TN' if fr_neg else 'FN'
+            else:
+                cat = 'FP' if fr_neg else 'TP'
+        self.category = cat
 
     def make_args(self):
         # create arguments 
@@ -81,47 +84,38 @@ class _TestResult(object):
     def stat_keys(self):
         # return an ordered set of keys
         keys = ['ID', 'CATEGORY', 'EXPECT_STATUS', 'OPCHECK_STATUS',
-                'FRAMEWORK_STATUS', Kind.DATA_FORMAT, Kind.RANKS, Kind.DTYPES]
-        for n,kn in self.op.params.items():
-            if kind(kn) in (Kind.DATA_TENSOR, Kind.UNCHECKED,
-                    Kind.DATA_FORMAT):
-                continue
-            if kn not in self.config:
-                raise SchemaError(
-                    f'Node \'{kn}\' is listed as a parameter node, but '
-                    f'not found in the test config object')
-            keys.append(kn)
+                'FRAMEWORK_STATUS', Kind.RANKS]
+        keys.extend(self.op.params.keys())
         return keys
 
     def stats(self):
         # retrieve sufficient statistics to determine the kind of test
         stats = []
         keys = self.stat_keys()
-        for k in keys:
-            item = self.config.get(k, None)
-            if k == 'ID':
-                v = str(self.id)
-            if k == 'EXPECT_STATUS':
-                v = item.__name__
-            elif k == 'OPCHECK_STATUS':
-                v = item.__class__.__name__
-            elif k == 'FRAMEWORK_STATUS':
-                if isinstance(item, FrameworkError):
-                    item = item.ex
-                v = item.__class__.__name__
-            elif k == Kind.DTYPES:
-                v = ','.join(d.name for d in item.values())
-            elif k == Kind.RANKS:
-                v = ','.join(str(r) for r in item.values())
-            elif k == Kind.DATA_FORMAT:
-                v = '<none>' if item is None else item
-            else:
-                v = str(item)
-            stats.append(v)
-        return stats
 
-    def stats_report(self):
-        stats = self.stats()
+        stats = [ 
+                str(self.id), 
+                self.category, 
+                self.expect_class.__name__,
+                self.opcheck_status.__class__.__name__,
+                self.framework_status.__class__.__name__,
+                ','.join(str(r) for r in self.config[Kind.RANKS].values())
+                ]
+
+        arg_shapes = self.config[Kind.ARG_SHAPES]
+        arg_dtypes = self.config[Kind.DTYPES]
+
+        for arg, kn in self.op.params.items():
+            # any shape-related args are specially formatted
+            if arg in arg_shapes:
+                rep = str(arg_shapes[arg])
+                if arg in arg_dtypes:
+                    rep += ':' + arg_dtypes[arg].name 
+            else:
+                rep = self.config.get(kn, '')
+            stats.append(rep)
+
+        return stats
 
     def run(self):
         # run the op and store the results
@@ -158,11 +152,10 @@ class _TestResult(object):
         """
         Generate a human-readable report
         """
-        cat = self.config['CATEGORY']
-        op_stat = self.config['OPCHECK_STATUS']
-        fr_stat = self.config['FRAMEWORK_STATUS']
+        cat = self.category
+        op_stat = self.opcheck_status
         op_msg = op_stat.message(self.op)
-        fr_msg = fr_stat.message(self.op)
+        fr_msg = self.op.framework_status.message(self.op)
         if cat == 'TP':
             return f'Framework\n{fr_msg}\nOpCheck\n{op_msg}\n'
         elif cat == 'TN':
@@ -575,19 +568,6 @@ class SchemaApi(object):
 
         If {test_ids} is provided, it is an iterable of integers which specify
         a subset of tests to run.  This is useful for speeding up debugging.
-
-        It is a SchemaError if the target status type does not equal the
-        returned status type.
-
-        For each result, the following four outcomes are possible, where
-        'positive' denotes detection of error, and 'negative' the absence of an
-        error.
-
-        <opcheck_status>    <framework>      <category>
-        Success             Success          true negative
-        Success             FrameworkError   false negative
-        not Success         Success          false positive
-        not Success         FrameworkError   true positive
         """
         if not os.path.exists(out_dir):
             raise RuntimeError(
@@ -595,48 +575,69 @@ class SchemaApi(object):
                 f'\'{out_dir}\' for report generation')
 
         # list of successful arg_dict settings
-        tests = []
-        test_id = 1
-        for config in fgraph.gen_graph_iterate(self.gen_graph.values()):
-            t = _TestResult(self, test_id, config)
-            if t.config['EXPECT_STATUS'] is None:
-                continue
-            tests.append(t)
-            test_id += 1
-            print('\r', end='')
-            print(f'Generating test: {test_id:-4d}', end='')
-        print(f'\nGenerated tests: {test_id:-4d}')
-
-        if test_ids is not None:
-            tests = [ t for t in tests if t.id in test_ids ]
-
+        key_order = [ 'TP', 'TN', 'FP', 'FN', 'FAIL' ]
+        suffixes = ['stats'] + [k for k in key_order]
         stats = { 'TP': [], 'FP': [], 'TN': [], 'FN': [], 'FAIL': [] }
-        stats_fname = f'{self.op_path}.stats.txt'
-        with open(os.path.join(out_dir, stats_fname), 'w') as fh:
-            for t in tests:
-                print('\r', end='')
-                print(f'Running test: {t.id:-4d}', end='')
+        files = { sfx: os.path.join(out_dir,
+            f'{self.op_path}.{sfx.lower()}.txt') for sfx in suffixes }
+
+        print('Generating tests')
+        config_list = list(fgraph.gen_graph_iterate(self.gen_graph.values()))
+        # tests = [ _TestResult(self, 0, c) for c in cfgs ]
+        # tests = [ t for t in tests if t.expect_class is not None ]
+        # print(f'{len(tests)} tests')
+
+        test_id = 1
+        with open(files['TP'], 'w') as tp, \
+                open(files['TN'], 'w') as tn, \
+                open(files['FP'], 'w') as fp, \
+                open(files['FN'], 'w') as fn, \
+                open(files['FAIL'], 'w') as fail, \
+                open(files['stats'], 'w') as stats_fh:
+            fh = { 'TP': tp, 'TN': tn, 'FP': fp, 'FN': fn, 'FAIL':
+                    fail, 'stats': stats_fh }
+            is_first_line = True
+            for config in config_list: 
+                t = _TestResult(self, test_id, config)
+                test_id += 1
+                if t.expect_class is None:
+                    test_id -= 1
+                    continue
+                if test_ids is not None:
+                    if len(test_ids) == 0:
+                        break
+                    if t.id not in test_ids:
+                        mat = ', '.join(f'{c}: {len(stats[c])}' for c in
+                                key_order)
+                        print('\r', end='')
+                        print(f'Skipping test: {t.id:-4d}  Stats: {mat}', end='')
+                        continue
+                    test_ids.remove(t.id)
+
                 t.run()
-                cat = t.config['CATEGORY']
+                cat = t.category
                 row = t.stats()
                 stats[cat].append(t)
-                mat = ', '.join(f'{c}:{len(l):3d}' for c, l in stats.items())
-                print('  Stats: ', mat, end='')
+                mat = ', '.join(f'{c}: {len(stats[c])}' for c in key_order)
+
+                print('\r', end='')
+                print(f'Running test: {t.id:-4d}  Stats: {mat}', end='')
+
+                if is_first_line:
+                    hdr = t.stat_keys()
+                    hdr_line = '\t'.join(h for h in hdr)
+                    print(hdr_line, file=fh['stats'])
+                    is_first_line = False
+
                 line = '\t'.join(r for r in row)
-                print(line, file=fh)
+                print(line, file=fh['stats'])
+                print(line, file=fh[cat])
+                print(t.report(), file=fh[cat])
 
         print()
-        for cat in ('FP', 'FN', 'FAIL', 'TP'):
-            file_name = f'{self.op_path}.{cat.lower()}.txt'
-            with open(os.path.join(out_dir, file_name), 'w') as fh: 
-                for t in stats[cat]:
-                    row = t.stats()
-                    line = '\t'.join(r for r in row)
-                    print(line, file=fh)
-                    print(t.report(), file=fh)
-
         print('Summary')
-        for cat, res in stats.items():
+        for cat in key_order:
+            res = stats[cat]
             print(f'{cat}: {len(res)}')
 
     def _passed(self):
@@ -1554,14 +1555,6 @@ class SchemaApi(object):
         """
         self.gen_indices.add_generator(gen_func, output_indices, input_indices,
                 gen_args)
-        # dims_kname = kname(output_indices, Kind.GEN_DIMS)
-        # gobj = ge.Dims(gen_func, output_indices, input_indices, gen_args)
-        # gen_dims_gnode = G.add_node(dims_kname, gobj, Kind.RANKS)
-        # gd_dims_gnode = G.get_node(Kind.ARG_SHAPES_RANKS)
-        # gd_dims_gnode.append_parent(gen_dims_gnode)
-
-        # for idx in output_indices:
-         #    self.dims_graph.maybe_add_input_index(idx)
 
     def return_tensor(self, *sigs):
         """
@@ -1598,9 +1591,9 @@ class SchemaApi(object):
         self.pending_pred_edges[pshape_kname] = idx_knames 
 
         P.add_node(valid_return, rvalid_pobj, ret_kname, pshape_kname) 
-        sig_gnode = G.add_node(sig_kname, sig_gobj, *layout) 
+        # sig_gnode = G.add_node(sig_kname, sig_gobj, *layout) 
         self.num_returns += 1
 
-        sig_map_gnode = G.get_node(Kind.SIG_MAP)
-        sig_map_gnode.append_parent(sig_gnode)
+        # sig_map_gnode = G.get_node(Kind.SIG_MAP)
+        # sig_map_gnode.append_parent(sig_gnode)
 

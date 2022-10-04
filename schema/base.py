@@ -406,7 +406,8 @@ class DTypeExcludedComboTest(DTypeTest):
                     self.rank_map.items())
 
         dtypes_match = all(self.dtypes[i] == dtype_tuple[i] for i in self.inds)
-        return not (layout_match and ranks_match and dtypes_match)
+        excluded = not (layout_match and ranks_match and dtypes_match)
+        return excluded
 
     def status(self, dtype_tuple, tensors):
         names = [ tensors[i] for i in self.inds ]
