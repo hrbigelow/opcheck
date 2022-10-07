@@ -67,7 +67,7 @@ def explain(op_path):
     """
     op = _get_from_path(op_path)
     index_table = op._index_inventory()
-    info_table = op._sig_inventory()
+    info_table = op._inventory()
     print('\n'.join(index_table))
     print()
     print('\n'.join(info_table))
@@ -84,7 +84,7 @@ def list_configs(op_path):
 
 def _dot_graph(op, nodes, out_file):
     import graphviz
-    dot = graphviz.Digraph(graph_attr={'rankdir': 'BT'})
+    dot = graphviz.Digraph(graph_attr={'rankdir': 'LR'})
     names = { n.name: n.name.replace(':', '_') for n in nodes }
     for node in nodes:
         is_arg = (node.name in op.params.values())
@@ -102,8 +102,13 @@ def gen_graph_viz(op_path, out_dir):
 
 def pred_graph_viz(op_path, out_dir):
     op = REGISTRY[op_path]
-    nodes = op.input_pred_graph.values()
+    nodes = op.pred_graph.values()
     _dot_graph(op, nodes, f'{out_dir}/{op_path}.pred')
+
+def inv_graph_viz(op_path, out_dir):
+    op = REGISTRY[op_path]
+    nodes = op.inv_graph.values()
+    _dot_graph(op, nodes, f'{out_dir}/{op_path}.inv')
 
 def init():
     import ops

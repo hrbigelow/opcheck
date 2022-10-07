@@ -1,8 +1,8 @@
 import opcheck
-from schema import Kind, flib
+from schema import flib
 
 def init_schema(op):
-    op.add_index('b', 'batch', 1, 1)
+    op.add_index('b', 'batch', 1, 2)
     op.add_index('i', 'input spatial', 1, 3)
     op.add_index('f', 'filter spatial', None, None)
     op.add_index('o', 'output spatial')
@@ -33,7 +33,7 @@ def init_schema(op):
     op.equate_dtypes('filters', 'input')
 
     op.exclude_dtypes(
-            ('input', 'i', Kind.LAYOUT),
+            ('input', 'i', ':layout'),
             ('int32', None, 0),    # all int32 channel-first layout
             ('int32', 3, 1),       # 3D int32, channel-last layout
             ('bfloat16', 1, None), # 1D bfloat16, any layout

@@ -2,13 +2,11 @@ import tensorflow as tf
 import numpy as np
 import itertools
 from collections import namedtuple, defaultdict
+from . import predicates as pr
 from .error import * 
-from .fgraph import FuncNode as F
+from .fgraph import FuncNode as F, NodeFunc
 from . import fgraph
 from . import util
-
-def kpfx(kname):
-    return kname.split(':')[0]
 
 def kind(kname):
     idx = kname.index(':')
@@ -17,50 +15,66 @@ def kind(kname):
 def kname(prefix, kind):
     return prefix+kind
 
-def ksig(prefix):
-    return prefix + Kind.SIG
+class DataFormats(object):
+    """
+    A 'data_format' is a string like 'NCW', 'NHWC', etc.  A 'layout' is a
+    notion of rank-agnostic data_format.  For 1D, 2D, 3D convolutions, the
+    data_formats 'NCW', 'NCHW', 'NCDHW' all correspond to a notion of 'channel
+    first' (layout 0), while the data_formats 'NWC', 'NHWC', and 'NDHWC' are
+    'channel last', and given layout 1.
 
-def karg(prefix):
-    return prefix + Kind.ARG
+    We can assume one of two modes:
+    1. There is a single layout.
+    """
+    def __init__(self):
+        self.configured = False
 
-class Kind(object):
-    # these cannot have prefixes
-    SCHEMA = ':schema'
-    DTYPES_STATUS = ':dtypes_status'
-    DTYPES = ':dtypes'
-    RANKS_STATUS = ':ranks_status'
-    RANKS = ':index_ranks'
-    IDIMS = ':input_dims'
-    SINGLE_DIMS = ':single_dims'
-    GEN_DIMS = ':gen_dims'
-    GD_DIMS_STATUS = ':gd_dims_status'
-    GD_DIMS = ':gd_dims'
-    ARG_SHAPES_RANKS = ':arg_shapes_ranks'
-    ARG_SHAPES_STATUS = ':arg_shapes_status'
-    ARG_SHAPES = ':arg_shapes'
-    COMP_DIMS_TEM = ':comp_dims_tem'
-    PSHAPE = ':predicated_shape'
-    NONE = ':none'
-    UNCHECKED = ':unchecked'
-    EXPECT_STATUS = ':expect_status'
+    def configure(self, arg_name, layouts, rank_index):
+        self.configured = True
+        self.arg_name = arg_name
+        self.layouts = layouts
+        self.formats = {}
+        for l, rmap in enumerate(layouts):
+            for fmt in rmap.values():
+                self.formats[fmt] = l
+        self.rank_index = rank_index
 
-    # these must have prefixes
-    DTYPE = ':dtype'
-    SIG = ':sig'
-    SIG_MAP = ':arg_sigs'
-    SHAPE_MAP = ':shape_map'
+    def num_layouts(self):
+        if not self.configured:
+            return 1
+        return len(self.layouts)
 
-    ARG = ':arg'
-    LAYOUT = ':layout'
-    DATA_FORMAT = ':data_format'
-    DATA_TENSOR = ':data_tensor'
-    SHAPE_LIST = ':shape_list'
-    SHAPE_INT = ':shape_int'
-    SHAPE_TENSOR = ':shape_tensor'
-    SHAPE_TENSOR2D = ':shape_tensor2d'
-    SHAPE = ':shape'
-    RETURN_TENSOR = ':return_tensor'
-    VALID_RETURN = ':valid_return'
+    def data_format(self, layout, ranks):
+        """
+        Return the data_format corresponding to the layout and rank
+        combination, or None if invalid input
+        """
+        if not self.configured:
+            return 'default'
+
+        if layout not in range(len(self.layouts)):
+            return None
+        rmap = self.layouts[layout]
+        rank = ranks[self.rank_index]
+        if rank not in rmap:
+            return None
+        return rmap[rank]
+
+    def layout(self, data_format):
+        """
+        Return the layout corresponding with this data format, or None if
+        invalid
+        """
+        if not self.configured:
+            return 0
+        if data_format not in self.formats:
+            return None
+        return self.formats[data_format]
+
+    def valid_format(self, data_format):
+        if not self.configured:
+            return True
+        return data_format in self.formats
 
 
 class RankCandidates(object):
@@ -194,27 +208,27 @@ class SliceRankConstraint(RankConstraint):
             msg = f'Decrease {self.arg_name}.shape[1] by {rank_error}'
 
 class ShapeRankConstraint(RankConstraint):
-    def __init__(self, shape_arg, arg_kind):
-        """
-        Represent the logical constraint:
+    """
+    Represent the logical constraint:
 
-        rank(sig) == len(shape)
+    rank(sig) == len(shape)
 
-        where sig and shape are the signature and shape associated with
-        {shape_arg}.
+    where sig and shape are the signature and shape associated with
+    {shape_arg}.
 
-        {shape_arg} Kind may be one of DATA_TENSOR, SHAPE_INT, SHAPE_LIST,
-        SHAPE_TENSOR, SHAPE_TENSOR2D 
-        """
+    {shape_arg} Kind may be one of DATA_TENSOR, SHAPE_INT, SHAPE_LIST,
+    SHAPE_TENSOR, SHAPE_TENSOR2D 
+    """
+    def __init__(self, shape_arg, arg_type):
         name = f'rank(sig({shape_arg})) == len({shape_arg})'
         super().__init__(name, shape_arg, len)
-        allowed_kinds = (Kind.DATA_TENSOR, Kind.SHAPE_LIST, Kind.SHAPE_INT,
-                Kind.SHAPE_TENSOR, Kind.SHAPE_TENSOR2D)
-        if arg_kind not in allowed_kinds:
+        allowed_types = (pr.TensorShape, pr.ShapeList, pr.ShapeInt,
+                pr.ShapeTensor, pr.ShapeTensor2D)
+        if arg_type not in allowed_types:
             raise RuntimeError(
-                f'{type(self).__qualname__}: got illegal arg_kind '
-                f'\'{arg_kind}\'')
-        self.arg_kind = arg_kind
+                f'{type(self).__qualname__}: got illegal arg_type '
+                f'\'{arg_type}\'')
+        self.arg_type = arg_type
         
     def highlight_map(self, sig_map, shape_map, rank_map):
         re = self.rank_error(sig_map, shape_map, rank_map)
@@ -229,22 +243,22 @@ class ShapeRankConstraint(RankConstraint):
         if rank_error == 0:
             return None
         elif rank_error < 0:
-            if self.arg_kind == Kind.DATA_TENSOR:
+            if self.arg_type == pr.TensorShape:
                 msg = f'Add {-rank_error} dimension{s} to \'{self.shape_arg}\''
-            elif self.arg_kind in (Kind.SHAPE_TENSOR, Kind.SHAPE_LIST):
+            elif self.arg_type in (pr.ShapeTensor, pr.ShapeList):
                 msg = f'Add {-rank_error} element{s} to \'{self.shape_arg}\''
-            elif self.arg_kind == Kind.SHAPE_INT:
+            elif self.arg_type == pr.ShapeInt:
                 msg = f'Increase \'{self.shape_arg}\' by {-rank_error}'
             else:
                 pass
         else:
-            if self.arg_kind == Kind.DATA_TENSOR:
+            if self.arg_type == pr.TensorShape:
                 msg = (f'Remove {rank_error} dimension{s} from '
                 f'\'{self.shape_arg}\'')
-            elif self.arg_kind in (Kind.SHAPE_TENSOR, Kind.SHAPE_LIST):
+            elif self.arg_type in (pr.ShapeTensor, pr.ShapeList):
                 msg = (f'Remove {rank_error} element{s} from '
                         f'\'{self.shape_arg}\'')
-            elif self.arg_kind == Kind.SHAPE_INT:
+            elif self.arg_type == pr.ShapeInt:
                 msg = f'Decrease \'{self.shape-arg}\' by {-rank_error}'
         return msg
 
@@ -481,10 +495,11 @@ class DTypeConstraints(object):
                 break
         return stat 
 
-class CompIndex(object):
+class CompIndex(NodeFunc):
     # FuncNode object for indices registered with computed_index
     # {comp_func} 
-    def __init__(self, comp_func, extra_arg_names):
+    def __init__(self, idx, comp_func, extra_arg_names):
+        super().__init__(idx)
         self.func = comp_func
         self.extra_names = extra_arg_names
 
@@ -568,24 +583,34 @@ class GenIndices(object):
             index_dims_list.append(dims_map)
         return index_dims_list
 
+class _EmptyFunc(NodeFunc):
+    def __init__(self, name):
+        super().__init__(name)
+
+    def __call__(self):
+        return None
+
 class CompDimsGraph(object):
     """
     Represents the computation graph to calculate computed dims which appear
     in a data tensor signature.  It may compute intermediate computed dims as
     well.
     """
+        
     def __init__(self):
-        F.clear_registry()
-        self.inputs = {}
-        self.comp = {}  # all (intermediate and final) computed dims
-        # self.index_edges = {}
-        self.kwnode = F.add_node('kwargs', lambda: None)
+        self.input_indices = {}
+        self.comp_indices = {}
+        self.nodes = {}
+        F.set_registry(self.nodes)
+        node = F.add_node(_EmptyFunc('kwargs'))
+        self.kwnode = node
 
     def maybe_add_input_index(self, idx):
-        if idx in self.inputs:
-            return
-        node = F.add_node(idx, lambda: None)
-        self.inputs[idx] = node
+        node = self.input_indices.get(idx, None)
+        if node is None:
+            node = F.add_node(_EmptyFunc(idx))
+            self.input_indices[idx] = node
+        return node
 
     def add_comp_index(self, idx, comp_func, parent_indexes, *const_args):
         """
@@ -597,39 +622,45 @@ class CompDimsGraph(object):
 
         {const_args} are names which must appear as keys in __call__ **kwargs
         """
+        parents = []
         for pidx in parent_indexes:
-            if pidx not in self.computed_indexes():
-                self.maybe_add_input_index(pidx)
-
-        ci_obj = CompIndex(comp_func, const_args)
-        node = F.add_node(idx, ci_obj, *parent_indexes)
-        # self.index_edges[idx] = parent_indexes
-        self.comp[idx] = node
+            node = self.comp_indices.get(pidx, None)
+            if node is None:
+                node = self.maybe_add_input_index(pidx)
+            parents.append(node)
+        
+        ci_obj = CompIndex(idx, comp_func, const_args)
+        node = F.add_node(ci_obj, *parents)
+        self.comp_indices[idx] = node
 
     def computed_indexes(self):
         # return a string of computed indices
-        return ''.join(self.comp.keys())
+        return ''.join(self.comp_indices.keys())
 
     def input_indexes(self):
-        return ''.join(self.inputs.keys())
+        return ''.join(self.input_indices.keys())
 
     def get_index_inputs(self, computed_index):
         """
         Retrieve index inputs for {computed_index} 
         """
-        node = self.comp[computed_index]
+        node = self.comp_indices[computed_index]
         ancestors = fgraph.get_ancestors(node)
         index_inputs = ''.join(a.name for a in ancestors if a in
-                self.inputs.values())
+                self.input_indices.values())
         return index_inputs
 
     def finalize(self):
-        for node in self.comp.values():
+        for node in self.comp_indices.values():
             node.append_parent(self.kwnode)
 
     def __call__(self, index_dims, **kwargs):
         self.kwnode.set_cached_value(kwargs)
-        for idx, node in self.inputs.items():
+        for idx, node in self.input_indices.items():
             node.set_cached_value(index_dims[idx])
-        return fgraph.func_graph_evaluate(self.comp.values())
+        comp_nodes = list(self.comp_indices.values())
+
+        # this is node name => value
+        val_map = fgraph.func_graph_evaluate(comp_nodes, use_subname=True)
+        return val_map
         

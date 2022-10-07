@@ -8,13 +8,13 @@ import itertools
 from random import randint, choice, sample
 from functools import partial
 from collections import defaultdict
-from .base import Kind, kind, kpfx
-from .fgraph import FuncNode as F, func_graph_evaluate
+from .fgraph import FuncNode as F, func_graph_evaluate, NodeFunc
 from .error import *
 from . import util
 
-class DTypes(object):
+class DTypesStatus(NodeFunc):
     def __init__(self, dtype_cons):
+        super().__init__()
         self.dtype_cons = dtype_cons
         # double is alias for float64
         # half is alias for float16
@@ -29,7 +29,7 @@ class DTypes(object):
                 tf.complex64, tf.complex128
                 )
 
-    def __call__(self, ranks, **kwargs):
+    def __call__(self, ranks, layout):
         """
         Generate a list of all possible dtype combinations for data tensors.
         Each combination is expressed as a map of arg => dtype.
@@ -42,8 +42,6 @@ class DTypes(object):
         k = len(tensor_names)
         max_errors = 1
 
-        layout = kwargs.get(Kind.LAYOUT, None)
-
         # list of (type, dtype_tuple), where <type> is a SchemaStatus expected
         # to be produced from this tuple.
         combo_gen = util.dtype_combos(k, self.all_dtypes, tests, max_errors,
@@ -52,8 +50,18 @@ class DTypes(object):
         combo_maps = [ (s, dict(zip(tensor_names, d))) for s, d in combos ]
         return combo_maps
 
-class Ranks(object):
+class ValidDTypes(DTypesStatus):
+    def __init__(self, dtype_cons):
+        super().__init__(dtype_cons)
+
+    def __call__(self, ranks, layout):
+        combo_maps = super().__call__(ranks, layout)
+        valid_maps = [ d for stat_cls, d in combo_maps if stat_cls == Success ]
+        return valid_maps
+
+class Ranks(NodeFunc):
     def __init__(self, op, rank_candidates):
+        super().__init__()
         self.op = op
         self.rcands = rank_candidates
 
@@ -65,21 +73,21 @@ class Ranks(object):
         idx_ranks_list = list(self.rcands.all_index_ranks())
         return idx_ranks_list 
 
-class Rank(object):
+class Rank(NodeFunc):
     """
     Generate the rank of a given signature
     """
     def __init__(self, sig):
+        super().__init__(sig)
         self.sig = sig
 
     def __call__(self, ranks_map):
         rank = sum(ranks_map[s] for s in self.sig)
         return [rank]
 
-class Dims(object):
+class Dims(NodeFunc):
     """
-    Generate dimensions for {output_indices} using {gen_func}.  Used in
-    Kind.GEN_DIMS nodes.  Has parent Kind.RANKS
+    Generate dimensions for {output_indices} using {gen_func}. 
 
     Calls gen_func(ranks_list, *gen_args).  ranks_list are the ranks of each
     index in {input_indices} in order.
@@ -94,6 +102,7 @@ class Dims(object):
     ]
     """
     def __init__(self, gen_func, output_indices, input_indices, gen_args):
+        super().__init__(output_indices)
         self.output_indices = output_indices 
         self.input_indices = input_indices 
         self.func = gen_func
@@ -121,254 +130,6 @@ class Dims(object):
                 f'].\n'
                 f'Got: {vals}\n')
         return [ dict(zip(self.output_indices,v)) for v in vals ]
-
-class IndexDimsGD(object):
-    """
-    Perform gradient descent on two objectives to find suitable testing index
-    dimensions.
-    """
-    def __init__(self, op, min_nelem, max_nelem):
-        self.op = op
-        self.lr = 2.0
-        self.min_nelem = min_nelem
-        self.max_nelem = max_nelem
-        self.nodes = []
-        self.variables = {} # idx => tf.Variable
-        self.gen_index_dims = {}  # idx => 
-        self.computed_indexes = set()
-        self.extra_args = {}
-
-        # edges to add after node creation
-        self.edges = {} # kname => [ parent_kname, parent_kname, ... ] 
-
-    def nonfree_inds(self):
-        return (*self.computed_indexes, *self.gen_index_dims.keys())
-
-    def add_free_index(self, idx):
-        fi_obj = FreeIndex(self, idx)
-        node = F.add_node(idx, fi_obj)
-        self.nodes.append(node)
-        self.variables[idx] = None
-
-    def add_gen_index(self, idx):
-        gi_obj = GenIndex(self, idx)
-        node = F.add_node(idx, gi_obj)
-        self.nodes.append(node)
-        self.gen_index_dims[idx] = None
-
-    def add_comp_index(self, idx, comp_func, parent_indices, *const_args):
-        # adds a computed index graph node.  const_args are non-index arguments
-        # which are constant during the gradient descent.  
-        # all names in const_args must be keys in __call__'s **kwargs
-        ci_obj = CompIndex(self, comp_func, const_args)
-        node = F.add_node(idx, ci_obj)
-        self.edges[idx] = parent_indices
-        self.nodes.append(node)
-        self.computed_indexes.add(idx)
-
-    def finalize(self):
-        for n, pnodes in self.edges.items():
-            node = F.get_node(n)
-            for pn in pnodes:
-                pnode = F.get_node(pn)
-                node.append_parent(pnode)
-
-    def prepare(self, ranks, arg_sigs, **kwargs):
-        # split kwargs into index and non-index
-        self.extra_args.clear()
-
-        for k, v in kwargs.items():
-            if kind(k) == Kind.GEN_DIMS:
-                dims_map = v
-                for idx, dims in dims_map.items():
-                    self.gen_index_dims[idx] = dims
-            else:
-                self.extra_args[k] = v
-        self.arg_sigs = arg_sigs
-        for idx in self.variables.keys():
-            rank = ranks[idx]
-            # hard-coded reasonable choices for initialization
-            val = tf.random.uniform([rank], 1.0, 4.0)
-            cons_fun = lambda v: tf.clip_by_value(tf.round(v), 1.0, 1e10)
-            # var = tf.Variable(val, constraint = cons_fun, dtype=tf.float32)
-            var = tf.Variable(val, dtype=tf.float32)
-            self.variables[idx] = var
-
-    def all_dims(self):
-        dims = func_graph_evaluate(self.nodes)
-        return dims
-
-    def num_elem(self, sig):
-        # computes the number of elements for sig, given the current index
-        # dimensions.  if one or more indices are negative, returns the
-        # negative of absolute number
-        dims = self.all_dims()
-        vals = [dims[s] for s in sig]
-        # this allows returning '1' for rank 0 sig (this is incorrect but
-        # good enough)
-        vals.append(tf.constant([1.0]))
-        st = tf.concat(vals, axis=0)
-        nelem = tf.reduce_min(tf.sign(st)) * tf.abs(tf.reduce_prod(st))
-        return nelem
-
-    def index_loss(self):
-        # Ensures all computed dims are >= 1
-        # print('in index loss')
-        dims = self.all_dims()
-        comp_dims = [ dim for idx, dim in dims.items() if idx in
-                self.computed_indexes ]
-        st = tf.concat(comp_dims, axis=0)
-        loss = tf.reduce_sum(tf.nn.relu(1.0 - st))
-        return loss
-
-    def max_product_degree(self):
-        # compute the largest degree (number of non-constant terms) of any
-        # product in the elem_loss.
-        all_vars = self.all_dims().items()
-        live_vars = [(k,v) for k,v in all_vars if k not in self.gen_index_dims]
-        ranks = { k: v.numpy().size for k, v in live_vars } 
-        sigs = self.arg_sigs.values()
-        max_degree = max(sum(ranks.get(s, 0) for s in sig) for sig in sigs)
-        return max_degree
-
-    def elem_loss(self):
-        """
-        The objective is just a sum of product terms (the numbers of elements),
-        with the added complication that some of the products may be functions
-        of others.
-
-        The max_degree is the largest degree of any product term, counting only
-        the variables in the products (not the generated indices, which are
-        constant during gradient descent).
-
-        The objective is then the d'th root of the sum, which roughly makes it
-        a constant gradient.  If all inputs are zero, the objective is the d'th
-        root of min_nelem and has a slope of -1 (hitting zero when each
-        variable is equal to the d'th root of min_nelem as well).
-
-        Therefore, to ensure about the same number of gradient steps regardless
-        of degree, we scale the objective (and hence the gradient) by this
-        the d'th root of min_nelem.
-
-        The objective is basically monotonically decreasing in every free
-        variable.
-        """
-        max_degree = self.max_product_degree()
-        sigs = self.arg_sigs.values()
-        card = tuple(self.num_elem(sig) for sig in sigs)
-        nelem = tf.reduce_sum(card)
-        expon = 1.0 / max_degree
-        objective = tf.math.pow(nelem, expon)
-        min_objective = tf.math.pow(self.min_nelem, expon)
-        max_objective = tf.math.pow(self.max_nelem, expon)
-
-        ival_dist = tf.maximum(
-                tf.nn.relu(min_objective - objective),
-                tf.nn.relu(objective - max_objective)
-                )
-        mul = tf.math.pow(self.min_nelem, 1.0 / max_degree)
-        mul *= 0.05
-        return ival_dist * mul
-
-    def __call__(self, ranks, arg_sigs, **kwargs):
-        # kwargs should have:
-        # all generated index dims declared with add_index_generator
-        # all extra arguments declared in calls to computed_index
-        self.prepare(ranks, arg_sigs, **kwargs)
-        opt = tf.keras.optimizers.SGD(learning_rate=self.lr)
-        index_lambda = lambda: self.index_loss()
-        elem_lambda = lambda: self.elem_loss()
-
-        losses = []
-        if len(self.computed_indexes) > 0:
-            losses.append(('index_loss', index_lambda))
-        losses.append(('elem_loss', elem_lambda))
-
-        # Calling apply_gradients on any variables with zero elements results
-        # in: ./tensorflow/core/util/gpu_launch_config.h:129] Check failed:
-        # work_element_count > 0 (0 vs. 0)
-        # when calling apply_gradients
-        free_vars = [ v for v in self.variables.values() if v.shape[0] > 0 ]
-
-        # The first phase (index_loss) ensures that all index dims are positive
-        # (free, generated, and computed). Under that condition, the next
-        # surface (elem_loss) is monotonically increasing in all free
-        # dimensions.  And, because of the finite interval solution, zero loss
-        # is achievable
-        with tf.device('/device:CPU:0'):
-            for loss_name, loss_func in losses:
-                for step in range(10000):
-                    with tf.GradientTape() as tape:
-                        objective = loss_func()
-                    if step % 10 == 0:
-                        max_degree = self.max_product_degree()
-                        s = ', '.join(f'{n}: {f():5.3f}' for n, f in losses)
-                        dims = { n: v.numpy().astype(np.int32).tolist() for n,
-                                v in self.variables.items() }
-                        print(f'{step}: minimizing {loss_name}, max-rank: '
-                                f'{max_degree} dims: {dims}, {s}')
-                    if objective == 0.0:
-                        break
-                    grads = tape.gradient(objective, free_vars)
-                    for grad, var in zip(grads, free_vars):
-                        if grad is None:
-                            continue
-                        # var.assign_sub(self.lr * grad)
-                        var.assign(tf.maximum(var - self.lr * grad, 1.0))
-                        assert all(c >= 1.0 for c in var.numpy()), 'after'
-            
-        # extract the dims map
-        vars_map = self.all_dims()
-        index_dims = {}
-        for idx, var in vars_map.items():
-            index_dims[idx] = var.numpy().astype(np.int32).tolist() 
-
-        if any(d < 1 for dims in index_dims.values() for d in dims):
-            raise SchemaError(
-                f'Failed to find positive computed dims: {index_dims}')
-
-        if self.elem_loss() > 0.0:
-            raise SchemaError(
-                f'Failed to achieve zero elem loss.  Final elem_loss: '
-                f'{self.elem_loss():5.3f}')
-
-        # create arg_shapes
-        arg_shapes = {}
-        for arg, sig in arg_sigs.items():
-            arg_shapes[arg] = [ d for s in sig for d in index_dims[s] ]
-
-        # create a map of free index usage for input args
-        idx_usage = defaultdict(list)
-        free_idxs = list(self.variables.keys())
-        for arg, sig in arg_sigs.items():
-            if arg not in self.op.params:
-                continue
-            for idx in sig:
-                if idx not in free_idxs:
-                    continue
-                idx_usage[idx].append(arg) 
-
-        tests = []
-        tests.append((Success, arg_shapes))
-        for idx, args in idx_usage.items():
-            if ranks[idx] == 0:
-                continue
-            if len(args) == 1:
-                continue
-            for mut_arg in args:
-                arg_shapes = defaultdict(list)
-                for arg, sig in arg_sigs.items():
-                    for usage in sig:
-                        snip = list(index_dims[usage])
-                        if arg == mut_arg and idx == usage:
-                            # randomly mutate snip
-                            c = randint(0, len(snip)-1)
-                            s = randint(-snip[c]+1, 10)
-                            # ensure we actually change it by a non-zero amount
-                            snip[c] += s + int(s == 0)
-                        arg_shapes[arg].extend(snip)
-                tests.append((IndexUsageError, dict(arg_shapes)))
-        return tests 
 
 # Specifies a set of data tensor shapes, in which one tensor has an insertion
 # or deletion relative to a valid set.
@@ -460,13 +221,16 @@ def shape_mutations(index_dims, arg_sigs, idx_usage, max_dimsize):
             results.append(dict(arg_shapes))
     return results 
 
-class SignatureShapes(object):
+class RankStatusArgShape(NodeFunc):
     """
     Generate shapes for all registered input signatures, plus point-mutated
-    shapes, plus indel-mutated shapes.
+    shapes, plus indel-mutated shapes.  Returns a list of items of:
+
+    (index_ranks, (SchemaStatus, arg_shapes))
     """
     def __init__(self, dims_graph, index_ranks_gen, index_dims_gen,
             target_nelem):
+        super().__init__()
         self.dims_graph = dims_graph
         self.ranks_gen = index_ranks_gen
         self.dims_gen = index_dims_gen
@@ -489,12 +253,12 @@ class SignatureShapes(object):
         Finally, the computed index dims are created.  The system iterates
         until all computed index dims are non-negative.
         """
-        # indexes appearing in at least one data tensor signature.  (some
-        # indexes are merely used as intermediate quantities to simplify
-        # computation)
+        # indexes appearing in at least one data tensor signature.  (both input
+        # and return signatures) (some indexes are merely used as intermediate
+        # quantities to simplify computation)
         sig_indexes = { idx for sig in arg_sigs.values() for idx in sig }
 
-        # create deterministic order
+        # create deterministic order 
         sig_indexes = list(sorted(sig_indexes))
         gen_indexes = ''.join(gen_index_dims.keys())
 
@@ -516,8 +280,7 @@ class SignatureShapes(object):
             todo = next(((idx, c, dim) 
                 for idx, dims in comp_dims.items()
                 for c, dim in enumerate(dims)
-                if idx in sig_indexes
-                and dim < 0), None)
+                if dim < 0), None)
             if todo is None:
                 index_dims = { **comp_dims, **input_dims }
                 break
@@ -530,6 +293,8 @@ class SignatureShapes(object):
             comp_rank = index_ranks[comp_idx]
             for input_idx in comp_inputs:
                 if input_idx in gen_indexes:
+                    continue
+                if input_idx not in input_dims:
                     continue
                 input_rank = index_ranks[input_idx]
                 if input_rank == comp_rank:
@@ -554,6 +319,12 @@ class SignatureShapes(object):
             raise SchemaError(
                 f'Generated shape for argument \'{arg}\' was {shape} with '
                 f'{nelem} elements, exceeding the maximum allowed 1e8')
+
+        for idx, dims in index_dims.items():
+            if all(d >= 0 for d in dims):
+                continue
+            assert False, f'Index {idx} had negative dims {dims}'
+
         return index_dims
 
     def __call__(self, arg_sigs, **kwargs):
@@ -599,49 +370,67 @@ class SignatureShapes(object):
                 shapes_list.append(item)
         return shapes_list
 
-class StatusAggregator(object):
+class StatusAggregator(NodeFunc):
     """
     Collects the first element of every pair tuple input.
     Expects each to be a SchemaStatus type, and returns the first non-Success
     one.
     """
     def __init__(self):
-        pass
+        super().__init__()
 
     def __call__(self, *args):
         statuses = tuple(a[0] for a in args)
         return [statuses]
 
-class TupleElement(object):
+class TupleElement(NodeFunc):
     """
     Expect a tuple and return a particular element
     """
     def __init__(self, index):
+        super().__init__()
         self.index = index
 
     def __call__(self, tup):
         return [tup[self.index]]
 
-class SingleIndexDims(object):
+class GetRanks(TupleElement):
+    def __init__(self):
+        super().__init__(0)
+
+class GetStatusArgShape(TupleElement):
+    def __init__(self):
+        super().__init__(1)
+
+class GetDTypes(TupleElement):
+    def __init__(self):
+        super().__init__(1)
+
+class GetArgShapes(TupleElement):
+    def __init__(self):
+        super().__init__(1)
+
+class SingleIndexDims(NodeFunc):
     """
     A simple node which extracts a single index dimension
     """
     def __init__(self, index_name):
+        super().__init__(index_name)
         self.name = index_name
 
     def __call__(self, index_dims):
         return [index_dims[self.name]]
 
-class TensorStub(object):
+class TensorStub(NodeFunc):
     """
     Produce the (shape, dtype) combo needed to produce a tensor
     """
     def __init__(self, arg_name):
+        super().__init__(arg_name)
         self.arg_name = arg_name
 
-    def __call__(self, arg_shapes, **kwargs):
-        dtype_map = kwargs[Kind.DTYPES]
-        dtype = dtype_map[self.arg_name]
+    def __call__(self, arg_shapes, dtypes, **kwargs):
+        dtype = dtypes[self.arg_name]
         shape = arg_shapes[self.arg_name]
         return [(shape, dtype)]
 
@@ -679,12 +468,13 @@ def from_stub(stub):
             f'Unexpected dtype when generating tensor: dtype=\'{dtype.name}\'')
     return ten
 
-class ShapeInt(object):
+class ShapeInt(NodeFunc):
     """
     Expect the shape of index to be rank 1 and extract the first component as
     an integer.  
     """
     def __init__(self, arg_name):
+        super().__init__(arg_name)
         self.arg_name = arg_name
 
     def __call__(self, arg_shapes):
@@ -696,22 +486,24 @@ class ShapeInt(object):
                 f'integer.')
         return [shape[0]]
 
-class ShapeList(object):
+class ShapeList(NodeFunc):
     """
     Generate the current shape of the input signature
     """
     def __init__(self, arg_name):
+        super().__init__(arg_name)
         self.arg_name = arg_name
 
     def __call__(self, arg_shapes):
         shape = arg_shapes[self.arg_name]
         return [shape]
 
-class ShapeTensor(object):
+class ShapeTensor(NodeFunc):
     """
     Generate the current shape of the input signature as a tensor
     """
     def __init__(self, arg_name):
+        super().__init__(arg_name)
         self.arg_name = arg_name
 
     def __call__(self, arg_shapes):
@@ -719,11 +511,12 @@ class ShapeTensor(object):
         ten = tf.constant(shape, dtype=tf.int32)
         return [ten]
 
-class ShapeTensor2D(object):
+class ShapeTensor2D(NodeFunc):
     """
     Generate a 2D tensor from dims and a list of signatures
     """
     def __init__(self, arg_name, num_rows):
+        super().__init__(arg_name)
         self.arg_name = arg_name
         self.num_rows = num_rows
 
@@ -734,59 +527,56 @@ class ShapeTensor2D(object):
         ten = tf.transpose(ten, (1,0))
         return [ten]
 
-class SigMap(object):
+class SigMap(NodeFunc):
     """
     Aggregate all of the :sig nodes into a map of arg_name => sig
     """
     def __init__(self):
-        pass
+        super().__init__()
 
     def __call__(self, **kwargs):
-        sig_map = {}
-        for kn, val in kwargs.items():
-            sig_map[kpfx(kn)] = val
+        sig_map = kwargs
         return [sig_map]
 
-class Closure(object):
-    def __init__(self, obj):
-        self.obj = obj
+class Layout(NodeFunc):
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
 
     def __call__(self):
-        return self.obj
+        return list(range(self.op.data_formats.num_layouts()))
 
-class Layout(object):
-    def __init__(self, layouts):
-        self.num_layouts = len(layouts)
-
-    def __call__(self):
-        return list(range(self.num_layouts))
-
-class DataFormat(object):
+class DataFormat(NodeFunc):
     """
     Generate the special data_format argument, defined by the 'layout' API call
     """
-    def __init__(self, layouts, rank_index):
-        self.layouts = layouts
-        self.rank_index = rank_index
+    def __init__(self, formats):
+        super().__init__()
+        self.formats = formats
 
-    def __call__(self, rank_map, layout):
-        rank = rank_map[self.rank_index]
-        rmap = self.layouts[layout]
-        # rank may be outside of the range of valid ranks, due to being a
-        # mutation.  if so, choose a default
-        default = next(iter(rmap.values()))
-        data_format = rmap.get(rank, default)
-        return [data_format]
+    # TODO: what is the logic for generating extra test values?
+    def __call__(self, ranks, layout):
+        df = self.formats.data_format(layout, ranks)
+        if df is None:
+            return [None]
+        else:
+            return [df]
 
-class LayoutOption(object):
-    def __init__(self, options):
+class Sig(NodeFunc):
+    """
+    Represent a set of signatures for argument {name} corresponding to the
+    available layouts. 
+    """
+    def __init__(self, name, options):
+        super().__init__(name)
         self.options = options
 
     def __call__(self, layout):
         return [self.options[layout]]
 
-class Int(object):
+class Int(NodeFunc):
     def __init__(self, lo, hi):
+        super().__init__(f'{lo}-{hi}')
         if lo is None:
             self.lo = -sys.maxsize - 1
         else:
@@ -798,4 +588,23 @@ class Int(object):
 
     def __call__(self):
         return [randint(self.lo, self.hi)]
+
+class Options(NodeFunc):
+    """
+    Represent a specific set of options known at construction time
+    """
+    def __init__(self, name, options):
+        super().__init__(name)
+        try:
+            iter(options)
+        except TypeError:
+            raise SchemaError(
+                f'{type(self).__qualname__}: \'options\' argument must be '
+                f'iterable.  Got {type(options)}')
+        self.options = options
+
+    def __call__(self):
+        return self.options
+
+
 

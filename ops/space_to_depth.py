@@ -1,5 +1,5 @@
 import opcheck
-from schema import Kind, flib
+from schema import flib
 import numpy as np
 
 def init_schema(op):
@@ -55,7 +55,7 @@ def init_schema(op):
             tmp = f'{s} * {s} * product({k})'
         return tmp
 
-    op.computed_index('f', fdims, fdims_template, 'zcsk', 1, Kind.DATA_FORMAT)
+    op.computed_index('f', fdims, fdims_template, 'zcsk', 1, 'data_format')
 
 opcheck.register('tf.nn.space_to_depth', init_schema)
 

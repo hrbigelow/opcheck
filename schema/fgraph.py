@@ -3,25 +3,42 @@ import inspect
 import enum
 from .error import SchemaError
 
-"""
-FuncNode represents a computation graph.  Each node has a {name} and {func}
-member.  Parent nodes are stored in the order added.  When a node is evaluated,
-its enclosed function receives the result of the parent node evaluations in
-that order.  The function must take the same number of arguments as the node
-has parents.
-"""
+def node_name(func_node_class, name=None):
+    if name is None:
+        return func_node_class.__name__
+    else:
+        return f'{func_node_class.__name__}({name})'
+
+class NodeFunc(object):
+    def __init__(self, name=None):
+        self.sub_name = name
+
+    @property
+    def name(self):
+        return node_name(self.__class__, self.sub_name)
+
+    def __call__(self):
+        raise NotImplementedError
 
 class FuncNode(object):
-    # stores all created nodes
-    registry = {}
+    """
+    Represents a computation graph.  each instance wraps a NodeFunc.  Parent
+    nodes are stored in the order added.  When a node is evaluated, its
+    enclosed NodeFunc receives the result of the parent node evaluations in
+    that order.  The function must take the same number of arguments as the
+    node has parents.
+    """
+        # stores all created nodes
+    registry = None
 
-    def __init__(self, name, func, num_positional, vararg_type):
+    def __init__(self, func, num_positional, vararg_type):
         """
         num_positional is the number of positional arguments that func takes.
         vararg_type is the type of variable arg it has (*args, **kwargs, or
         neither)
         """
-        self.name = name
+        self.name = func.name 
+        self.sub_name = func.sub_name
         self.func = func
         self.parents = []
         self.children = []
@@ -31,22 +48,31 @@ class FuncNode(object):
 
     def __repr__(self):
         return (f'{type(self).__name__}({self.name})'
-                f'[pa: ({",".join(p.name for p in self.parents)})]')
+                f'[pa: {",".join(p.name for p in self.parents)}]')
+
+    def clone_node_only(self):
+        return type(self)(self.func, self.num_positional, self.vararg_type)
 
     @classmethod
-    def add_node(cls, name, func, *arg_names):
+    def add_node(cls, func, *parents):
         """
-        Creates a new node with {name} and {func}.  {func} must take
-        len(arg_names) arguments, which will be provided by parent nodes of
-        those names.  {func} may have *args or **kwargs in its signature, but
-        not both.  The outputs of the parents in order are passed to the
-        positional arguments of {func}.  Any remaining parents are either
-        passed to *args as a list of values, or passed to **kwargs as a
-        dictionary, using the parent node names as the keys of the dictionary.
+        Creates a new node enclosing {func} as its function.  The name of the
+        node is defined by {func}.name.  {func} must take len(parents)
+        arguments, which will be provided by parent nodes of those names.
+        {func} may have *args or **kwargs in its signature, but not both.  The
+        outputs of the parents in order are passed to the positional arguments
+        of {func}.  Any remaining parents are either passed to *args as a list
+        of values, or passed to **kwargs as a dictionary, using the parent node
+        names as the keys of the dictionary.
         """
-        if name in cls.registry:
+        if cls.registry is None:
+            raise RuntimeError(
+                f'{type(cls).__qualname__}: registry is not set.  Call '
+                f'set_registry(reg) with a map object first')
+
+        if func.name in cls.registry:
             raise SchemaError(
-                f'{type(cls).__qualname__}: node name \'{name}\' already '
+                f'{type(cls).__qualname__}: node name \'{func.name}\' already '
                 f'exists in the registry.  Node names must be unique')
         
         pars = inspect.signature(func).parameters.values()
@@ -61,15 +87,15 @@ class FuncNode(object):
         pos_pars = [p for p in pars if p != wildcard]
 
         if wildcard is None: 
-            if len(arg_names) != len(pos_pars):
+            if len(parents) != len(pos_pars):
                 raise SchemaError(
                     f'{type(cls).__qualname__}: function takes {len(pos_pars)} '
-                    f'arguments, but {len(arg_names)} arg_names provided ')
+                    f'arguments, but {len(parents)} parents provided ')
         else:
-            if len(arg_names) < len(pos_pars):
+            if len(parents) < len(pos_pars):
                 raise SchemaError(
                     f'{type(cls).__qualname__}: function takes {len(pos_pars)} '
-                    f'positional arguments but only {len(arg_names)} parents '
+                    f'positional arguments but only {len(parents)} parents '
                     f'provided.')
         num_pos_pars = len(pos_pars)
         if wildcard is None:
@@ -79,24 +105,25 @@ class FuncNode(object):
         else:
             vararg_type = VarArgs.Keyword
 
-        node = cls(name, func, num_pos_pars, vararg_type)
-        for arg_name in arg_names:
-            pa = cls.maybe_get_node(arg_name)
-            if pa is None:
-                raise SchemaError(
-                    f'{type(cls).__qualname__}: arg_names contained '
-                    f'\'{arg_name}\' but does not exist in the registry')
+        node = cls(func, num_pos_pars, vararg_type)
+        for pa in parents:
             node.append_parent(pa)
-        cls.registry[name] = node
-        return node
+        cls.registry[func.name] = node
+        return node 
 
     @classmethod
     def get_ordered_nodes(cls):
+        if cls.registry is None:
+            raise RuntimeError(
+                f'{type(cls).__qualname__}: Registry not set.  call '
+                f'set_registry() first')
         return _topo_sort(cls.registry.values())
 
     @classmethod
-    def clear_registry(cls):
-        cls.registry.clear()
+    def set_registry(cls, reg):
+        old_reg = cls.registry
+        cls.registry = reg
+        return old_reg
 
     @classmethod
     def maybe_get_node(cls, name):
@@ -138,22 +165,14 @@ class FuncNode(object):
         self.parents.append(node)
         node.children.append(self)
 
-    def maybe_append_parent(self, name):
+    def maybe_append_parent(self, node):
         """
-        Append {name} as a parent of this node if the node by that name doesn't
-        already exist.  It is assumed that the node called {name} already
-        exists.
+        Append {node} as a parent of this node if not already a parent 
         """
-        pa = next((n for n in self.parents if n.name == name), None)
+        pa = next((n for n in self.parents if n.name == node.name), None)
         if pa is not None:
             return
-        pa = self.maybe_get_node(name)
-        if pa is None:
-            raise SchemaError(
-                f'{type(self).__qualname__}: Attempting to append a '
-                f'non-existent node named \'{name} as a parent of node '
-                f'\'{self.name}\'')
-        self.append_parent(pa)
+        self.append_parent(node)
 
     def all_children(self):
         return self.children
@@ -162,13 +181,24 @@ class FuncNode(object):
         """
         Evaluate the current node based on cached values of the parents
         """
-        all_args = [(n.name, n.get_cached_value()) for n in self.parents]
+        all_args = [(n.func.sub_name, n.get_cached_value()) for n in
+                self.parents]
         pos_args = [v for n,v in all_args[:self.num_positional]]
         if self.vararg_type == VarArgs.Positional:
             args = tuple(v for n,v in all_args[self.num_positional:])
             return self.func(*pos_args, *args)
         elif self.vararg_type == VarArgs.Keyword:
-            kwargs = {n:v for n,v in all_args[self.num_positional:]}
+            kwargs = {}
+            for pos in range(self.num_positional, len(all_args)):
+                name, val = all_args[pos]
+                if name is None:
+                    raise SchemaError(
+                        f'All **kwargs argument parents must have sub_names. '
+                        f'{self.__class__.__name__} \'{self.name}\' has '
+                        f'function accepting **kwargs '
+                        f'arguments but parent {pos+1} '
+                        f'({self.parents[pos].name}) has no sub_name')
+                kwargs[name] = val
             return self.func(*pos_args, **kwargs)
         else:
             return self.func(*pos_args)
@@ -212,7 +242,9 @@ single value.  A node is then evaluated once for every possible combination of
 values received from its parents.  For example, if a node has two parents and
 they produce 2 and 3 values, the node is evaluated 6 times.  If the graph is
 acyclic, it can be fully enumerated for all possible settings (a setting = a
-set of values, one per node).  Further details:
+set of values, one per node).
+
+This combinatorial generation is produced using gen_graph_iterate
 
 1. Each node has a distinct name
 2. A node's function is invoked with keyword arguments, using the parent node
@@ -327,42 +359,15 @@ def pred_graph_evaluate(nodes):
             return n.get_cached_value()
     return None
 
-def func_graph_evaluate(nodes):
+def func_graph_evaluate(nodes, use_subname=False):
     topo_nodes = _topo_sort(nodes)
     for node in topo_nodes:
         val = node.value()
         node.set_cached_value(val)
-    return { n.name: n.get_cached_value() for n in topo_nodes }
-
-if __name__ == '__main__':
-    def unit():
-        return [1,2]
-    def mul(a, b):
-        return [a * b]
-        # return a * b
-    def pr(*args):
-        return '\,'.join(args)
-
-    PredNode.clear_registry()
-    PredNode.add_node('undershorts', pr)
-    PredNode.add_node('pants', pr, 'undershorts')
-    PredNode.add_node('socks', pr)
-    PredNode.add_node('shoes', pr, 'pants', 'undershorts', 'socks')
-    PredNode.add_node('watch', pr)
-    PredNode.add_node('shirt', pr)
-    PredNode.add_node('belt', pr, 'shirt', 'pants')
-    PredNode.add_node('tie', pr, 'shirt')
-    PredNode.add_node('jacket', pr, 'belt', 'tie')
-
-    topo_order = PredNode.get_ordered_nodes()
-    for n in topo_order:
-        print(n.name)
-
-    a = GenNode.add_node('a', unit)
-    b = GenNode.add_node('b', unit)
-    c = GenNode.add_node('c', mul, 'a', 'b')
-    topo_order = GenNode.get_ordered_nodes()
-    print(list(gen_graph_iterate(topo_order)))
+    if use_subname:
+        return { n.sub_name: n.get_cached_value() for n in topo_nodes }
+    else:
+        return { n.name: n.get_cached_value() for n in topo_nodes }
 
 def make_dot(title, filename, nodes):
     import graphviz

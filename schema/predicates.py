@@ -4,22 +4,26 @@ import tensorflow as tf
 from collections import defaultdict
 from .error import *
 from . import util
-from .base import Kind, kind, kpfx, kname
+from .fgraph import NodeFunc, node_name
 from .flib import Index
 
 """
-Functions or function objects to be used in PredNodes.  Implement the __call__
-method which is expected to return one of:
-    True, <value>
-    False, SchemaError
+A collection of fgraph.NodeFunc derived classes for use in fgraph.PredNodes.
+Each class implements the __call__ which is expected to return a tuple of
+either (True, <value>) or (False, SchemaError).  See fgraph.PredNode for
+details on how the predicate graph works.
 
-where <value> is used by the function object in each child node.
+The constructed Predicate Graph is used to evaluate all arguments to the
+framework op, and either return a Success state, or various kinds of
+SchemaError classes expressing the nature of the error.
 """
-class ArgType(object):
+# TODO: Specialize ArgType for DataTensor, ShapeTensor etc
+class ArgType(NodeFunc):
     """
-    Validate that the argument is of allowed type.  Used in Kind.ARG nodes.
+    Validate that the argument is of allowed type.
     """
     def __init__(self, arg_name, allowed_types):
+        super().__init__(arg_name)
         self.arg_name = arg_name
         self.allowed_types = allowed_types
 
@@ -30,8 +34,19 @@ class ArgType(object):
         else:
             return True, arg_val
 
-class GetReturnTensor(object):
+class DataTensor(ArgType):
+    """
+    Represent a tensor with data (as opposed to shape-based meta-data)
+    """
+    def __init__(self, arg_name):
+        super().__init__(arg_name, tf.Tensor) 
+
+    def __call__(self, op):
+        return super().__call__(op)
+
+class GetReturnTensor(NodeFunc):
     def __init__(self, index):
+        super().__init__(index)
         self.index = index
 
     def __call__(self, op):
@@ -41,8 +56,9 @@ class GetReturnTensor(object):
         else:
             return True, ten
 
-class ValidReturnShape(object):
+class ValidReturnShape(NodeFunc):
     def __init__(self, index):
+        super().__init__(index)
         self.index = index
 
     def __call__(self, tensor, predicted_shape):
@@ -52,36 +68,35 @@ class ValidReturnShape(object):
         else:
             return False, ReturnShapeError(self.index) 
 
-class ArgFunc(object):
+class TensorDType(NodeFunc):
+    def __init__(self, name):
+        super().__init__(name)
+
+    def __call__(self, tensor):
+        return True, tensor.dtype
+
+class TensorShape(NodeFunc):
+    def __init__(self, name):
+        super().__init__(name)
+
+    def __call__(self, tensor):
+        return True, tensor.shape.as_list()
+
+class PredictedShape(NodeFunc):
+    def __init__(self, index):
+        super().__init__(str(index))
+        self.index = index
+
+    def __call__(self, sig, **kwargs):
+        shape = [ kwargs[s] for s in sig ]
+        return True, shape
+
+class ShapeList(NodeFunc):
     """
-    Retrieve and validate the value of {arg_name} with {pred_func}.
-    Will be called as pred_func(arg_val, *args)
-    Kind.SCHEMA must be included as the first parent to this node.
-    """
-    def __init__(self, arg_name, pred_func):
-        self.arg_name = arg_name
-        self.pred_func = pred_func
-
-    def __call__(self, op, *args):
-        arg_val = op._get_arg(self.arg_name)
-        return self.pred_func(arg_val, *args)
-
-def dtype(tensor):
-    return True, tensor.dtype
-
-def tensor_shape(tensor):
-    return True, tensor.shape.as_list()
-
-def predicted_shape(sig, **kwargs):
-    # expect kwargs to be '*:single_dims' nodes
-    shape = [ kwargs[kname(s, Kind.SINGLE_DIMS)] for s in sig ]
-    return True, shape
-
-class ShapeList(object):
-    """
-    Interpret the contents as a shape.  Used in Kind.SHAPE nodes 
+    Interpret the contents as a shape.
     """
     def __init__(self, arg_name):
+        super().__init__(arg_name)
         self.arg_name = arg_name
 
     def __call__(self, shape, *shapes):
@@ -92,11 +107,12 @@ class ShapeList(object):
         else:
             return True, shape
         
-class ShapeInt(object):
+class ShapeInt(NodeFunc):
     """
-    Interpret the integer as a shape.  Used in Kind.SHAPE nodes
+    Interpret the integer as a shape.
     """
     def __init__(self, arg_name):
+        super().__init__(arg_name)
         self.arg_name = arg_name
 
     def __call__(self, i):
@@ -105,7 +121,7 @@ class ShapeInt(object):
         else:
             return True, [i]
 
-class ShapeTensorFunc(object):
+class ShapeTensorFunc(NodeFunc):
     """
     Interpret the tensor contents as a shape.
     Additionally, perform the checks defined by {pred_func}.
@@ -113,6 +129,7 @@ class ShapeTensorFunc(object):
     well as any integer lists provided by *shapes.
     """
     def __init__(self, arg_name, pred_func):
+        super().__init__(arg_name)
         self.arg_name = arg_name
         self.func = pred_func 
 
@@ -127,83 +144,86 @@ class ShapeTensorFunc(object):
 
 class ShapeTensor(ShapeTensorFunc):
     """
+
     Specialization of ShapeTensorFunc that performs no additional checks
     """
     def __init__(self, arg_name):
         pred_func = lambda shape: (True, shape)
         super().__init__(arg_name, pred_func)
 
-class ShapeTensorSlice(object):
-    """
-    Extract a specific slice from a tensor
-    """
-    def __init__(self, arg_name, slice_index):
-        self.arg_name = arg_name
-        self.slice_index = slice_index
 
-    def __call__(self, ten):
-        if ten.dtype not in (tf.int32, tf.int64):
+# TODO: differentiate each SchemaStatus result
+class ShapeTensor2D(NodeFunc):
+    """
+    Validate a 2D shape tensor, and return its contents as a tuple of integer
+    lists.
+    """
+    def __init__(self, arg_name, num_slices):
+        super().__init__(arg_name)
+        self.arg_name = arg_name
+        self.num_slices = num_slices
+
+    def __call__(self, op):
+        ten = op._get_arg(self.arg_name) 
+        if not ten.dtype.is_integer:
             return False, ArgValueError(self.arg_name, ten)
         elif ten.shape.rank != 2:
             return False, ArgValueError(self.arg_name, ten)  
-        elif self.slice_index >= ten.shape[1]:
+        elif ten.shape[1] != self.num_slices:
             return False, ArgValueError(self.arg_name, ten)
-        nums = ten[:,self.slice_index].numpy().tolist()
-        if any(n < 0 for n in nums):
-            return False, ArgValueError(self.arg_name, ten)
-        return True, nums
+        vals = ten.transpose().numpy()
+        tup = tuple(vals.to_list())
+        return True, tup
 
-class ValidDTypes(object):
+class SliceShape(NodeFunc):
+    """
+    Get a slice from a tuple of shapes.
+    """
+    def __init__(self, name, tup_index):
+        super().__init__(f'{name}.{tup_index}')
+        self.index = tup_index
+
+    def __call__(self, shape_tup):
+        vals = shape_tup[self.index]
+        if np.any(vals < 0):
+            return False, ArgValueError(self.arg_name, ten)
+        return True, vals 
+
+class DTypes(NodeFunc):
     def __init__(self, dtype_cons):
+        super().__init__()
         self.dtype_cons = dtype_cons
 
-    def __call__(self, **kwargs):
+    def __call__(self, index_ranks, layout, **kwargs):
         """Check that all tensor arguments have valid dtypes"""
-        arg_dtypes = { kpfx(kn): v for kn, v in kwargs.items() if kind(kn) ==
-                Kind.DTYPE }
-        index_ranks = kwargs.get(Kind.RANKS, {})
-        fmt_layout = kwargs.get(Kind.LAYOUT, (None, None))
-        layout = fmt_layout[1]
-
+        arg_dtypes = kwargs
         stat = self.dtype_cons.status(arg_dtypes, index_ranks, layout)
         valid = isinstance(stat, Success)
         return valid, stat
 
-class ShapeMap(object):
+class ShapeMap(NodeFunc):
     """
     Produce a map of arg_name => shape 
     """
     def __init__(self):
-        pass
+        super().__init__()
 
     def __call__(self, **kwargs):
-        # convert a map containing: pfx:sig => sig, pfx:shape => shape to
-        # sig => shape
-        shape_map = {}
-        for kn, val in kwargs.items():
-            prefix = kpfx(kn)
-            suffix = kind(kn)
-            if suffix == Kind.SHAPE:
-                shape_map[prefix] = val 
+        shape_map = kwargs
         return True, shape_map
 
-class SigMap(object):
+class SigMap(NodeFunc):
     """
     Aggregate all of the :sig nodes into a map of arg_name => sig
     """
     def __init__(self):
-        pass
+        super().__init__()
 
     def __call__(self, **kwargs):
-        sig_map = {}
-        for kn, val in kwargs.items():
-            prefix = kpfx(kn)
-            suffix = kind(kn)
-            if suffix == Kind.SIG:
-                sig_map[prefix] = val 
+        sig_map = kwargs
         return True, sig_map
 
-class IndexRanks(object):
+class Ranks(NodeFunc):
     """
     Search the set of all valid index rank combinations, combined with all
     signature/layout combinations.
@@ -218,20 +238,24 @@ class IndexRanks(object):
     If none are found, produce a NoMatchingRanks error with a selected set of
     'best' candidates (with minimal errors).
 
+    If the predicate succeeds, the value returned is:
+    (index_ranks, arg_sigs)
+
+    If fails, value is NoMatchingRanks
     """
     def __init__(self, op, rank_candidates, rank_cons):
+        super().__init__()
         self.op = op
         self.cands = rank_candidates
         self.rcons = rank_cons
 
-    def __call__(self, shape_map, **kwargs):
+    def __call__(self, shape_map, data_format, **kwargs):
         fields = ['format', 'sigs', 'ranks', 'suggestions', 'highlight']
         Candidate = namedtuple('Candidate', fields)
 
         valid_map = None
         candidates = []
 
-        data_format, layout = kwargs.get(Kind.LAYOUT, (None, None))
         # replace this with a single generative node which generates
         # Ranks, Sigs, Layout 
         for cand_ranks, sig_map, cand_format in self.op._ranks_sigs_format():
@@ -245,8 +269,7 @@ class IndexRanks(object):
             suggestions = []
             highlight_map = defaultdict(list)
             for c in self.rcons:
-                delta = c.rank_error(sig_map, shape_map, cand_ranks,
-                        **kwargs)
+                delta = c.rank_error(sig_map, shape_map, cand_ranks, **kwargs)
                 deltas.append(delta)
                 sug = c.suggestion(delta)
                 if sug is not None:
@@ -259,8 +282,9 @@ class IndexRanks(object):
             if layout_delta == 1:
                 sug = f'Use layout {cand_format}'
                 suggestions.append(sug)
+                data_format_arg = self.op.data_formats.arg_name
                 # highlight the argument itself
-                highlight_map[Kind.DATA_FORMAT].append(0)
+                highlight_map[data_format_arg].append(0)
 
             if all(d == 0 for d in deltas) and layout_delta == 0:
                 if valid_map is None:
@@ -301,9 +325,9 @@ def calc_sig_range(rank_map, idx, sig):
     rank = rank_map[idx] 
     return [start, start + rank]
 
-class IndexDimsUsage(object):
+class IndexDimsUsage(NodeFunc):
     """
-    Used by the IDIMS node.  Computes an index usage map:
+    Computes an index usage map:
     idx => [component0_usage, component1_usage, ...]
     where component_usage are maps of: dim_size => [arg1, arg2, ...]
 
@@ -312,7 +336,7 @@ class IndexDimsUsage(object):
 
     """
     def __init__(self):
-        pass
+        super().__init__()
 
     def __call__(self, ranks, sigs, shapes):
         def nextn(it, n):
@@ -343,37 +367,33 @@ class IndexDimsUsage(object):
                 idx_usage[k] = [dict(dd) for dd in v]
             return False, IndexUsageError(idx_usage, ranks, sigs, shapes)
         else:
-        # fill in None for any remaining dims?
-            for idx in ranks.keys():
-                if idx not in index_dims:
-                    index_dims[idx] = None
             return True, index_dims
 
-class SingleIndexDims(object):
+class SingleIndexDims(NodeFunc):
     """
     A simple node which extracts a single index dimension
     """
     def __init__(self, index_name):
+        super().__init__(index_name)
         self.index_name = index_name
 
     def __call__(self, index_dims):
         return True, index_dims[self.index_name]
 
-class IndexDimsConstraint(object):
+class IndexDimsConstraint(NodeFunc):
     """
     Constrains the dimensions of {indices} by applying the predicate function
     {status_func}, called as status_func(Index1, Index2, ...) where each Index
     object is an flib.Index object derived from one of the indices.
     """
     def __init__(self, name, status_func):
-        self.name = name
+        super().__init__(name)
         self.func = status_func 
 
     def __call__(self, ranks, sigs, shapes, op, **kwargs):
         shapes_list = []
         indices = []
-        for node, dims in kwargs.items():
-            idx = kpfx(node)
+        for idx, dims in kwargs.items():
             ind = Index(idx, op.index[idx], np.array(dims))
             shapes_list.append(ind)
             indices.append(idx)
@@ -423,11 +443,12 @@ class IndexDimsConstraint(object):
             return False, err
         return valid, status
 
-class ComputedDims(object):
+class ComputedDims(NodeFunc):
     """
     Apply a broadcasting function to compute dimensions
     """
     def __init__(self, index_name, func, num_index_args):
+        super().__init__(index_name)
         self.index = index_name
         self.func = func
         self.nidx = num_index_args
@@ -439,7 +460,7 @@ class ComputedDims(object):
         dims = dims_ary.astype(np.int32).tolist()
         return True, dims
 
-class TemplateFunc(object):
+class TemplateFunc(NodeFunc):
     """
     Calls template_func(*inds, *extra)
     where inds are a set of OpCheck indices, and extra are any non-index
@@ -450,12 +471,18 @@ class TemplateFunc(object):
     Recursively calls any TemplateFunc nodes registered on parent indices, and
     accumulates the resulting texts and indices
     """
-    def __init__(self, template_func, comp_idx, op):
-        self.func = template_func
-        self.comp_idx = comp_idx
+    def __init__(self, index_name, func, num_index_args, op):
+        super().__init__(index_name)
+        self.index = index_name
+        self.func = func
+        self.nidx = num_index_args
         self.op = op
 
     def __call__(self, comp_dims, **kwargs):
+        keys = list(kwargs.keys()) # order preserved as of Python 3.6: (pep-468)
+        idx_args = keys[:self.nidx]
+        extra_args = keys[self.nidx:]
+
         formula = [] 
         indices = []
 
@@ -464,24 +491,22 @@ class TemplateFunc(object):
         ftexts = []
         ctexts = []
 
-        calc_desc = self.op.index[self.comp_idx].replace(' ', '_')
+        calc_desc = self.op.index[self.index].replace(' ', '_')
         calc_comp = str(comp_dims)
 
-        for k, v in kwargs.items():
-            if kind(k) == Kind.SINGLE_DIMS:
-                idx = kpfx(k)
-                desc = self.op.index[idx].replace(' ', '_')
-                formula.append(desc)
-                indices.append(idx)
-                parent = self.op.comp_dims_templates.get(idx, None)
-                if parent is not None:
-                    _, (ftext, ctext, inds) = parent.value()
-                    ftexts.extend(ftext)
-                    ctexts.extend(ctext)
-                    indices.extend(inds)
+        for idx in idx_args:
+            v = kwargs[idx]
+            desc = self.op.index[idx].replace(' ', '_')
+            formula.append(desc)
+            indices.append(idx)
+            parent = self.op.comp_dims_templates.get(idx, None)
+            if parent is not None:
+                _, (ftext, ctext, inds) = parent.value()
+                ftexts.extend(ftext)
+                ctexts.extend(ctext)
+                indices.extend(inds)
 
-            else:
-                formula.append(v)
+        formula.extend(kwargs[e] for e in extra_args)
         
         formula_text = calc_desc + ' = ' + self.func(*formula)
         computation_text = calc_comp + ' = ' + self.func(*computation)
@@ -489,42 +514,40 @@ class TemplateFunc(object):
         ctexts.append(computation_text)
         return True, (ftexts, ctexts, indices)
 
-class ArgLayout(object):
+class Layout(NodeFunc):
     """
-    Represent a data format layout argument
+    Determine the layout corresponding to a given data_format
     """
-    def __init__(self, arg_name, layouts):
-        # layouts is list of map elememts, each one is: rank => layout
-        self.arg_name = arg_name
-        self.format_to_layout = {}
-        for l, rmap in enumerate(layouts):
-            for fmt in rmap.values():
-                self.format_to_layout[fmt] = l
+    def __init__(self, formats):
+        super().__init__()
+        self.formats = formats
 
     def __call__(self, data_format):
-        if data_format not in self.format_to_layout:
-            return False, ArgValueError(self.arg_name, data_format)
+        layout = self.formats.layout(data_format)
+        if layout is None:
+            return False, ArgValueError(self.formats.arg_name, data_format)
         else:
-            return True, (data_format, self.format_to_layout[data_format])
+            return True, layout 
 
-class ArgDataFormat(object):
-    def __init__(self, arg_name, layouts, rank_index):
-        self.arg_name = arg_name
-        self.layouts = layouts
-        self.rank_index = rank_index
+class DataFormat(NodeFunc):
+    def __init__(self, formats):
+        super().__init__()
+        self.formats = formats
 
-    def __call__(self, arg_val, rank_map, format_layout):
-        layout = format_layout[1]
-        rmap = self.layouts[layout]
-        rank = rank_map[self.rank_index]
-        data_format = rmap[rank]
-        if arg_val == data_format:
+    def __call__(self, op):
+        if self.formats.arg_name is None:
+            return True, self.formats.default()
+
+        arg_val = op._get_arg(self.formats.arg_name)
+        valid = self.formats.valid_format(arg_val)
+        if valid:
             return True, arg_val
         else:
-            return False, ArgValueError(self.arg_name, arg_val) 
+            return False, ArgValueError(self.formats.arg_name, arg_val) 
 
-class ArgInt(object):
+class ArgInt(NodeFunc):
     def __init__(self, arg_name, lo, hi):
+        super().__init__(f'{arg_name}[{lo}-{hi}]')
         self.arg_name = arg_name
         if lo is None:
             self.lo = -sys.maxsize - 1
@@ -544,22 +567,49 @@ class ArgInt(object):
         else:
             return True, arg_val
 
-class LayoutOption(object):
+class Sig(NodeFunc):
     """
     Return an option associated with the layout
     """
-    def __init__(self, arg_name, sig_list):
-        self.arg_name = arg_name
+    def __init__(self, name, sig_list):
+        super().__init__(name)
         self.sig_list = sig_list
 
-    def __call__(self, format_layout):
-        _, layout = format_layout 
+    def __call__(self, layout):
         return True, self.sig_list[layout]
 
-class Closure(object):
-    def __init__(self, obj):
+class Closure(NodeFunc):
+    def __init__(self, name, obj):
+        super().__init__(name)
         self.obj = obj
 
     def __call__(self):
         return self.obj
+
+class Options(NodeFunc):
+    def __init__(self, arg_name, options):
+        super().__init__(arg_name)
+        self.arg_name = arg_name
+        try:
+            iter(options)
+        except TypeError:
+            raise SchemaError(
+                f'{type(self).__qualname__}: \'options\' argument must be '
+                f'iterable.  Got {type(options)}')
+        self.options = options
+
+    def __call__(self, op):
+        arg_val = op._get_arg(self.arg_name)
+        if arg_val in self.options:
+            return True, arg_val
+        else:
+            return False, NonOptionError(arg_name, arg_val) 
+
+class Schema(NodeFunc):
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
+
+    def __call__(self):
+        return (True, self.op)
 

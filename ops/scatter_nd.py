@@ -1,5 +1,4 @@
 import opcheck
-from schema import Kind, kname
 
 def init_schema(op):
     op.add_index('r', 'read address', 1, 3)

@@ -1,5 +1,4 @@
 import opcheck
-from schema import Kind
 
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
@@ -16,7 +15,7 @@ def init_schema(op):
     op.arg_shape_int('rate', 'r')
     op.arg_unchecked('name')
 
-    op.valid_dtypes('value', ('float32',))
+    op.valid_dtypes('value', ('int', 'float',))
     op.equate_dtypes('filters', 'value')
 
     def odims(i, f, r, padding):

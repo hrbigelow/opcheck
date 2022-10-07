@@ -18,5 +18,6 @@ if __name__ == '__main__':
         op_path = sys.argv[2]
         opcheck.gen_graph_viz(op_path, out_dir)
         opcheck.pred_graph_viz(op_path, out_dir)
+        opcheck.inv_graph_viz(op_path, out_dir)
 
 
