@@ -4,11 +4,33 @@
 ## Synopsis
 
 ```python
-import tensorflow as tf
 import opcheck
-opcheck.init()
+ops = opcheck.available_ops()
+print('\n'.join(op for op in ops))
+tf.gather_nd
+tf.nn.atrous_conv2d
+tf.nn.atrous_conv2d_transpose
+tf.nn.avg_pool
+tf.nn.bias_add
+tf.nn.convolution
+tf.nn.depth_to_space
+tf.nn.separable_conv2d
+tf.nn.space_to_batch
+tf.nn.space_to_depth
+tf.scatter_nd
+...
 
-# call tensorflow operations - receive better error messages
+
+# Wrap framework functions to be checked by OpCheck
+opcheck.register('tf.nn.convolution', 'tf.gather_nd')
+# or opcheck.register() to load all available ops
+
+# Prints a symbolic list of all legal input tensor shapes, layouts, and dtypes
+opcheck.explain('tf.nn.convolution')
+...
+
+# restore to original, unchecked framework function
+opcheck.deregister('tf.nn.convolution')
 ```
 
 OpCheck is a wrapper around framework tensor operations which analyzes their

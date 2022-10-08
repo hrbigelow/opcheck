@@ -1,4 +1,3 @@
-# tf import is needed for 'eval(mod_path)' 
 import importlib
 import inspect
 from schema import SchemaApi
@@ -7,56 +6,77 @@ from schema.error import NotApplicable
 
 REGISTRY = {}
 
-def init(*op_names):
-    if len(op_names) == 0:
-        from pkgutil import walk_packages
-        import ops
-        modinfos = list(walk_packages(ops.__path__, ops.__name__ + '.'))
-        op_names = [mi.name.split('.',1)[1] for mi in modinfos if not mi.ispkg]
-    for op_name in op_names:
+def register(*op_paths):
+    """
+    Register each op in {op_paths}, or all available ops if {op_paths} is empty
+    """
+    if len(op_paths) == 0:
+        op_paths = available_ops()
+
+    for op_path in op_paths:
         try:
-            register(op_name)
+            _register_op(op_path)
         except BaseException as ex:
             print(f'Got exception: {ex} while registering op '
-                    f'\'{op_name}\'.  Skipping.')
+                    f'\'{op_path}\'.  Skipping.')
 
-def register(op_name):
+def deregister(*op_paths):
+    """
+    De-register each op in {op_paths}, restoring it back to its original
+    un-checked state.
+    """
+    if len(op_paths) == 0:
+        op_paths = available_ops()
+
+    for op_path in op_paths:
+        try:
+            _deregister_op(op_path)
+        except RuntimeError as ex:
+            pass
+
+def available_ops():
+    """
+    List all ops available for registration with OpCheck.  Each op is defined
+    in a file in the ops/ directory.
+    """
+    from pkgutil import walk_packages
+    import ops
+    modinfos = list(walk_packages(ops.__path__, ops.__name__ + '.'))
+    op_paths = [mi.name.split('.',1)[1] for mi in modinfos if not mi.ispkg]
+    return op_paths
+
+def _register_op(op_path):
     """
     Wrap the framework operation at {op_path} for OpCheck checking.
-    {init_schema_func} defines constraints on the input relationships.
     """
-    # This section is called 'registration phase'
-    op_path = '.'.join(('ops', op_name))
-    mod = importlib.import_module(op_path)
-    sig = inspect.signature(mod.init_schema)
-    op = SchemaApi(op_path)
-    op._init_schema(sig, mod.init_schema)
+    main_mod_name = op_path.split('.')[0]
+    func_mod_name, func_name = op_path.rsplit('.',1)
 
-    def wrapped_op(*args, **kwargs):
-        # executes during 'framework call phase'
-        try:
-            op._prepare_call(*args, **kwargs)
-            op._check_args()
-        except BaseException as ex:
-            raise OpCheckInternalError(ex)
-        try:
-            ret_val = func(**op.arguments)
-            # ret_val = None
-        except BaseException as ex:
-            op.framework_status = FrameworkError(ex)
-            op.return_status = NotApplicable()
-        else:
-            op.framework_status = Success()
-            op._check_return(ret_val)
-        finally:
-            if not op._passed():
-                op._report()
-            if isinstance(op.framework_status, FrameworkError):
-                raise op.framework_status.ex
-            return ret_val
-    op.wrapped_op = wrapped_op
-    setattr(mod, op_name, wrapped_op)
-    REGISTRY[op_name] = op
+    if main_mod_name == 'tf':
+        import tensorflow as tf
+        framework_op = eval(op_path)
+        framework_mod = eval(func_mod_name) 
+    elif main_mod_name == 'torch':
+        import torch
+        framework_op = eval(op_path)
+        framework_mod = eval(func_mod_name) 
+
+    op_qualpath = '.'.join(('ops', op_path))
+    schema_mod = importlib.import_module(op_qualpath)
+    op = SchemaApi(op_path)
+    wrapped_op = op._init_schema(framework_mod, framework_op,
+            schema_mod.init_schema)
+    setattr(framework_mod, func_name, wrapped_op)
+    REGISTRY[op_path] = op
+
+def _deregister_op(op_path):
+    op = REGISTRY.pop(op_path, None)
+    if op is None:
+        raise RuntimeError(
+            f'Op path \'{op_path}\' is not registered so cannot be '
+            f'de-registered')
+    func_name = op_path.rsplit('.',1)[1]
+    setattr(op.framework_mod, func_name, op.framework_op)
 
 def _get_from_path(op_path):
     if op_path not in REGISTRY:
@@ -85,11 +105,11 @@ def explain(op_path):
     print()
     print('\n'.join(info_table))
 
-def list_ops():
+def registered_ops():
     """
     List all framework ops registered with OpCheck
     """
-    print('\n'.join(REGISTRY.keys()))
+    return list(REGISTRY.keys())
 
 def _dot_graph(op, nodes, out_file):
     import graphviz

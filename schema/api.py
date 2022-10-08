@@ -85,7 +85,7 @@ class _TestResult(object):
         # return an ordered set of keys
         keys = ['ID', 'CATEGORY', 'EXPECT_STATUS', 'OPCHECK_STATUS',
                 'FRAMEWORK_STATUS', 'RANKS']
-        keys.extend(self.arg_order)
+        keys.extend(self.op.arg_order)
         return keys
 
     def stats(self):
@@ -220,18 +220,46 @@ class SchemaApi(object):
         name = fgraph.node_name(gen_class, name)
         return self.inv_graph.get(name, None)
 
-    def _init_schema(self, func_sig, init_schema_func):
+    def _init_schema(self, framework_mod, framework_op, init_schema_func):
         # edges to create for the pred graph
+        self.framework_mod = framework_mod
+        self.framework_op = framework_op
         self.pending_pred_edges = {} # node name -> [parent node name, ...]
         self.pending_index_edges = {} # node name -> [idx, idx, ...]
-        self.func_sig = func_sig
-        self.arg_order = list(func_sig.parameters.keys())
+        self.func_sig = inspect.signature(framework_op)
+        self.arg_order = list(self.func_sig.parameters.keys())
         self._init_pred_graph()
         self._init_gen_graph()
         init_schema_func(self)
         self._add_pred_graph()
         self._add_inv_graph()
         self._finalize()
+
+        def wrapped_op(*args, **kwargs):
+            # executes during 'framework call phase'
+            try:
+                self._prepare_call(*args, **kwargs)
+                self._check_args()
+            except BaseException as ex:
+                raise OpCheckInternalError(ex)
+            try:
+                ret_val = self.framework_op(**self.arguments)
+                # ret_val = None
+            except BaseException as ex:
+                self.framework_status = FrameworkError(ex)
+                self.return_status = NotApplicable()
+            else:
+                self.framework_status = Success()
+                self._check_return(ret_val)
+            finally:
+                if not self._passed():
+                    self._report()
+                if isinstance(self.framework_status, FrameworkError):
+                    raise self.framework_status.ex
+                return ret_val
+
+        self.wrapped_op = wrapped_op
+        return wrapped_op
 
     def _prepare_call(self, *args, **kwargs):
         """Call during the framework call phase"""
@@ -636,11 +664,10 @@ class SchemaApi(object):
             if t.expect_class is None:
                 test_id -= 1
                 continue
-            print('\r', end='')
-            print(f'Adding test {t.id}', end='')
             tests.append(t)
 
-        print(f'Created {len(tests)} tests')
+        print()
+        print(f'created {len(tests)} tests')
 
         test_id = 1
         with open(files['TP'], 'w') as tp, \
