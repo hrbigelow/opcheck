@@ -132,31 +132,49 @@ class Dims(NodeFunc):
         return [ dict(zip(self.output_indices,v)) for v in vals ]
 
 # Specifies a set of data tensor shapes, in which one tensor has an insertion
-# or deletion relative to a valid set.
+# or deletion of a dimension relative to a valid set.
 IndelMutation = namedtuple('IndelMutation', ['index_ranks', 'arg', 'delta'])
 
-def make_indel_mutations(index_ranks_list, arg_sigs):
+def make_indel_mutations(index_ranks_list, arg_sigs, definite_inds):
     """
-    returns a list of IndelMutations 
+    returns a list of IndelMutations.  These are used to generate
+    NoMatchingRanks errors 
     """
     arg_names = list(arg_sigs.keys())
     num_arg = len(arg_names)
     # arg rank values tuple => (index_ranks, changed_arg, delta)
-    ranks_to_aug = {} 
+    valid_ranks = set()
     for index_ranks in index_ranks_list:
         arg_ranks = get_arg_ranks(index_ranks, arg_sigs)
-        ranks_tup = tuple(arg_ranks.values())
-        for t in range(num_arg):
+        arg_ranks_tup = tuple(arg_ranks[n] for n in arg_names)
+        valid_ranks.add(arg_ranks_tup)
+
+    indels = []
+    for index_ranks in index_ranks_list:
+        arg_ranks = get_arg_ranks(index_ranks, arg_sigs)
+        arg_ranks_tup = tuple(arg_ranks[n] for n in arg_names)
+        for t, arg in enumerate(arg_names):
+            sig = arg_sigs[arg]
+            definite_sig = any(idx in definite_inds for idx in sig)
             for delta in (-1, 1):
-                mut_ranks = tuple(r + delta if i == t else r
-                        for i, r in enumerate(ranks_tup))
-                if mut_ranks in ranks_to_aug:
+                z = enumerate(arg_ranks_tup)
+                mut_arg_ranks = tuple(r + delta if i == t else r for i, r in z)
+                # Sometimes, a mutation can collide with a valid rank.
+                # These would manifest as an IndexUsageError rather than
+                # NoMatchingRanks.  So, skip them here.
+                if mut_arg_ranks in valid_ranks:
                     continue
-                if any(r < 0 for r in mut_ranks):
+                if any(r < 0 for r in mut_arg_ranks):
                     continue
-                mut = IndelMutation(index_ranks, arg_names[t], delta)
-                ranks_to_aug[mut_ranks] = mut 
-    return list(ranks_to_aug.values())
+
+                # Mutating a rank to 1 aliases with the broadcasting behavior
+                # of an indefinite sig.
+                if not definite_sig and mut_arg_ranks[t] == 1:
+                    continue
+
+                indel = IndelMutation(index_ranks, arg_names[t], delta)
+                indels.append(indel)
+    return indels 
 
 def get_arg_shapes(index_dims, arg_sigs):
     arg_shapes = defaultdict(list)
@@ -228,13 +246,13 @@ class RankStatusArgShape(NodeFunc):
 
     (index_ranks, (SchemaStatus, arg_shapes))
     """
-    def __init__(self, dims_graph, index_ranks_gen, index_dims_gen,
-            target_nelem):
+    def __init__(self, dims_graph, index_ranks_gen, index_dims_gen, op, nelem):
         super().__init__()
         self.dims_graph = dims_graph
         self.ranks_gen = index_ranks_gen
         self.dims_gen = index_dims_gen
-        self.target_nelem = target_nelem
+        self.op = op
+        self.target_nelem = nelem
 
     def max_dimsize(self, index_ranks, arg_sigs, indel):
         ranks = get_arg_ranks(index_ranks, arg_sigs)
@@ -327,8 +345,11 @@ class RankStatusArgShape(NodeFunc):
 
         return index_dims
 
-    def __call__(self, arg_sigs, **kwargs):
-        # idx => [arg1, arg2, ...] (arguments that the index appears in)
+    def __call__(self, arg_sigs, ret_sigs, **kwargs):
+        # idx_usage is a map of: idx => [arg1, arg2, ...] 
+        # (arguments that the index appears in)
+        
+        all_sigs = { **arg_sigs, **ret_sigs }
         idx_usage = defaultdict(list)
         indexes = { idx for sig in arg_sigs.values() for idx in sig }
         for arg, sig in arg_sigs.items():
@@ -341,30 +362,31 @@ class RankStatusArgShape(NodeFunc):
         shapes_list = []
         # Success and IndexUsageError lists
         for index_ranks in index_ranks_list:
-            max_dimsize = self.max_dimsize(index_ranks, arg_sigs, None)
+            max_dimsize = self.max_dimsize(index_ranks, all_sigs, None)
             gen_dims_list = self.dims_gen(index_ranks)
             for gen_index_dims in gen_dims_list:
-                index_dims = self.index_dims(index_ranks, arg_sigs,
+                index_dims = self.index_dims(index_ranks, all_sigs,
                         gen_index_dims, max_dimsize, **kwargs)
-                arg_shapes = get_arg_shapes(index_dims, arg_sigs)
+                arg_shapes = get_arg_shapes(index_dims, all_sigs)
                 item = (index_ranks, (Success, arg_shapes))
                 shapes_list.append(item)
 
-                point_muts = shape_mutations(index_dims, arg_sigs, idx_usage,
+                point_muts = shape_mutations(index_dims, all_sigs, idx_usage,
                         max_dimsize)
                 for arg_shapes in point_muts:
                     item = (index_ranks, (IndexUsageError, arg_shapes))
                     shapes_list.append(item)
 
         # NoMatchingRanks list
-        indel_list = make_indel_mutations(index_ranks_list, arg_sigs)
+        indel_list = make_indel_mutations(index_ranks_list, arg_sigs,
+                self.op.definite_rank_indices)
         for indel in indel_list:
-            max_dimsize = self.max_dimsize(indel.index_ranks, arg_sigs, indel)
+            max_dimsize = self.max_dimsize(indel.index_ranks, all_sigs, indel)
             gen_dims_list = self.dims_gen(indel.index_ranks)
             for gen_index_dims in gen_dims_list:
-                index_dims = self.index_dims(indel.index_ranks, arg_sigs,
+                index_dims = self.index_dims(indel.index_ranks, all_sigs,
                         gen_index_dims, max_dimsize, **kwargs)
-                arg_shapes = shape_indels(index_dims, arg_sigs, indel,
+                arg_shapes = shape_indels(index_dims, all_sigs, indel,
                         max_dimsize)
                 item = (indel.index_ranks, (NoMatchingRanks, arg_shapes))
                 shapes_list.append(item)
@@ -531,8 +553,8 @@ class SigMap(NodeFunc):
     """
     Aggregate all of the :sig nodes into a map of arg_name => sig
     """
-    def __init__(self):
-        super().__init__()
+    def __init__(self, name):
+        super().__init__(name)
 
     def __call__(self, **kwargs):
         sig_map = kwargs

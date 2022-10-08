@@ -2,7 +2,7 @@ import opcheck
 from schema import flib
 
 def init_schema(op):
-    op.add_index('b', 'batch', 1, 2)
+    op.add_index('b', 'batch', 1, 5)
     op.add_index('i', 'input spatial', 1, 3)
     op.add_index('f', 'filter spatial', None, None)
     op.add_index('o', 'output spatial')
@@ -25,8 +25,8 @@ def init_schema(op):
     op.arg_tensor('input', 'bki', 'bik')
     op.arg_tensor('filters', 'fkl')
     op.arg_option('padding', ('VALID', 'SAME'))
-    op.arg_shape_list('strides', 's')
-    op.arg_shape_list('dilations', 'd')
+    op.arg_shape_bcast_list('strides', 's')
+    op.arg_shape_bcast_list('dilations', 'd')
     op.arg_unchecked('name')
 
     op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))
@@ -34,8 +34,8 @@ def init_schema(op):
 
     op.exclude_dtypes(
             ('input', 'i', ':layout'),
-            ('int32', None, 0),    # all int32 channel-first layout
-            ('int32', 3, 1),       # 3D int32, channel-last layout
+            ('int32', 3, 0),    # 3D int32 channel-first layout not implemented 
+            ('int32', None, 1),   # all int32 channel-last not implemented 
             ('bfloat16', 1, None), # 1D bfloat16, any layout
             ('bfloat16', 3, None)  # 3D bfloat16, any layout
             )

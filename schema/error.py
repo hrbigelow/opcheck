@@ -115,15 +115,15 @@ class DTypeComboExcluded(SchemaStatus):
         return msg
 
 class IndexUsageError(SchemaStatus):
-    def __init__(self, idx_usage, ranks, sigs, shapes):
+    def __init__(self, idx_usage, ranks, arg_sigs, shapes):
         self.idx_usage = idx_usage
         self.ranks = ranks
-        self.sigs = sigs
+        self.arg_sigs = arg_sigs
         self.shapes = shapes
 
     def message(self, op):
         return op._index_usage_error(self.idx_usage, self.ranks,
-                self.sigs, self.shapes)
+                self.arg_sigs, self.shapes)
 
 class ComponentConstraintError(SchemaStatus):
     """

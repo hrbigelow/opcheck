@@ -29,6 +29,7 @@ def register(op_path, init_schema_func):
             raise OpCheckInternalError(ex)
         try:
             ret_val = func(**op.arguments)
+            # ret_val = None
         except BaseException as ex:
             op.framework_status = FrameworkError(ex)
             op.return_status = NotApplicable()

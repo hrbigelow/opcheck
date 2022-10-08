@@ -156,10 +156,17 @@ class RankConstraint(object):
         argument's signature based on the proposed set of index ranks, and the
         observed rank.
         Negative means the fix is to add to the rank
+
+        The observed rank can be None, which means the observation doesn't
+        determine the rank.  Since it is unknown, this doesn't represent any
+        evidence of error.  (See function shape_rank)
         """
         obs_rank = self.observed_rank(shape_map, **kwargs) 
         cmp_rank = self.computed_rank(sig_map, rank_map)
-        return obs_rank - cmp_rank
+        if obs_rank is None:
+            return 0
+        else:
+            return obs_rank - cmp_rank
 
     def highlight_map(self):
         """
@@ -175,6 +182,32 @@ class RankConstraint(object):
         """
         raise NotImplementedError
 
+def shape_rank(shape):
+    # returns the rank of shape
+    if isinstance(shape, list):
+        return len(shape)
+    elif isinstance(shape, int):
+        return None
+    else:
+        raise SchemaError(
+            f'shape_rank: invalid shape type.  expected list or int, got '
+            f'{type(shape)}: {shape}')
+
+def shape_iter(shape):
+    # returns an iterator for shape's components, interpreting an integer as
+    # broadcastable
+    def loop():
+        while True:
+            yield shape
+    if isinstance(shape, list):
+        return iter(shape)
+    elif isinstance(shape, int):
+        return loop()
+
+def shape_nextn(shape_iter, n):
+    # return the next n elements from shape_iter
+    return [ next(shape_iter) for _ in range(n) ]
+
 class SliceRankConstraint(RankConstraint):
     def __init__(self, shape_arg, slice_index):
         """
@@ -188,7 +221,8 @@ class SliceRankConstraint(RankConstraint):
         """
         node = f'{shape_arg}.{slice_index}'
         name = f'rank(sig({node})) == len({node})'
-        super().__init__(name, node, len)
+        
+        super().__init__(name, node, shape_rank)
         self.arg_name = shape_arg
 
     def highlight_map(self, sig_map, shape_map, rank_map):
@@ -221,7 +255,7 @@ class ShapeRankConstraint(RankConstraint):
     """
     def __init__(self, shape_arg, arg_type):
         name = f'rank(sig({shape_arg})) == len({shape_arg})'
-        super().__init__(name, shape_arg, len)
+        super().__init__(name, shape_arg, shape_rank)
         allowed_types = (pr.TensorShape, pr.ShapeList, pr.ShapeInt,
                 pr.ShapeTensor, pr.ShapeTensor2D)
         if arg_type not in allowed_types:

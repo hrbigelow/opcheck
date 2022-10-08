@@ -1,3 +1,4 @@
+import profile 
 import opcheck
 import sys
 import tensorflow as tf
@@ -15,5 +16,6 @@ if __name__ == '__main__':
     else:
         test_ids = None
     opcheck.validate(op_path, out_dir, test_ids)
+    # profile.run('opcheck.validate(op_path, out_dir, test_ids)')
 
 

@@ -115,7 +115,7 @@ class _TestResult(object):
                 if arg in arg_dtypes:
                     rep += ':' + arg_dtypes[arg].name 
             else:
-                rep = self.config.get(kn, '')
+                rep = self.config.get(kn.name, '')
             stats.append(rep)
 
         return stats
@@ -174,6 +174,10 @@ class SchemaApi(object):
         self.op_path = op_path
         self.index = {} # idx => description
 
+        # indices which a change in rank always affects generated inputs.
+        # mutations to rank 1 for these indices are not accepted.
+        self.definite_rank_indices = set()
+
         # params is used to retrieve values during testing
         self.params = None # ordered dict of param_name => GenNode
         self.gen_graph = {}
@@ -195,7 +199,7 @@ class SchemaApi(object):
 
         # call time values
         self.arguments = {}
-        self.returns = []
+        self.returns = {}  # 'return[0]' => tensor, 'return[1]' => tensor, ...
 
     def _gen_node(self, gen_class, name=None):
         name = fgraph.node_name(gen_class, name)
@@ -204,6 +208,9 @@ class SchemaApi(object):
     def _pred_node(self, pred_class, name=None):
         name = fgraph.node_name(pred_class, name)
         return self.pred_graph.get(name, None)
+
+    def _pred_nodes(self, *pred_classes):
+        return tuple(self._pred_node(n) for n in pred_classes)
 
     def _inv_node(self, gen_class, name=None):
         name = fgraph.node_name(gen_class, name)
@@ -215,7 +222,7 @@ class SchemaApi(object):
         self.pending_index_edges = {} # node name -> [idx, idx, ...]
         self.func_sig = func_sig
         pars = func_sig.parameters.keys()
-        self.params = OrderedDict({ k: None for k in pars })
+        self.params = OrderedDict()
         self._init_pred_graph()
         self._init_gen_graph()
         init_schema_func(self)
@@ -250,7 +257,7 @@ class SchemaApi(object):
 
         if not isinstance(op_return, (list, tuple)):
             op_return = (op_return,)
-        self.returns = list(op_return)
+        self.returns = { f'return[{i}]': v for i, v in enumerate(op_return) }
         error = fgraph.pred_graph_evaluate(self.return_pred_graph.values())
         if error is not None:
             raise SchemaError(error.msg(self))
@@ -260,21 +267,25 @@ class SchemaApi(object):
         Generates all valid combinations of ranks_map, sigs_map, and
         data_format as ordered tuples
         """
-        ranks = self._inv_node(pr.Ranks)
-        sigs = self._inv_node(pr.SigMap)
-        data_format = self._inv_node(pr.DataFormat)
-        gen = fgraph.all_values(ranks, sigs, data_format)
-        tups = list(gen)
-        return tups
+        ranks = self._inv_node(ge.Ranks)
+        arg_sigs = self._inv_node(ge.SigMap, 'input')
+        ret_sigs = self._inv_node(ge.SigMap, 'return')
+        data_format = self._inv_node(ge.DataFormat)
+        return fgraph.all_values(ranks, arg_sigs, ret_sigs, data_format)
 
     def _shape_key_order(self, shape_keys):
         # order the shape keys in argument order
         arg_order = list(self.params.keys())
-        arg_order.extend(f'return[{i}]' for i in range(self.num_returns))
 
         def key_fun(shape_key):
             pfx = shape_key.split('.')[0]
-            return arg_order.index(pfx)
+            if pfx in arg_order:
+                return arg_order.index(pfx)
+            else:
+                m = re.match('return\[(\d+)\]', shape_key)
+                ind = int(m.group(1))
+                return len(arg_order) + ind
+
         key_order = sorted(shape_keys, key=key_fun)
         return key_order
 
@@ -286,18 +297,23 @@ class SchemaApi(object):
         input signatures, data format, dtypes
         """
         ranks = self._inv_node(ge.Ranks)
-        sigs = self._inv_node(ge.SigMap)
+        sigs = self._inv_node(ge.SigMap, 'input')
         dtypes = self._inv_node(ge.ValidDTypes)
         data_format = self._inv_node(ge.DataFormat)
         gen = fgraph.all_values(ranks, sigs, dtypes, data_format)
         geometry = list(gen)
-        sig_map = geometry[0][1]
-        args = [ *sig_map ]
+
+        # includes args and returns.  args may have a '.k' suffix
+        all_sigs = geometry[0][1]
+        shape_args = [ *all_sigs ]
         if self.data_formats.configured:
-            args.append(self.data_formats.arg_name)
-        arg_order = self._shape_key_order(args)
+            shape_args.append(self.data_formats.arg_name)
+        arg_order = self._shape_key_order(shape_args)
 
         rows = [arg_order]
+        shape_types = (ge.TensorStub, ge.ShapeList, ge.ShapeInt,
+                ge.ShapeTensor)
+
         for ranks, sigs, dtypes, cand_format in geometry:
             row = []
             for arg in arg_order:
@@ -305,10 +321,11 @@ class SchemaApi(object):
                 func = None if node is None else node.func
                 if isinstance(func, ge.DataFormat): 
                     row.append(cand_format)
-                elif isinstance(func, ge.TensorStub):
+                elif isinstance(func, shape_types):
                     sig = sigs[arg]
                     inst = ''.join(s * ranks[s] for s in sig)
                     row.append(inst)
+                if isinstance(func, ge.TensorStub):
                     dtype = dtypes[arg].name
                     row.append(dtype)
                 else:
@@ -379,6 +396,7 @@ class SchemaApi(object):
             # carats
             sub_table = {} 
             for n, shape in shape_map.items():
+                assert isinstance(shape, list), 'Shape is not a list'
                 shape_rank = len(shape)
                 shape_row = [str(sz) for sz in shape]
                 sub_table[n] = [shape_row]
@@ -481,15 +499,15 @@ class SchemaApi(object):
                 highlight[arg].extend(mask)
         return dict(highlight)
 
-    def _index_diagram(self, highlight_map, ranks, sigs, shapes):
-        arg_order = [ n for n in self.params.keys() if n in sigs.keys() ]
+    def _index_diagram(self, highlight_map, ranks, arg_sigs, shapes):
+        arg_order = [ n for n in self.params.keys() if n in arg_sigs.keys() ]
         dims = { n: [shp] for n, shp in shapes.items() }
         table_data = {} # arg => [shape, inst, highlight]
                         # shape is e.g.:     [15, 3, 10, 5]
                         # inst is e.g.       ['b', 'i1', 'i2', 'k']
                         # highlight is e.g.: ['', '', '^^', '']
 
-        for arg, sig in sigs.items():
+        for arg, sig in arg_sigs.items():
             shape = shapes[arg]
             mask = highlight_map[arg]
             table_data[arg] = [shape]
@@ -516,7 +534,7 @@ class SchemaApi(object):
         fmt, _ = tabulate(table, '   ', left_align=True)
         return '\n'.join(fmt)
 
-    def _index_usage_error(self, idx_usage, ranks, sigs, shapes):
+    def _index_usage_error(self, idx_usage, ranks, arg_sigs, shapes):
         """
         Generate the message for an IndexUsageError.
         {idx_usage} is: idx => [ (dim => [arg1, ...]),
@@ -526,8 +544,8 @@ class SchemaApi(object):
         {sigs} is: arg => sig
         {shapes} is: arg => shape
         """
-        highlight_map = self._highlight_mask(ranks, sigs, shapes, idx_usage)
-        diagram = self._index_diagram(highlight_map, ranks, sigs, shapes)
+        highlight_map = self._highlight_mask(ranks, arg_sigs, shapes, idx_usage)
+        diagram = self._index_diagram(highlight_map, ranks, arg_sigs, shapes)
 
         index_msgs = []
         for idx, comp in idx_usage.items():
@@ -537,16 +555,16 @@ class SchemaApi(object):
         text = '\n'.join(index_msgs)
         return diagram + '\n' + text
 
-    def _index_constraint_error(self, text, index_highlight, ranks, sigs,
+    def _index_constraint_error(self, text, index_highlight, ranks, arg_sigs,
             shapes):
         # compute the arg => mask from idx => mask
         arg_highlight = defaultdict(list)
-        for arg, sig in sigs.items():
+        for arg, sig in arg_sigs.items():
             for s in sig:
                 mask = index_highlight.get(s, [False] * ranks[s])
                 arg_highlight[arg].extend(mask)
 
-        diagram = self._index_diagram(arg_highlight, ranks, sigs, shapes)
+        diagram = self._index_diagram(arg_highlight, ranks, arg_sigs, shapes)
         return diagram + '\n' + text
 
     def _dtype_excluded_report(self, ten_names, ten_dtypes, rank_map, layout):
@@ -607,10 +625,22 @@ class SchemaApi(object):
             f'{self.op_path}.{sfx.lower()}.txt') for sfx in suffixes }
 
         print('Generating tests')
+        # list of node.name, value
+        test_id = 1
+        tests = []
         config_list = list(fgraph.gen_graph_iterate(self.gen_graph.values()))
-        # tests = [ _TestResult(self, 0, c) for c in cfgs ]
-        # tests = [ t for t in tests if t.expect_class is not None ]
-        # print(f'{len(tests)} tests')
+        print(f'Generated {len(config_list)} candidates')
+        for cfg in config_list:
+            t = _TestResult(self, test_id, cfg)
+            test_id += 1
+            if t.expect_class is None:
+                test_id -= 1
+                continue
+            print('\r', end='')
+            print(f'Adding test {t.id}', end='')
+            tests.append(t)
+
+        print(f'Created {len(tests)} tests')
 
         test_id = 1
         with open(files['TP'], 'w') as tp, \
@@ -622,12 +652,7 @@ class SchemaApi(object):
             fh = { 'TP': tp, 'TN': tn, 'FP': fp, 'FN': fn, 'FAIL':
                     fail, 'stats': stats_fh }
             is_first_line = True
-            for config in config_list: 
-                t = _TestResult(self, test_id, config)
-                test_id += 1
-                if t.expect_class is None:
-                    test_id -= 1
-                    continue
+            for t in tests:
                 if test_ids is not None:
                     if len(test_ids) == 0:
                         break
@@ -737,19 +762,20 @@ class SchemaApi(object):
                 f"{','.join(self.index.keys())}"
                 f'Call OpSchema.add_index with the missing index.')
 
-    def _get_return(self, idx):
+    def _get_return(self, ret_name):
         try:
-            return self.returns[idx]
+            return self.returns[ret_name]
         except IndexError:
             raise SchemaError(
-                f'{type(self).__qualname__}({idx}) called but only '
-                f'{len(self.returns)} returns')
+                f'{type(self).__qualname__}: name \'{ret_name}\' not a '
+                f'registered return name')
     
     def _init_pred_graph(self):
         P.set_registry(self.pred_graph)
 
         # NodeFuncs
-        ranks_obj = pr.Ranks(self, self.rank_candidates, self.rank_cons)
+        ranks_sigs_shapes_obj = pr.RanksSigsShapes(self, self.rank_candidates,
+                self.rank_cons)
         dtypes_obj = pr.DTypes(self.dtype_cons)
         data_format_obj = pr.DataFormat(self.data_formats)
         layout_obj = pr.Layout(self.data_formats)
@@ -757,12 +783,16 @@ class SchemaApi(object):
         # graph nodes
         schema = P.add_node(pr.Schema(self))
         shapes = P.add_node(pr.ShapeMap())
-        sigs = P.add_node(pr.SigMap())
         data_format = P.add_node(data_format_obj, schema)
         layout = P.add_node(layout_obj, data_format)
-        ranks = P.add_node(ranks_obj, shapes, data_format)
+        ranks_sigs_shapes = P.add_node(ranks_sigs_shapes_obj, shapes,
+                data_format)
+        ranks = P.add_node(pr.GetRanks(), ranks_sigs_shapes)
+        arg_sigs = P.add_node(pr.GetArgSigs(), ranks_sigs_shapes)
+        ret_sigs = P.add_node(pr.GetReturnSigs(), ranks_sigs_shapes)
+        bcast_shapes = P.add_node(pr.GetShapes(), ranks_sigs_shapes)
         dtypes = P.add_node(dtypes_obj, ranks, layout)
-        P.add_node(pr.IndexDimsUsage(), ranks, sigs, shapes)
+        P.add_node(pr.IndexDimsUsage(), ranks, arg_sigs, bcast_shapes)
 
     def _init_gen_graph(self):
         G.set_registry(self.gen_graph)
@@ -770,14 +800,16 @@ class SchemaApi(object):
 
         # NodeFuncs
         rank_stat_shape_obj = ge.RankStatusArgShape(self.dims_graph,
-                self.rank_candidates, self.gen_indices, target_tensor_size)
+                self.rank_candidates, self.gen_indices, self,
+                target_tensor_size)
         dtypes_status_obj = ge.DTypesStatus(self.dtype_cons)
         data_format_obj = ge.DataFormat(self.data_formats)
 
         # graph nodes
         layout = G.add_node(ge.Layout(self))
-        sigs = G.add_node(ge.SigMap())
-        rank_stat_shape = G.add_node(rank_stat_shape_obj, sigs) 
+        arg_sigs = G.add_node(ge.SigMap('input'))
+        ret_sigs = G.add_node(ge.SigMap('return'))
+        rank_stat_shape = G.add_node(rank_stat_shape_obj, arg_sigs, ret_sigs) 
         ranks = G.add_node(ge.GetRanks(), rank_stat_shape)
         status_arg = G.add_node(ge.GetStatusArgShape(), rank_stat_shape)
         data_format = G.add_node(data_format_obj, ranks, layout)
@@ -841,8 +873,9 @@ class SchemaApi(object):
 
         # move pr.GetReturnTensor* and pr.ValidReturnShape* nodes 
         for i in range(self.num_returns):
-            ret_tensor = fgraph.node_name(pr.GetReturnTensor, str(i))
-            valid_return = fgraph.node_name(pr.ValidReturnShape, str(i))
+            ret_name = f'return[{i}]'
+            ret_tensor = fgraph.node_name(pr.GetReturnTensor, ret_name)
+            valid_return = fgraph.node_name(pr.ValidReturnShape, ret_name)
             ret_node = self.pred_graph.pop(ret_tensor)
             self.return_pred_graph[ret_tensor] = ret_node
             valid_ret_node = self.pred_graph.pop(valid_return)
@@ -850,6 +883,7 @@ class SchemaApi(object):
 
     def _finalize(self):
         self.dims_graph.finalize()
+        self.ranks_sigs_format_list = list(self._ranks_sigs_format())
 
     # ============ PUBLIC API ====================
     def add_index(self, idx, description, min_rank=None, max_rank=None):
@@ -871,7 +905,8 @@ class SchemaApi(object):
         """
         Declare {arg_name} to be an argument unchecked by OpCheck 
         """
-        self.params[arg_name] = None
+        pass
+        # self.params[arg_name] = None
 
     def computed_index(self, comp_index, comp_func, tem_func, input_indexes,
             min_val, *extra_args):
@@ -1222,6 +1257,17 @@ class SchemaApi(object):
                 f'{len(sigs_list)} elements of \'sigs\' argument.')
         return sigs_list 
 
+    def _add_definite_rank(self, *sigs):
+        """
+        Add the indices in sigs to the set of so-called 'definite-rank
+        indices'.  Such an index has the property that a change in rank always
+        affects generated output.  Most indices have this property, but indices
+        exclusively registered with arg_shape_bcast_list do not.  This is
+        because such an index could produce the same output with rank != 1 and
+        rank 1, since any rank != 1 could be broadcasted.
+        """
+        self.definite_rank_indices.update(idx for sig in sigs for idx in sig)
+
     def _arg_shape_func(self, arg_name, sigs_list, pred_node, pred_obj, gen_obj):
         """
         Backend function for arg_shape_* API functions.
@@ -1235,7 +1281,7 @@ class SchemaApi(object):
         sig_obj = ge.Sig(arg_name, sigs_list)
         layout = self._gen_node(ge.Layout)
         shape = self._gen_node(ge.GetArgShapes)
-        sig_map = self._gen_node(ge.SigMap)
+        arg_sigs = self._gen_node(ge.SigMap, 'input')
         sig = G.add_node(sig_obj, layout)
         if isinstance(gen_obj, ge.TensorStub):
             dtypes = self._gen_node(ge.GetDTypes)
@@ -1243,7 +1289,7 @@ class SchemaApi(object):
         else:
             arg_node = G.add_node(gen_obj, shape)
         self.params[arg_name] = arg_node
-        sig_map.append_parent(sig)
+        arg_sigs.append_parent(sig)
 
         # node: pr.Sig
         # node: one of pr.TensorStub, pr.ShapeList, pr.ShapeInt, pr.ShapeTensor  
@@ -1251,10 +1297,6 @@ class SchemaApi(object):
         # pr.Shape -> pred_node
         # pr.ShapeMap -> pr.Shape
         layout = self._pred_node(pr.Layout)
-        sig_obj = pr.Sig(arg_name, sigs_list)
-        sig = P.add_node(sig_obj, layout)
-        sig_map = self._pred_node(pr.SigMap)
-        sig_map.append_parent(sig)
         shape_pobj = pred_obj
         shape = P.add_node(shape_pobj, pred_node)
         shape_map = self._pred_node(pr.ShapeMap)
@@ -1289,31 +1331,52 @@ class SchemaApi(object):
         tensor_dtype_obj = pr.TensorDType(arg_name)
         dtype = P.add_node(tensor_dtype_obj, pred_arg)
         dtypes.append_parent(dtype)
+        self._add_definite_rank(*sigs)
+
+    def _arg_shape_list_base(self, arg_name, broadcast_mode=False, *sigs):
+        """
+        See arg_shape_bcast_list and arg_shape_list
+        """
+        # nodes: pr.ArgType, pr.ShapeList, ge.ShapeList, ge.Sig
+        # pr.Shape -> pr.ArgType
+        # pr.ShapeMap -> pr.Shape
+        # ge.SigMap -> ge.Sig
+        # ge.Sig -> ge.RankStatusArgShape
+        schema = self._pred_node(pr.Schema)
+        arg_pobj = pr.ArgType(arg_name, list)
+        pred_arg = P.add_node(arg_pobj, schema)
+        pred_obj = pr.ShapeList(arg_name, broadcast_mode)
+        gen_obj = ge.ShapeList(arg_name)
+        self._arg_shape_func(arg_name, sigs, pred_arg, pred_obj, gen_obj)
+
+    def arg_shape_bcast_list(self, arg_name, *sigs):
+        """
+        Register {arg_name} as an integer list parameter which defines the
+        shape of a signature.  
+
+        Expect arg_name value to be list of non-negative integers.
+        If arg_val is length 1, interpret it as a generic broadcasted shape of
+        unspecified rank.
+        """
+        self._arg_shape_list_base(arg_name, True, *sigs)
 
     def arg_shape_list(self, arg_name, *sigs):
         """
         Register {arg_name} as an integer list parameter which defines the
         shape of a signature.  
+
+        Expect arg_name value to be list of non-negative integers defining a
+        shape.  In contrast to arg_shape_bcast_list, here there is no
+        broadcasting interpretation.
         """
-        # Creates nodes:
-        # arg_name:arg (int list)
-        # arg_name:shape (int list, the same value as :arg)
-        # arg_name:sig (str, the associated signature)
-        schema = self._pred_node(pr.Schema)
-        arg_pobj = pr.ArgType(arg_name, list)
-        pred_arg = P.add_node(arg_pobj, schema)
-        pred_obj = pr.ShapeList(arg_name)
-        gen_obj = ge.ShapeList(arg_name)
-        self._arg_shape_func(arg_name, sigs, pred_arg, pred_obj, gen_obj)
+        self._add_definite_rank(*sigs)
+        self._arg_shape_list_base(arg_name, False, *sigs)
 
     def arg_shape_int(self, arg_name, index):
         """
         Register {arg_name} as an integer parameter which defines the shape of
         an index.  The shape will be the broadcasted value of the argument if
         the index has rank greater than 1.
-
-        This is the only arg_shape_* API function which does not define the
-        rank of the index. 
         """
         # TODO: currently uses arg_shape_func, which assumes the arg defines
         # the rank.  In this case, it only defines the shape as the integer 
@@ -1339,6 +1402,7 @@ class SchemaApi(object):
         pred_obj = pr.ShapeTensor(arg_name)
         gen_obj = ge.ShapeTensor(arg_name)
         self._arg_shape_func(arg_name, sigs, pred_arg, pred_obj, gen_obj)
+        self._add_definite_rank(*sigs)
 
     def arg_shape_tensor2d(self, arg_name, *sigs):
         """
@@ -1373,15 +1437,15 @@ class SchemaApi(object):
         """
         # created nodes
         # pr.ShapeTensor2D, ge.ShapeTensor2D
-        # ge.Sig(i), pr.Sig(i)
+        # ge.Sig(i)
         # pr.SliceShape(i)
 
         # created edges
         # pr.ShapeTensor2D -> pr.Schema
         # ge.ShapeTensor2D -> ge.GetArgShapes
         # pr.SliceShape(i) -> pr.ShapeTensor2D
-        # pr.Sig(i) -> pr.Layout, ge.Sig(i) -> ge.Layout
-        # pr.Sigmap -> pr.Sig(i), ge.SigMap -> ge.Sig(i)
+        # ge.Sig(i) -> ge.Layout
+        # ge.SigMap -> ge.Sig(i)
         schema = self._pred_node(pr.Schema)
         shape2d_gobj = ge.ShapeTensor2D(arg_name, len(sigs))
         shape2d_pobj = pr.ShapeTensor2D(arg_name, len(sigs))
@@ -1391,9 +1455,8 @@ class SchemaApi(object):
         arg_shapes = self._gen_node(ge.GetArgShapes)
         shape2d = G.add_node(shape2d_gobj, arg_shapes)
 
-        g_sig_map = self._gen_node(ge.SigMap)
+        g_sig_map = self._gen_node(ge.SigMap, 'input')
         g_layout = self._gen_node(ge.Layout)
-        p_sig_map = self._pred_node(pr.SigMap)
         p_shape_map = self._pred_node(pr.ShapeMap)
         p_layout = self._pred_node(pr.Layout)
 
@@ -1411,11 +1474,9 @@ class SchemaApi(object):
             if isinstance(sig, str):
                 sig = [sig]
             g_sig_obj = ge.Sig(prefix, sig)
-            p_sig_obj = pr.Sig(prefix, sig)
             g_sig = G.add_node(g_sig_obj, g_layout)
-            p_sig = P.add_node(p_sig_obj, p_layout)
             g_sig_map.append_parent(g_sig)
-            p_sig_map.append_parent(p_sig)
+        self._add_definite_rank(*sigs)
 
     def arg_rank(self, arg_name, sig):
         """
@@ -1435,8 +1496,9 @@ class SchemaApi(object):
         g_ranks = self._gen_node(ge.GetRanks)
         G.add_node(ge.Rank(sig), g_ranks)
 
-        p_ranks = self._pred_node(pr.Ranks)
+        p_ranks = self._pred_node(pr.GetRanks)
         p_ranks.maybe_append_parent(p_rank)
+        self._add_definite_rank(sig)
 
     def rank_dims_constraint(self, constraint_name, get_dims, rank_sig,
             dims_index, shape_arg):
@@ -1454,9 +1516,11 @@ class SchemaApi(object):
         cons = base.DimRankConstraint(constraint_name, rank_sig, shape_arg,
                 get_dims, dims_index)
         self.rank_cons.append(cons)
+
+        # TODO: how to find this in the Pred graph?
         shape = self.params[shape_arg]
 
-        rank = self._pred_node(pr.Ranks)
+        rank = self._pred_node(pr.GetRanks)
         rank.maybe_append_parent(shape)
 
         # 'sum' simply sums up the individual ranks of indices in rank_sig 
@@ -1471,6 +1535,7 @@ class SchemaApi(object):
         dims = G.add_node(dims_gobj, g_ranks)
         arg_shapes_ranks.append_parent(dims)
         self.dims_graph.maybe_add_input_index(dims_index)
+        self._add_definite_rank(rank_sig)
 
     def add_index_predicate(self, pred_name, status_func, indices):
         """
@@ -1489,12 +1554,9 @@ class SchemaApi(object):
         Custom status functions are found in the flib module.
         """
         id_cons_obj = pr.IndexDimsConstraint(pred_name, status_func)
-        # dims_kname = kname(pred_name, Kind.NONE)
-        ranks = self._pred_node(pr.Ranks)
-        sig_map = self._pred_node(pr.SigMap)
-        shape_map = self._pred_node(pr.ShapeMap)
-        schema = self._pred_node(pr.Schema)
-        id_cons = P.add_node(id_cons_obj, ranks, sig_map, shape_map, schema)
+        ids = (pr.GetRanks, pr.GetArgSigs, pr.GetShapes, pr.Schema)
+        parents = self._pred_nodes(*ids)
+        id_cons = P.add_node(id_cons_obj, *parents)
         self.pending_index_edges[id_cons.name] = indices
 
     def add_index_generator(self, output_indices, gen_func, input_indices, 
@@ -1527,21 +1589,22 @@ class SchemaApi(object):
         'arg_layout'
         """
         index = self.num_returns
-        sigs_list = self._check_sigs_layout(f'return[{index}]', sigs)
+        ret_name = f'return[{index}]'
+        sigs_list = self._check_sigs_layout(ret_name, sigs)
 
-        prefix = f'return[{index}]'
-        g_sig_obj = ge.Sig(prefix, sigs_list)
-        p_sig_obj = pr.Sig(prefix, sigs_list)
+        g_sig_obj = ge.Sig(ret_name, sigs_list)
+        # p_sig_obj = pr.Sig(ret_name, sigs_list)
 
-        rten_pobj = pr.GetReturnTensor(index)
-        rvalid_pobj = pr.ValidReturnShape(index)
-        pred_shape_pobj = pr.PredictedShape(index)
+        rten_pobj = pr.GetReturnTensor(ret_name)
+        rvalid_pobj = pr.ValidReturnShape(ret_name)
+        pred_shape_pobj = pr.PredictedShape(ret_name)
 
         schema = self._pred_node(pr.Schema)
         layout = self._pred_node(pr.Layout)
         rten = P.add_node(rten_pobj, schema)
-        sig = P.add_node(p_sig_obj, layout)
-        pred_shape = P.add_node(pred_shape_pobj, sig)
+        sigs_node = self._pred_node(pr.GetReturnSigs)
+        # sig = P.add_node(p_sig_obj, layout)
+        pred_shape = P.add_node(pred_shape_pobj, sigs_node)
 
         sig_inds = { idx for sig in sigs for idx in sig }
         self.pending_index_edges[pred_shape.name] = ''.join(sig_inds)
@@ -1549,7 +1612,7 @@ class SchemaApi(object):
 
         layout = self._gen_node(ge.Layout)
         sig = G.add_node(g_sig_obj, layout)
-        sig_map = self._gen_node(ge.SigMap)
+        sig_map = self._gen_node(ge.SigMap, 'return')
         sig_map.append_parent(sig)
         # sig_gnode = G.add_node(sig_kname, sig_gobj, *layout) 
         # sig_map_gnode = G.get_node(Kind.SIG_MAP)
