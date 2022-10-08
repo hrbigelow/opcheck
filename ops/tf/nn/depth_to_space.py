@@ -1,4 +1,3 @@
-import opcheck
 from schema import flib
 
 def init_schema(op):
@@ -48,4 +47,3 @@ def init_schema(op):
 
     op.computed_index('o', odims, odims_txt, 'is', 1)
 
-opcheck.register('tf.nn.depth_to_space', init_schema)

@@ -1,4 +1,3 @@
-import opcheck
 from schema import flib
 
 def init_schema(op):
@@ -57,6 +56,4 @@ def init_schema(op):
     op.computed_index('p', pdims, pdims_txt, 'kb', 1)
 
     op.return_tensor('por')
-
-opcheck.register('tf.nn.space_to_batch', init_schema)
 

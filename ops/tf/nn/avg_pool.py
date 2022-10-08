@@ -1,5 +1,3 @@
-import opcheck
-
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
     op.add_index('i', 'input spatial', 1, 3)
@@ -25,7 +23,5 @@ def init_schema(op):
     op.valid_dtypes('input', ('bfloat', 'float',))
 
     op.return_tensor('bic')
-
-opcheck.register('tf.nn.avg_pool', init_schema)
 
     

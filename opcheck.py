@@ -1,5 +1,5 @@
 # tf import is needed for 'eval(mod_path)' 
-import tensorflow as tf
+import importlib
 import inspect
 from schema import SchemaApi
 from schema.error import OpCheckInternalError, FrameworkError, Success
@@ -7,18 +7,30 @@ from schema.error import NotApplicable
 
 REGISTRY = {}
 
-def register(op_path, init_schema_func):
+def init(*op_names):
+    if len(op_names) == 0:
+        from pkgutil import walk_packages
+        import ops
+        modinfos = list(walk_packages(ops.__path__, ops.__name__ + '.'))
+        op_names = [mi.name.split('.',1)[1] for mi in modinfos if not mi.ispkg]
+    for op_name in op_names:
+        try:
+            register(op_name)
+        except BaseException as ex:
+            print(f'Got exception: {ex} while registering op '
+                    f'\'{op_name}\'.  Skipping.')
+
+def register(op_name):
     """
     Wrap the framework operation at {op_path} for OpCheck checking.
     {init_schema_func} defines constraints on the input relationships.
     """
     # This section is called 'registration phase'
-    mod_path, func_name = op_path.rsplit('.', 1)
-    mod = eval(mod_path)
-    func = getattr(mod, func_name)
-    sig = inspect.signature(func)
+    op_path = '.'.join(('ops', op_name))
+    mod = importlib.import_module(op_path)
+    sig = inspect.signature(mod.init_schema)
     op = SchemaApi(op_path)
-    op._init_schema(sig, init_schema_func)
+    op._init_schema(sig, mod.init_schema)
 
     def wrapped_op(*args, **kwargs):
         # executes during 'framework call phase'
@@ -43,8 +55,8 @@ def register(op_path, init_schema_func):
                 raise op.framework_status.ex
             return ret_val
     op.wrapped_op = wrapped_op
-    setattr(mod, func_name, wrapped_op)
-    REGISTRY[op_path] = op
+    setattr(mod, op_name, wrapped_op)
+    REGISTRY[op_name] = op
 
 def _get_from_path(op_path):
     if op_path not in REGISTRY:
@@ -73,15 +85,11 @@ def explain(op_path):
     print()
     print('\n'.join(info_table))
 
-def inventory():
+def list_ops():
+    """
+    List all framework ops registered with OpCheck
+    """
     print('\n'.join(REGISTRY.keys()))
-
-def list_configs(op_path):
-    """
-    Produce the list of all available dtype x rank x layout configurations
-    """
-    pass
-
 
 def _dot_graph(op, nodes, out_file):
     import graphviz
@@ -97,21 +105,29 @@ def _dot_graph(op, nodes, out_file):
     dot.render(out_file)
     print(f'Wrote {out_file}.pdf')
 
-def gen_graph_viz(op_path, out_dir):
+def print_gen_graph(op_path, out_dir):
+    """
+    Print a pdf of {op_path} generative graph used for generating test cases 
+    """
     op = REGISTRY[op_path]
     nodes = op.gen_graph.values()
     _dot_graph(op, nodes, f'{out_dir}/{op_path}.gen')
 
-def pred_graph_viz(op_path, out_dir):
+def print_pred_graph(op_path, out_dir):
+    """
+    Print a pdf of {op_path} predicate graph, used for validating inputs to
+    the op.
+    """
     op = REGISTRY[op_path]
     nodes = op.pred_graph.values()
     _dot_graph(op, nodes, f'{out_dir}/{op_path}.pred')
 
-def inv_graph_viz(op_path, out_dir):
+def print_inventory_graph(op_path, out_dir):
+    """
+    Print a pdf of {op_path} inventory graph, used for displaying the valid
+    inventory (signatures, data format, dtypes) combinations
+    """
     op = REGISTRY[op_path]
     nodes = op.inv_graph.values()
     _dot_graph(op, nodes, f'{out_dir}/{op_path}.inv')
-
-def init():
-    import ops
 

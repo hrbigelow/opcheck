@@ -1,4 +1,3 @@
-import opcheck
 from schema import flib
 
 def init_schema(op):
@@ -63,6 +62,4 @@ def init_schema(op):
 
     op.computed_index('o', odims, odims_template, 'ifsd', 0, 'padding')
     op.return_tensor('blo', 'bol')
-
-opcheck.register('tf.nn.convolution', init_schema)
 

@@ -1,5 +1,3 @@
-import opcheck
-
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
     op.add_index('i', 'input spatial', 2, 2)
@@ -34,7 +32,5 @@ def init_schema(op):
 
     op.computed_index('o', odims, odims_txt, 'ifr', 1, 'padding')
     # op.return_tensor()
-
-opcheck.register('tf.nn.atrous_conv2d', init_schema)
 
 

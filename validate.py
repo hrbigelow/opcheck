@@ -18,4 +18,3 @@ if __name__ == '__main__':
     opcheck.validate(op_path, out_dir, test_ids)
     # profile.run('opcheck.validate(op_path, out_dir, test_ids)')
 
-

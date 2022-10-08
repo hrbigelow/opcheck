@@ -1,6 +1,4 @@
-import opcheck
 from schema import flib
-import numpy as np
 
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
@@ -56,6 +54,4 @@ def init_schema(op):
         return tmp
 
     op.computed_index('f', fdims, fdims_template, 'zcsk', 1, 'data_format')
-
-opcheck.register('tf.nn.space_to_depth', init_schema)
 

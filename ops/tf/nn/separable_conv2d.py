@@ -1,5 +1,3 @@
-import opcheck
-
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
     op.add_index('i', 'input spatial', 2, 2)
@@ -44,8 +42,6 @@ def init_schema(op):
     op.arg_shape_list('dilations', 'e')
 
     op.arg_unchecked('name')
-
-opcheck.register('tf.nn.separable_conv2d', init_schema)
 
 
 

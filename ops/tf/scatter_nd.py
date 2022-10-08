@@ -20,8 +20,6 @@ def init_schema(op):
     # op.valid_dtypes('updates', ('int32', 'float32'))
     op.valid_dtypes('updates', ('float32',))
 
-opcheck.register('tf.scatter_nd', init_schema)
-
 """
 This schema determines index ranks and dims as follows:
 

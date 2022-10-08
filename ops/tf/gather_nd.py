@@ -1,5 +1,3 @@
-import opcheck
-
 def init_schema(op):
     op.add_index('b', 'batch')
     op.add_index('r', 'read location', 1, None)
@@ -27,9 +25,6 @@ def init_schema(op):
 
     # output shape prediction
     op.return_tensor('bwe')
-
-    
-opcheck.register('tf.gather_nd', init_schema)
 
 """
 Rank Inference is unambiguous:

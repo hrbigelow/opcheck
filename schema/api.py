@@ -74,7 +74,7 @@ class _TestResult(object):
     def make_args(self):
         # create arguments 
         arg_dict = {}
-        for arg_name, node in self.arg_gen_nodes.items():
+        for arg_name, node in self.op.arg_gen_nodes.items():
             val = self.config.get(node.name, None)
             if isinstance(node.func, ge.TensorStub):
                 val = ge.from_stub(val)

@@ -1,4 +1,3 @@
-import tensorflow as tf
 import numpy as np
 import math
 from .error import *
@@ -18,17 +17,13 @@ Schema API calls:
 Index = namedtuple('Index', ['code', 'desc', 'dims'])
 
 def diff_ceil(x):
-    if isinstance(x, (tf.Tensor, tf.Variable)):
-        return tf.grad_pass_through(tf.math.ceil)(x)
-    elif isinstance(x, np.ndarray):
+    if isinstance(x, np.ndarray):
         return np.ceil(x)
     else:
         return math.ceil(x)
 
 def diff_floor(x):
-    if isinstance(x, (tf.Tensor, tf.Variable)):
-        return tf.grad_pass_through(tf.math.floor)(x)
-    elif isinstance(x, np.ndarray):
+    if isinstance(x, np.ndarray):
         return np.floor(x)
     else:
         return math.floor(x)
@@ -40,18 +35,13 @@ def floordiv(a, b):
     return diff_floor(a / b)
 
 def mod(a, b):
-    if isinstance(a, (tf.Tensor, tf.Variable)):
-        return tf.math.floormod(a, b)
-    elif isinstance(a, np.ndarray):
+    if isinstance(a, np.ndarray):
         return np.mod(a, b)
     else:
         return math.fmod(a, b)
 
 def reduce_prod(a):
-    if isinstance(a, (tf.Tensor, tf.Variable)):
-        return tf.reduce_prod(a, keepdims=True)
-    else:
-        return np.array([np.prod(a)])
+    return np.array([np.prod(a)])
 
 def not_both_over_one(shape1, shape2):
     """

@@ -1,5 +1,3 @@
-import opcheck
-
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
     op.add_index('i', 'input spatial', 2, 2)
@@ -18,7 +16,4 @@ def init_schema(op):
 
     op.valid_dtypes('value', ('float32',))
     op.equate_dtypes('filters', 'value')
-
-
-opcheck.register('tf.nn.atrous_conv2d_transpose', init_schema)
 
