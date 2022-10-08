@@ -1,4 +1,3 @@
-import profile 
 import opcheck
 import sys
 
@@ -11,5 +10,5 @@ if __name__ == '__main__':
         print()
     else:
         op_path = sys.argv[1]
-        profile.run('opcheck.explain(op_path)')
+        opcheck.explain(op_path)
 

@@ -73,21 +73,19 @@ class _TestResult(object):
 
     def make_args(self):
         # create arguments 
-        d = { p: self.config.get(node.name, None) for p,node in
-                self.op.params.items() if node is not None }
         arg_dict = {}
-        for name, val in d.items():
-            node = self.op.params[name]
-            if type(node.func) == ge.TensorStub:
+        for arg_name, node in self.arg_gen_nodes.items():
+            val = self.config.get(node.name, None)
+            if isinstance(node.func, ge.TensorStub):
                 val = ge.from_stub(val)
-            arg_dict[name] = val
+            arg_dict[arg_name] = val
         return arg_dict
 
     def stat_keys(self):
         # return an ordered set of keys
         keys = ['ID', 'CATEGORY', 'EXPECT_STATUS', 'OPCHECK_STATUS',
                 'FRAMEWORK_STATUS', 'RANKS']
-        keys.extend(self.op.params.keys())
+        keys.extend(self.arg_order)
         return keys
 
     def stats(self):
@@ -108,7 +106,7 @@ class _TestResult(object):
         arg_shapes = self.config[fgraph.node_name(ge.GetArgShapes)]
         arg_dtypes = self.config[fgraph.node_name(ge.GetDTypes)]
 
-        for arg, kn in self.op.params.items():
+        for arg, kn in self.op.arg_gen_nodes.items():
             # any shape-related args are specially formatted
             if arg in arg_shapes:
                 rep = str(arg_shapes[arg])
@@ -179,11 +177,17 @@ class SchemaApi(object):
         self.definite_rank_indices = set()
 
         # params is used to retrieve values during testing
-        self.params = None # ordered dict of param_name => GenNode
+        self.arg_order = None
+        self.arg_gen_nodes = {} # arg_name => GenNode
+        self.arg_pred_nodes = {} # arg_name => PredNode
+
+        # Graphs
         self.gen_graph = {}
         self.inv_graph = {} # name => node
         self.pred_graph = {}
         self.return_pred_graph = {}
+
+        # Objects shared between graphs
         self.data_formats = base.DataFormats()
         self.rank_candidates = base.RankCandidates(self)
         self.rank_cons = [] 
@@ -221,8 +225,7 @@ class SchemaApi(object):
         self.pending_pred_edges = {} # node name -> [parent node name, ...]
         self.pending_index_edges = {} # node name -> [idx, idx, ...]
         self.func_sig = func_sig
-        pars = func_sig.parameters.keys()
-        self.params = OrderedDict()
+        self.arg_order = list(func_sig.parameters.keys())
         self._init_pred_graph()
         self._init_gen_graph()
         init_schema_func(self)
@@ -274,17 +277,14 @@ class SchemaApi(object):
         return fgraph.all_values(ranks, arg_sigs, ret_sigs, data_format)
 
     def _shape_key_order(self, shape_keys):
-        # order the shape keys in argument order
-        arg_order = list(self.params.keys())
-
         def key_fun(shape_key):
             pfx = shape_key.split('.')[0]
-            if pfx in arg_order:
-                return arg_order.index(pfx)
+            if pfx in self.arg_order:
+                return self.arg_order.index(pfx)
             else:
                 m = re.match('return\[(\d+)\]', shape_key)
                 ind = int(m.group(1))
-                return len(arg_order) + ind
+                return len(self.arg_order) + ind
 
         key_order = sorted(shape_keys, key=key_fun)
         return key_order
@@ -317,7 +317,7 @@ class SchemaApi(object):
         for ranks, sigs, dtypes, cand_format in geometry:
             row = []
             for arg in arg_order:
-                node = self.params.get(arg, None)
+                node = self.arg_gen_nodes.get(arg, None)
                 func = None if node is None else node.func
                 if isinstance(func, ge.DataFormat): 
                     row.append(cand_format)
@@ -500,7 +500,7 @@ class SchemaApi(object):
         return dict(highlight)
 
     def _index_diagram(self, highlight_map, ranks, arg_sigs, shapes):
-        arg_order = [ n for n in self.params.keys() if n in arg_sigs.keys() ]
+        arg_order = [ n for n in self.arg_order if n in arg_sigs.keys() ]
         dims = { n: [shp] for n, shp in shapes.items() }
         table_data = {} # arg => [shape, inst, highlight]
                         # shape is e.g.:     [15, 3, 10, 5]
@@ -703,11 +703,11 @@ class SchemaApi(object):
         except:
             name, idx = shape_arg, None
 
-        if name not in self.params:
+        if name not in self.arg_order:
             raise RuntimeError(
                 f'{type(self).__qualname__}: name \'{name}\' not a named '
                 f'parameter.')
-        cls = type(self.params[name].func)
+        cls = type(self.arg_gen_nodes[name].func)
         if cls == ge.TensorStub:
             sfx = 'shape'
         elif cls == ge.ShapeTensor:
@@ -727,7 +727,7 @@ class SchemaApi(object):
         reps = {}
         for name, arg_val in arg_dict.items():
             hdr = self._shape_header(name)
-            cls = type(self.params[name].func)
+            cls = type(self.arg_gen_nodes[name].func)
             if cls == ge.TensorShape:
                 val = arg_val.shape.as_list()
             elif cls == ge.ShapeTensor:
@@ -737,8 +737,7 @@ class SchemaApi(object):
             else:
                 val = arg_val
             reps[name] = f'{hdr}={repr(val)}'
-        call_string = ', '.join(reps[n] for n in self.params.keys() if
-                n in reps) 
+        call_string = ', '.join(reps[n] for n in self.arg_order if n in reps) 
         return call_string
 
     def _report(self):
@@ -747,10 +746,10 @@ class SchemaApi(object):
 
     def _get_arg(self, arg_name):
         """Retrieve the value of {arg_name} argument at call-time."""
-        if arg_name not in self.params:
+        if arg_name not in self.arg_order:
             raise SchemaError(
                 f'\'{arg_name}\' not a known parameter. '
-                f'Known parameters are: {self.params.keys()}')
+                f'Known parameters are: {self.arg_order}')
         return self.arguments[arg_name]
 
     def _check_sig(self, signature, name):
@@ -906,7 +905,6 @@ class SchemaApi(object):
         Declare {arg_name} to be an argument unchecked by OpCheck 
         """
         pass
-        # self.params[arg_name] = None
 
     def computed_index(self, comp_index, comp_func, tem_func, input_indexes,
             min_val, *extra_args):
@@ -944,7 +942,7 @@ class SchemaApi(object):
                 f'indices.\nRegistered indices are: {list(self.index.keys())}\n'
                 )
 
-        extra_nodes = [ self.params[n] for n in extra_args ]
+        extra_nodes = [ self.arg_gen_nodes[n] for n in extra_args ]
         extra_node_names = [ e.name for e in extra_nodes ]
         nidx = len(input_indexes)
         comp_obj = pr.ComputedDims(comp_index, comp_func, nidx)
@@ -1060,8 +1058,8 @@ class SchemaApi(object):
         return dtypes
 
     def _is_data_tensor(self, name):
-        return (name in self.params and isinstance(self.params[name].func, 
-                ge.TensorStub))
+        node = self.arg_pred_nodes.get(name, None)
+        return node is not None and isinstance(node.func, pr.DataTensor)
 
     def valid_dtypes(self, tensor_name, type_list):
         """
@@ -1211,20 +1209,22 @@ class SchemaApi(object):
         pred_obj = pr.ArgInt(arg_name, lo, hi)
         gen_obj = ge.Int(lo, hi)
         schema = self._pred_node(pr.Schema)
-        P.add_node(pred_obj, schema)
-        arg = G.add_node(gen_obj)
-        self.params[arg_name] = arg
+        p_arg = P.add_node(pred_obj, schema)
+        g_arg = G.add_node(gen_obj)
+        self.arg_gen_nodes[arg_name] = g_arg
+        self.arg_pred_nodes[arg_name] = p_arg
 
     def arg_option(self, arg_name, options):
         """
         Expect {arg_name} to take on one of the values in {options}
         """
         options_gobj = ge.Options(arg_name, options)
-        arg = G.add_node(options_gobj)
+        g_arg = G.add_node(options_gobj)
         options_pobj = pr.Options(arg_name, options)
         schema = self._pred_node(pr.Schema)
-        P.add_node(options_pobj, schema)
-        self.params[arg_name] = arg
+        p_arg = P.add_node(options_pobj, schema)
+        self.arg_pred_nodes[arg_name] = p_arg
+        self.arg_gen_nodes[arg_name] = g_arg
 
     def arg_layout(self, arg_name, layouts, rank_idx):
         """
@@ -1236,8 +1236,11 @@ class SchemaApi(object):
         self.data_formats.configure(arg_name, layouts, rank_idx)
         
         # define the real arg 
-        data_format = self._gen_node(ge.DataFormat)
-        self.params[arg_name] = data_format
+        g_arg = self._gen_node(ge.DataFormat)
+        self.arg_gen_nodes[arg_name] = g_arg
+
+        p_arg = self._pred_node(pr.DataFormat)
+        self.arg_pred_nodes[arg_name] = p_arg
 
         # edge: ge.DTypesStatus -> ge.Layout
         layout = self._gen_node(ge.Layout)
@@ -1288,7 +1291,8 @@ class SchemaApi(object):
             arg_node = G.add_node(gen_obj, shape, dtypes)
         else:
             arg_node = G.add_node(gen_obj, shape)
-        self.params[arg_name] = arg_node
+        self.arg_gen_nodes[arg_name] = arg_node
+        self.arg_pred_nodes[arg_name] = pred_node
         arg_sigs.append_parent(sig)
 
         # node: pr.Sig
@@ -1449,11 +1453,12 @@ class SchemaApi(object):
         schema = self._pred_node(pr.Schema)
         shape2d_gobj = ge.ShapeTensor2D(arg_name, len(sigs))
         shape2d_pobj = pr.ShapeTensor2D(arg_name, len(sigs))
-        arg_tensor = P.add_node(shape2d_pobj, schema)
-        self.params[arg_name] = arg_tensor
+        p_shape2d = P.add_node(shape2d_pobj, schema)
+        self.arg_pred_nodes[arg_name] = p_shape2d
 
         arg_shapes = self._gen_node(ge.GetArgShapes)
-        shape2d = G.add_node(shape2d_gobj, arg_shapes)
+        g_shape2d = G.add_node(shape2d_gobj, arg_shapes)
+        self.arg_gen_nodes[arg_name] = g_shape2d
 
         g_sig_map = self._gen_node(ge.SigMap, 'input')
         g_layout = self._gen_node(ge.Layout)
@@ -1465,7 +1470,7 @@ class SchemaApi(object):
 
             # pr.ShapeMap -> pr.SliceShape
             shp_pobj = pr.SliceShape(arg_name, i)
-            p_shp = P.add_node(shp_pobj, arg_tensor)
+            p_shp = P.add_node(shp_pobj, p_shape2d)
             p_shape_map.append_parent(p_shp)
 
             cons = base.SliceRankConstraint(arg_name, i)
@@ -1491,10 +1496,11 @@ class SchemaApi(object):
         self.rank_cons.append(cons)
         schema = self._pred_node(pr.Schema)
         p_rank = P.add_node(rank_pobj, schema)
-        self.params[arg_name] = p_rank 
+        self.arg_pred_nodes[arg_name] = p_rank
 
         g_ranks = self._gen_node(ge.GetRanks)
-        G.add_node(ge.Rank(sig), g_ranks)
+        g_rank = G.add_node(ge.Rank(sig), g_ranks)
+        self.arg_gen_nodes[arg_name] = g_rank
 
         p_ranks = self._pred_node(pr.GetRanks)
         p_ranks.maybe_append_parent(p_rank)
@@ -1517,11 +1523,17 @@ class SchemaApi(object):
                 get_dims, dims_index)
         self.rank_cons.append(cons)
 
-        # TODO: how to find this in the Pred graph?
-        shape = self.params[shape_arg]
+        shape_types = (pr.DataTensor, pr.TensorShape, pr.ShapeList,
+                pr.ShapeInt, pr.ShapeTensor, pr.ShapeTensor2D) 
+        shape_node = self.arg_pred_nodes.get(shape_arg, None)
+        if shape_node is None or not isinstance(shape_node.func, shape_types):
+            raise SchemaError(
+                f'{type(self).__qualname__}: provided shape_arg '
+                f'\'{shape_arg}\' must be an argument registered with one of '
+                f'\'arg_tensor\' or \'arg_shape_*\' API functions') 
 
         rank = self._pred_node(pr.GetRanks)
-        rank.maybe_append_parent(shape)
+        rank.maybe_append_parent(shape_node)
 
         # 'sum' simply sums up the individual ranks of indices in rank_sig 
         def gen_single_index(ranks_list):
