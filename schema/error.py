@@ -1,7 +1,7 @@
 from collections import namedtuple
 
-class OpCheckInternalError(BaseException):
-    """A bug in OpCheck"""
+class OpGrindInternalError(BaseException):
+    """A bug in OpGrind"""
     def __init__(self, ex):
         self.ex = ex
 

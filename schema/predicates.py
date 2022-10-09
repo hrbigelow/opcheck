@@ -546,8 +546,7 @@ class ComputedDims(NodeFunc):
 class TemplateFunc(NodeFunc):
     """
     Calls template_func(*inds, *extra)
-    where inds are a set of OpCheck indices, and extra are any non-index
-    arguments.
+    where inds are a set of OpGrind indices, and extra are any non-index arguments.
 
     See API computed_index for more details.
 

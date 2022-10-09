@@ -15,12 +15,18 @@ def init_schema(op):
     
     op.arg_layout('data_format', data_formats, 'i')
     op.arg_tensor('input', 'bic', 'bci')
-    op.arg_shape_list('ksize', 'k')
-    op.arg_shape_list('strides', 's')
+    op.arg_shape_bcast_list('ksize', 'k')
+    op.arg_shape_bcast_list('strides', 's')
     op.arg_option('padding', ('VALID', 'SAME'))
     op.arg_unchecked('name')
 
-    op.valid_dtypes('input', ('bfloat', 'float',))
+    op.valid_dtypes('input', ('bfloat16', 'float',))
+
+    op.exclude_dtypes(
+            ('input', 'i'),
+            ('float64', 3),
+            ('bfloat16', 3)
+            )
 
     op.return_tensor('bic')
 

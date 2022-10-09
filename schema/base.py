@@ -679,7 +679,7 @@ class CompDimsGraph(object):
         """
         node = self.comp_indices[computed_index]
         ancestors = fgraph.get_ancestors(node)
-        index_inputs = ''.join(a.name for a in ancestors if a in
+        index_inputs = ''.join(a.sub_name for a in ancestors if a in
                 self.input_indices.values())
         return index_inputs
 

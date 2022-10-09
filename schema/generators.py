@@ -492,8 +492,7 @@ def from_stub(stub):
 
 class ShapeInt(NodeFunc):
     """
-    Expect the shape of index to be rank 1 and extract the first component as
-    an integer.  
+    Produce an integer value representing the shape of arg_name.
     """
     def __init__(self, arg_name):
         super().__init__(arg_name)
@@ -503,7 +502,7 @@ class ShapeInt(NodeFunc):
         shape = arg_shapes[self.arg_name]
         if len(shape) != 1:
             raise SchemaError(
-                f'{type(self).__qualname__}: index \'{index}\' has a '
+                f'{type(self).__qualname__}: argument \'{self.arg_name}\' has '
                 f'non-rank-1 shape \'{shape}\'.  Cannot convert it to an '
                 f'integer.')
         return [shape[0]]

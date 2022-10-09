@@ -1,5 +1,3 @@
-import opcheck
-
 def init_schema(op):
     op.add_index('r', 'read address', 1, 3)
     op.add_index('c', 'write address component', 1, 1)

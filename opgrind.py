@@ -82,13 +82,13 @@ def _get_from_path(op_path):
     if op_path not in REGISTRY:
         raise RuntimeError(
             f'Could not find an op named \'{op_path}\' in the OpCheck '
-            f'registry.  Use opcheck.inventory() to see available ops.')
+            f'registry.  Use opgrind.inventory() to see available ops.')
     op = REGISTRY[op_path]
     return op
 
 def validate(op_path, out_dir, test_ids=None):
     """
-    Run generated test configurations and confirm opcheck flags errors
+    Run generated test configurations and confirm opgrind flags errors
     appropriately, and does not flag errors where none exist.
     """
     op = _get_from_path(op_path)

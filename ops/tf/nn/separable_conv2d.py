@@ -38,8 +38,8 @@ def init_schema(op):
 
     op.arg_option('padding', ('VALID', 'SAME'))
 
-    op.arg_shape_list('strides', 's')
-    op.arg_shape_list('dilations', 'e')
+    op.arg_shape_bcast_list('strides', 's')
+    op.arg_shape_bcast_list('dilations', 'e')
 
     op.arg_unchecked('name')
 

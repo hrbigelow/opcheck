@@ -51,14 +51,14 @@ class _TestResult(object):
         self.expect_class = stat
 
     def add_result(self):
-        self.opcheck_status = self.op.input_status
+        self.opgrind_status = self.op.input_status
         if isinstance(self.op.framework_status, Success):
             self.framework_status = self.op.framework_status
         else:
             self.framework_status = self.op.framework_status.ex
 
         ex_stat_cls = self.expect_class
-        op_stat = self.opcheck_status
+        op_stat = self.opgrind_status
         fr_stat = self.framework_status
         if type(op_stat) != ex_stat_cls:
             cat = 'FAIL'
@@ -83,7 +83,7 @@ class _TestResult(object):
 
     def stat_keys(self):
         # return an ordered set of keys
-        keys = ['ID', 'CATEGORY', 'EXPECT_STATUS', 'OPCHECK_STATUS',
+        keys = ['ID', 'CATEGORY', 'EXPECT_STATUS', 'OPGRIND_STATUS',
                 'FRAMEWORK_STATUS', 'RANKS']
         keys.extend(self.op.arg_order)
         return keys
@@ -98,7 +98,7 @@ class _TestResult(object):
                 str(self.id), 
                 self.category, 
                 self.expect_class.__name__,
-                self.opcheck_status.__class__.__name__,
+                self.opgrind_status.__class__.__name__,
                 self.framework_status.__class__.__name__,
                 ','.join(str(r) for r in ranks.values())
                 ]
@@ -126,7 +126,7 @@ class _TestResult(object):
         try:
             with stderr_redirector(string_err):
                 self.op.wrapped_op(**arg_dict)
-        except OpCheckInternalError as e:
+        except OpGrindInternalError as e:
             print(string_err.getvalue().decode('UTF-8'))
             raise e
         except BaseException as e:
@@ -154,15 +154,15 @@ class _TestResult(object):
         Generate a human-readable report
         """
         cat = self.category
-        op_stat = self.opcheck_status
+        op_stat = self.opgrind_status
         op_msg = op_stat.message(self.op)
         fr_msg = self.op.framework_status.message(self.op)
         if cat == 'TP':
-            return f'Framework\n{fr_msg}\nOpCheck\n{op_msg}\n'
+            return f'Framework\n{fr_msg}\nOpGrind\n{op_msg}\n'
         elif cat == 'TN':
             return ''
         elif cat == 'FP':
-            return f'OpCheck\n{op_msg}\n'
+            return f'OpGrind\n{op_msg}\n'
         else:
             return f'Framework\n{fr_msg}\n'
 
@@ -241,7 +241,7 @@ class SchemaApi(object):
                 self._prepare_call(*args, **kwargs)
                 self._check_args()
             except BaseException as ex:
-                raise OpCheckInternalError(ex)
+                raise OpGrindInternalError(ex)
             try:
                 ret_val = self.framework_op(**self.arguments)
                 # ret_val = None
@@ -396,10 +396,10 @@ class SchemaApi(object):
         SHAPE_INT: {arg_name}
 
         'shapes' shows the actual submitted values of the argument aspect.
-        All of these represent shapes to be applied to OpCheck indices.
+        All of these represent shapes to be applied to OpGrind indices.
 
         'interpretation' shows, for each component of a shape, the one-letter
-        OpCheck index name which is inferred in this item.
+        OpGrind index name which is inferred in this item.
 
         'errors' is an ASCII representation highlighting where the error
         occurred.
@@ -624,7 +624,7 @@ class SchemaApi(object):
         main = ['Received unavailable configuration:']
         main.extend(rows)
         main.append('')
-        inst = (f'Use opcheck.list_configs(\'{self.op_path}\') to see all '
+        inst = (f'Use opgrind.list_configs(\'{self.op_path}\') to see all '
                 f'available configurations')
         main.append(inst)
         msg = '\n'.join(main)
@@ -929,7 +929,7 @@ class SchemaApi(object):
 
     def arg_unchecked(self, arg_name):
         """
-        Declare {arg_name} to be an argument unchecked by OpCheck 
+        Declare {arg_name} to be an argument unchecked by OpGrind 
         """
         pass
 
@@ -952,7 +952,7 @@ class SchemaApi(object):
         (extra_vals are the runtime values of {extra_args})
 
         If a downstream constraint (registered with add_index_predicate) fails,
-        then OpCheck makes these calls:
+        then OpGrind makes these calls:
 
         tem_func(*index_desc, *extra_vals)
         tem_func(*index_dims, *extra_vals)
@@ -1018,16 +1018,16 @@ class SchemaApi(object):
         """
         if target_index not in self.index:
             raise SchemaError(
-                f'{type(self).__qualname__}: target_index \'{target_index}\''
+                f'{type(self).__qualname__}: target_index \'{target_index}\' '
                 f'is not a registered index')
         if (self.rank_candidates.index_limited(target_index) or
                 self.rank_candidates.index_equated(target_index)):
             raise SchemaError(
-                f'{type(self).__qualname__}: target index \'{target_index}\''
+                f'{type(self).__qualname__}: target index \'{target_index}\' '
                 f'is already registered as constrained')
         if not self.rank_candidates.index_limited(source_index):
             raise SchemaError(
-                f'{type(self).__qualname__}: source index \'{source_index}\''
+                f'{type(self).__qualname__}: source index \'{source_index}\' '
                 f'is not constrained with limit_ranks')
         self.rank_candidates.equate_ranks(target_index, source_index)
 
@@ -1067,7 +1067,7 @@ class SchemaApi(object):
         # expect format to be {pfx}{q}[+-]*
         ma = re.match('([a-z]+)(8|16|32|64|128)?([\+\-])?', type_expr)
         if ma is None:
-            raise err
+            raise err_msg
         pfx, q, rng = ma.groups()
         if q is None:
             ids = [ f'{pfx}{sz}' for sz in exprs[pfx] ]
@@ -1081,7 +1081,7 @@ class SchemaApi(object):
         try:
             dtypes = [ tf.dtypes.as_dtype(i) for i in ids ]
         except TypeError:
-            raise err
+            raise err_msg
         return dtypes
 
     def _is_data_tensor(self, name):
@@ -1224,6 +1224,8 @@ class SchemaApi(object):
                         f'{type(self).__qualname__}: Got invalid layout '
                         f'\'{layout}\'.  Must be None or an integer in '
                         f'[0, {self.num_layouts})')
+            else:
+                layout = None
             for dtypes in itertools.product(*dtype_bases):
                 self.dtype_cons.add_excluded(tensors, dtypes, ranks, layout)
 

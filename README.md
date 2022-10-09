@@ -1,5 +1,5 @@
 
-# OpCheck - Better error messages for Tensor operations
+# OpGrind - Better error messages for Tensor operations
 
 ## Synopsis
 
@@ -21,7 +21,7 @@ tf.scatter_nd
 ...
 
 
-# Wrap framework functions to be checked by OpCheck
+# Wrap framework functions to be checked by OpGrind
 opcheck.register('tf.nn.convolution', 'tf.gather_nd')
 # or opcheck.register() to load all available ops
 
@@ -33,15 +33,15 @@ opcheck.explain('tf.nn.convolution')
 opcheck.deregister('tf.nn.convolution')
 ```
 
-OpCheck is a wrapper around framework tensor operations which analyzes their
+OpGrind is a wrapper around framework tensor operations which analyzes their
 inputs.  If any inconsistency is found which would lead to an exception from
-the framework, OpCheck will print an error message that is easier to read.
+the framework, OpGrind will print an error message that is easier to read.
 Otherwise, it is silent, and simply passes the inputs through to the wrapped
 operation.
 
 ## How does it work?
 
-OpCheck understands tensor operations in terms of three lower level concepts.
+OpGrind understands tensor operations in terms of three lower level concepts.
 The lowest level is the notion of an 'index', which is a group of semantically
 related dimensions or other size-like quantities.  For example:
 
@@ -67,7 +67,7 @@ biiik  fffkl    sss      NDHWC        ddd        boool
 ```
 
 The explaination contains two sections.  The first section is a table listing
-all of the OpCheck 'indices', with a one-letter code and its longer
+all of the OpGrind 'indices', with a one-letter code and its longer
 description.  The second section shows a subset of shape-related arguments to
 the operation.  Each line shows a combination of valid 'signatures' for these
 arguments - for example, the first signature given for 'input' is 'bki'.  This

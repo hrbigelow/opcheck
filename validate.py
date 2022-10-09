@@ -1,5 +1,5 @@
 import profile 
-import opcheck
+import opgrind
 import sys
 import tensorflow as tf
 import random
@@ -10,11 +10,11 @@ if __name__ == '__main__':
     np.random.seed(982348)
     out_dir = sys.argv[1]
     op_path = sys.argv[2]
-    opcheck.register(op_path)
+    opgrind.register(op_path)
     if len(sys.argv) > 3:
         test_ids = [int(id) for id in sys.argv[3].split(',')]
     else:
         test_ids = None
-    opcheck.validate(op_path, out_dir, test_ids)
-    # profile.run('opcheck.validate(op_path, out_dir, test_ids)')
+    opgrind.validate(op_path, out_dir, test_ids)
+    # profile.run('opgrind.validate(op_path, out_dir, test_ids)')
 
