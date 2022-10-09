@@ -4,8 +4,8 @@
 ## Synopsis
 
 ```python
-import opcheck
-ops = opcheck.available_ops()
+import opgrind
+ops = opgrind.available_ops()
 print('\n'.join(op for op in ops))
 tf.gather_nd
 tf.nn.atrous_conv2d
@@ -22,15 +22,15 @@ tf.scatter_nd
 
 
 # Wrap framework functions to be checked by OpGrind
-opcheck.register('tf.nn.convolution', 'tf.gather_nd')
-# or opcheck.register() to load all available ops
+opgrind.register('tf.nn.convolution', 'tf.gather_nd')
+# or opgrind.register() to load all available ops
 
 # Prints a symbolic list of all legal input tensor shapes, layouts, and dtypes
-opcheck.explain('tf.nn.convolution')
+opgrind.explain('tf.nn.convolution')
 ...
 
 # restore to original, unchecked framework function
-opcheck.deregister('tf.nn.convolution')
+opgrind.deregister('tf.nn.convolution')
 ```
 
 OpGrind is a wrapper around framework tensor operations which analyzes their
