@@ -10,7 +10,38 @@ from functools import partial
 from collections import defaultdict
 from .fgraph import FuncNode as F, func_graph_evaluate, NodeFunc
 from .error import *
-from . import util
+from . import util, base
+
+"""
+This file provides the complete collection of NodeFuncs for use in the GenNodes
+of the generative graphs op.gen_graph and op.inv_graph (api.py).  
+
+The goal of op.gen_graph is to produce a thorough set of test cases for the
+predicate graph op.input_pred_graph, which produce either 'TP' or 'TN' (true
+positive or true negative) results.
+
+Each test is defined as the tuple (expected_status, config).  The test proceeds
+as follows:
+
+1. call arguments are produced from config
+2. the wrapped framework op is called with the call arguments
+3. the actual status is collected
+4. the expected_status and actual_status are compared, generating TP, FP, TN,
+or FN result.
+
+In order to construct a generative graph that produces only TP and TN results,
+the following notions are followed.
+
+Each NodeFunc is one of two types.  A node's item type (the type of item in
+the returned list) can either be a 'status tuple' consisting of (status,
+value) or just a value.  The first kind produces a list containing tuples with
+both Success as the status, and various test Status types.  The second kind of
+node implicitly generates values that are expected to produce Success as a
+result.
+
+These implicit-success nodes should return an empty list if they receive
+invalid inputs.
+"""
 
 class DTypesStatus(NodeFunc):
     def __init__(self, dtype_cons):
@@ -501,11 +532,9 @@ class ShapeInt(NodeFunc):
     def __call__(self, arg_shapes):
         shape = arg_shapes[self.arg_name]
         if len(shape) != 1:
-            raise SchemaError(
-                f'{type(self).__qualname__}: argument \'{self.arg_name}\' has '
-                f'non-rank-1 shape \'{shape}\'.  Cannot convert it to an '
-                f'integer.')
-        return [shape[0]]
+            return []
+        else:
+            return [shape[0]]
 
 class ShapeList(NodeFunc):
     """
@@ -560,8 +589,8 @@ class SigMap(NodeFunc):
         return [sig_map]
 
 class Layout(NodeFunc):
-    def __init__(self, op):
-        super().__init__()
+    def __init__(self, op, name):
+        super().__init__(name)
         self.op = op
 
     def __call__(self):

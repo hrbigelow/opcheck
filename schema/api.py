@@ -166,7 +166,6 @@ class _TestResult(object):
         else:
             return f'Framework\n{fr_msg}\n'
 
-        
 class SchemaApi(object):
     def __init__(self, op_path):
         self.op_path = op_path
@@ -630,7 +629,7 @@ class SchemaApi(object):
         msg = '\n'.join(main)
         return msg
 
-    def _validate_schema(self, out_dir, test_ids=None):
+    def _validate_schema(self, out_dir, test_ids=None, skip_ids=None):
         """
         Uses the gen_graph to produce a list of (<target_status>, <arg_dict>)
         pairs for the op.  <target_status> is the correct type of SchemaStatus.
@@ -644,6 +643,9 @@ class SchemaApi(object):
             raise RuntimeError(
                 f'{type(self).__qualname__}: Could not open output path '
                 f'\'{out_dir}\' for report generation')
+
+        if skip_ids is None:
+            skip_ids = set()
 
         # list of successful arg_dict settings
         key_order = [ 'TP', 'TN', 'FP', 'FN', 'FAIL' ]
@@ -680,36 +682,43 @@ class SchemaApi(object):
                     fail, 'stats': stats_fh }
             is_first_line = True
             for t in tests:
+                skip = False
                 if test_ids is not None:
                     if len(test_ids) == 0:
                         break
                     if t.id not in test_ids:
-                        mat = ', '.join(f'{c}: {len(stats[c])}' for c in
-                                key_order)
-                        print('\r', end='')
-                        print(f'Skipping test: {t.id:-4d}  Stats: {mat}', end='')
-                        continue
-                    test_ids.remove(t.id)
+                        skip = True
+                    else: 
+                        test_ids.remove(t.id)
+                if t.id in skip_ids:
+                    skip = True
 
+                if skip:
+                    mat = ', '.join(f'{c}: {len(stats[c])}' for c in key_order)
+                    print('\r', end='')
+                    print(f'Skipping test: {t.id:-4d}  Stats: {mat}', end='')
+                    continue
+
+        
+                print('\r', end='')
+                print(f'Running test: {t.id:-4d}  ', end='')
                 t.run()
                 cat = t.category
                 row = t.stats()
                 stats[cat].append(t)
                 mat = ', '.join(f'{c}: {len(stats[c])}' for c in key_order)
-
-                print('\r', end='')
-                print(f'Running test: {t.id:-4d}  Stats: {mat}', end='')
+                print(f'Stats: {mat}', end='')
 
                 if is_first_line:
                     hdr = t.stat_keys()
                     hdr_line = '\t'.join(h for h in hdr)
-                    print(hdr_line, file=fh['stats'])
+                    print(hdr_line, file=fh['stats'], flush=True)
                     is_first_line = False
 
                 line = '\t'.join(r for r in row)
-                print(line, file=fh['stats'])
-                print(line, file=fh[cat])
-                print(t.report(), file=fh[cat])
+                print(line, file=fh['stats'], flush=True)
+                print(line, file=fh[cat], flush=True)
+                print(t.report(), file=fh[cat], flush=True)
 
         print()
         print('Summary')
@@ -804,7 +813,7 @@ class SchemaApi(object):
                 self.rank_cons)
         dtypes_obj = pr.DTypes(self.dtype_cons)
         data_format_obj = pr.DataFormat(self.data_formats)
-        layout_obj = pr.Layout(self.data_formats)
+        layout_obj = pr.Layout(self.data_formats, base.LAYOUT)
 
         # graph nodes
         schema = P.add_node(pr.Schema(self))
@@ -832,7 +841,7 @@ class SchemaApi(object):
         data_format_obj = ge.DataFormat(self.data_formats)
 
         # graph nodes
-        layout = G.add_node(ge.Layout(self))
+        layout = G.add_node(ge.Layout(self, base.LAYOUT))
         arg_sigs = G.add_node(ge.SigMap('input'))
         ret_sigs = G.add_node(ge.SigMap('return'))
         rank_stat_shape = G.add_node(rank_stat_shape_obj, arg_sigs, ret_sigs) 
@@ -869,7 +878,7 @@ class SchemaApi(object):
         dtypes_obj = ge.ValidDTypes(self.dtype_cons)
         data_format_obj = ge.DataFormat(self.data_formats)
         ranks = G.add_node(ranks_obj)
-        layout = self._inv_node(ge.Layout)
+        layout = self._inv_node(ge.Layout, base.LAYOUT)
         G.add_node(dtypes_obj, ranks, layout)
         G.add_node(data_format_obj, ranks, layout)
 
@@ -933,6 +942,7 @@ class SchemaApi(object):
         """
         pass
 
+    # TODO: add validation to restrict extra_args to prevent graph cycles
     def computed_index(self, comp_index, comp_func, tem_func, input_indexes,
             min_val, *extra_args):
         """
@@ -943,7 +953,8 @@ class SchemaApi(object):
         Adds an index predicate to ensure all components of the computed index
         are >= {min_val}
 
-        {extra_args} must be names of the framework op's parameters 
+        {extra_args} can be one of: LAYOUT or a parameter registered with
+        arg_option.  
 
         The following calls are made:
 
@@ -969,7 +980,14 @@ class SchemaApi(object):
                 f'indices.\nRegistered indices are: {list(self.index.keys())}\n'
                 )
 
-        extra_nodes = [ self.arg_gen_nodes[n] for n in extra_args ]
+        extra_nodes = []
+        for arg in extra_args:
+            if arg == base.LAYOUT:
+                node = self._gen_node(ge.Layout, base.LAYOUT)
+            else:
+                node = self.arg_gen_nodes[arg]
+            extra_nodes.append(node)
+
         extra_node_names = [ e.name for e in extra_nodes ]
         nidx = len(input_indexes)
         comp_obj = pr.ComputedDims(comp_index, comp_func, nidx)
@@ -1151,12 +1169,12 @@ class SchemaApi(object):
         {fields} is a comma-separated list of fields, with any of:
         - data tensor names registered with arg_tensor
         - one-letter index names registered with add_index
-        - the constant ':layout'
+        - the constant LAYOUT 
 
         Each member of {exclude} contains a tuple corresponding to {fields}.
         - data tensor fields have a dtype string, such as 'int32'
         - one-letter indexes have an integer specifying a rank of that index
-        - the Kind.LAYOUT field has an integer in [0, num_layouts), as defined
+        - the LAYOUT field has an integer in [0, num_layouts), as defined
           by the call to arg_layout.
 
         A value of None for any field indicates a wild-card, meaning 'exclude
@@ -1175,14 +1193,14 @@ class SchemaApi(object):
                 tensors.append(f)
             elif f in self.index:
                 indexes.append(f)
-            elif f == ':layout':
+            elif f == base.LAYOUT:
                 has_layout = True
             else:
                 raise SchemaError(
                     f'{type(self).__qualname__}: Item \'{f}\' in fields was '
                     f'not a data tensor registered with arg_tensor or '
                     f'one letter index name registered with add_index, or '
-                    f'the constant \':layout\'')
+                    f'the constant \'{base.LAYOUT}\'')
 
         num_fields = len(fields)
         num_tensors = len(tensors)
@@ -1271,11 +1289,6 @@ class SchemaApi(object):
         p_arg = self._pred_node(pr.DataFormat)
         self.arg_pred_nodes[arg_name] = p_arg
 
-        # edge: ge.DTypesStatus -> ge.Layout
-        layout = self._gen_node(ge.Layout)
-        dtypes_status = self._gen_node(ge.DTypesStatus)
-        dtypes_status.append_parent(layout)
-
     def _check_sigs_layout(self, arg_name, sigs_list):
         num_layouts = self.data_formats.num_layouts()
         if len(sigs_list) == 1:
@@ -1311,7 +1324,7 @@ class SchemaApi(object):
         # node: one of ge.TensorStub, ge.ShapeList, ge.ShapeInt, ge.ShapeTensor    
         # edges: ge.SigMap -> ge.Sig, [newnode] -> ge.RankStatusArgShape 
         sig_obj = ge.Sig(arg_name, sigs_list)
-        layout = self._gen_node(ge.Layout)
+        layout = self._gen_node(ge.Layout, base.LAYOUT)
         shape = self._gen_node(ge.GetArgShapes)
         arg_sigs = self._gen_node(ge.SigMap, 'input')
         sig = G.add_node(sig_obj, layout)
@@ -1329,7 +1342,7 @@ class SchemaApi(object):
         # edges:
         # pr.Shape -> pred_node
         # pr.ShapeMap -> pr.Shape
-        layout = self._pred_node(pr.Layout)
+        layout = self._pred_node(pr.Layout, base.LAYOUT)
         shape_pobj = pred_obj
         shape = P.add_node(shape_pobj, pred_node)
         shape_map = self._pred_node(pr.ShapeMap)
@@ -1490,9 +1503,9 @@ class SchemaApi(object):
         self.arg_gen_nodes[arg_name] = g_shape2d
 
         g_sig_map = self._gen_node(ge.SigMap, 'input')
-        g_layout = self._gen_node(ge.Layout)
+        g_layout = self._gen_node(ge.Layout, base.LAYOUT)
         p_shape_map = self._pred_node(pr.ShapeMap)
-        p_layout = self._pred_node(pr.Layout)
+        p_layout = self._pred_node(pr.Layout, base.LAYOUT)
 
         for i, sig in enumerate(sigs):
             prefix = f'{arg_name}.{i}'
@@ -1641,7 +1654,7 @@ class SchemaApi(object):
         pred_shape_pobj = pr.PredictedShape(ret_name)
 
         schema = self._pred_node(pr.Schema)
-        layout = self._pred_node(pr.Layout)
+        layout = self._pred_node(pr.Layout, base.LAYOUT)
         rten = P.add_node(rten_pobj, schema)
         sigs_node = self._pred_node(pr.GetReturnSigs)
         # sig = P.add_node(p_sig_obj, layout)
@@ -1651,7 +1664,7 @@ class SchemaApi(object):
         self.pending_index_edges[pred_shape.name] = ''.join(sig_inds)
         P.add_node(rvalid_pobj, rten, pred_shape)
 
-        layout = self._gen_node(ge.Layout)
+        layout = self._gen_node(ge.Layout, base.LAYOUT)
         sig = G.add_node(g_sig_obj, layout)
         sig_map = self._gen_node(ge.SigMap, 'return')
         sig_map.append_parent(sig)

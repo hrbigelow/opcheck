@@ -1,4 +1,4 @@
-from schema import flib
+from schema import flib, LAYOUT
 
 def init_schema(op):
     op.add_index('b', 'batch', 1, 5)
@@ -32,7 +32,7 @@ def init_schema(op):
     op.equate_dtypes('filters', 'input')
 
     op.exclude_dtypes(
-            ('input', 'i', ':layout'),
+            ('input', 'i', LAYOUT),
             ('int32', 3, 0),    # 3D int32 channel-first layout not implemented 
             ('int32', None, 1),   # all int32 channel-last not implemented 
             ('bfloat16', 1, None), # 1D bfloat16, any layout

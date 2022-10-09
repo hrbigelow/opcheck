@@ -1,8 +1,9 @@
 import importlib
 import inspect
 from schema import SchemaApi
-from schema.error import OpCheckInternalError, FrameworkError, Success
+from schema.error import OpGrindInternalError, FrameworkError, Success
 from schema.error import NotApplicable
+from schema import fgraph
 
 REGISTRY = {}
 
@@ -36,7 +37,7 @@ def deregister(*op_paths):
 
 def available_ops():
     """
-    List all ops available for registration with OpCheck.  Each op is defined
+    List all ops available for registration with OpGrind.  Each op is defined
     in a file in the ops/ directory.
     """
     from pkgutil import walk_packages
@@ -47,7 +48,7 @@ def available_ops():
 
 def _register_op(op_path):
     """
-    Wrap the framework operation at {op_path} for OpCheck checking.
+    Wrap the framework operation at {op_path} for OpGrind checking.
     """
     main_mod_name = op_path.split('.')[0]
     func_mod_name, func_name = op_path.rsplit('.',1)
@@ -81,18 +82,18 @@ def _deregister_op(op_path):
 def _get_from_path(op_path):
     if op_path not in REGISTRY:
         raise RuntimeError(
-            f'Could not find an op named \'{op_path}\' in the OpCheck '
+            f'Could not find an op named \'{op_path}\' in the OpGrind '
             f'registry.  Use opgrind.inventory() to see available ops.')
     op = REGISTRY[op_path]
     return op
 
-def validate(op_path, out_dir, test_ids=None):
+def validate(op_path, out_dir, test_ids=None, skip_ids=None):
     """
     Run generated test configurations and confirm opgrind flags errors
     appropriately, and does not flag errors where none exist.
     """
     op = _get_from_path(op_path)
-    op._validate_schema(out_dir, test_ids)
+    op._validate_schema(out_dir, test_ids, skip_ids)
 
 def explain(op_path):
     """
@@ -107,7 +108,7 @@ def explain(op_path):
 
 def registered_ops():
     """
-    List all framework ops registered with OpCheck
+    List all framework ops registered with OpGrind
     """
     return list(REGISTRY.keys())
 
@@ -120,8 +121,17 @@ def _dot_graph(op, nodes, out_file):
                 op.arg_pred_nodes.values())
         color = 'red' if is_arg else 'black'
         dot.node(names[node.name], node.name, color=color)
-        for pa in node.parents:
-            dot.edge(names[node.name], names[pa.name])
+        vtype = node.vararg_type
+        if vtype == fgraph.VarArgs.Positional:
+            alt_color = 'brown'
+        elif vtype == fgraph.VarArgs.Keyword:
+            alt_color = 'blue'
+        else:
+            alt_color = 'black'
+
+        for i, pa in enumerate(node.parents):
+            color = 'black' if (i < node.num_named_pars) else alt_color
+            dot.edge(names[node.name], names[pa.name], _attributes={'color': color})
     dot.render(out_file)
     print(f'Wrote {out_file}.pdf')
 
@@ -150,4 +160,12 @@ def print_inventory_graph(op_path, out_dir):
     op = REGISTRY[op_path]
     nodes = op.inv_graph.values()
     _dot_graph(op, nodes, f'{out_dir}/{op_path}.inv')
+
+def print_comp_dims_graph(op_path, out_dir):
+    """
+    Print a pdf of {op_path} index dimension computation graph.
+    """
+    op = REGISTRY[op_path]
+    nodes = op.dims_graph.nodes.values()
+    _dot_graph(op, nodes, f'{out_dir}/{op_path}.comp_dims')
 

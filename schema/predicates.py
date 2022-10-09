@@ -454,14 +454,16 @@ class IndexDimsUsage(NodeFunc):
 
 class SingleIndexDims(NodeFunc):
     """
-    A simple node which extracts a single index dimension
+    A simple node which extracts a single index dimension.  Should always
+    return true, even if the index isn't provided.  Presence or absence of
+    indices here may be a function of the layout.
     """
     def __init__(self, index_name):
         super().__init__(index_name)
         self.index_name = index_name
 
     def __call__(self, index_dims):
-        return True, index_dims[self.index_name]
+        return True, index_dims.get(self.index_name, None)
 
 class IndexDimsConstraint(NodeFunc):
     """
@@ -600,8 +602,8 @@ class Layout(NodeFunc):
     """
     Determine the layout corresponding to a given data_format
     """
-    def __init__(self, formats):
-        super().__init__()
+    def __init__(self, formats, name):
+        super().__init__(name)
         self.formats = formats
 
     def __call__(self, data_format):

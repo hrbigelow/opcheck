@@ -7,12 +7,7 @@ from .fgraph import FuncNode as F, NodeFunc
 from . import fgraph
 from . import util
 
-def kind(kname):
-    idx = kname.index(':')
-    return kname[idx:]
-
-def kname(prefix, kind):
-    return prefix+kind
+LAYOUT = ':layout'
 
 class DataFormats(object):
     """
@@ -616,7 +611,7 @@ class GenIndices(object):
             index_dims_list.append(dims_map)
         return index_dims_list
 
-class _EmptyFunc(NodeFunc):
+class InputVar(NodeFunc):
     def __init__(self, name):
         super().__init__(name)
 
@@ -631,17 +626,17 @@ class CompDimsGraph(object):
     """
         
     def __init__(self):
-        self.input_indices = {}
-        self.comp_indices = {}
+        self.input_indices = {} # idx => FuncNode(InputVar)
+        self.comp_indices = {}  # idx => FuncNode(CompIndex)
         self.nodes = {}
         F.set_registry(self.nodes)
-        node = F.add_node(_EmptyFunc('kwargs'))
+        node = F.add_node(InputVar('kwargs'))
         self.kwnode = node
 
     def maybe_add_input_index(self, idx):
         node = self.input_indices.get(idx, None)
         if node is None:
-            node = F.add_node(_EmptyFunc(idx))
+            node = F.add_node(InputVar(idx))
             self.input_indices[idx] = node
         return node
 
@@ -690,7 +685,9 @@ class CompDimsGraph(object):
     def __call__(self, index_dims, **kwargs):
         self.kwnode.set_cached_value(kwargs)
         for idx, node in self.input_indices.items():
-            node.set_cached_value(index_dims[idx])
+            # that any unavailable indices are not needed for this layout
+            val = index_dims.get(idx, None)
+            node.set_cached_value(val)
         comp_nodes = list(self.comp_indices.values())
 
         # this is node name => value

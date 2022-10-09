@@ -31,11 +31,11 @@ class FuncNode(object):
         # stores all created nodes
     registry = None
 
-    def __init__(self, func, num_positional, vararg_type):
+    def __init__(self, func, num_named_pars, vararg_type):
         """
-        num_positional is the number of positional arguments that func takes.
-        vararg_type is the type of variable arg it has (*args, **kwargs, or
-        neither)
+        num_named_pars is the number of named parameters that func takes. (any
+        arguments that are not *args or **kwargs).  vararg_type is the type of
+        variable arg it has (*args, **kwargs, or neither)
         """
         self.name = func.name 
         self.sub_name = func.sub_name
@@ -43,7 +43,7 @@ class FuncNode(object):
         self.parents = []
         self.children = []
         self.cached_val = None
-        self.num_positional = num_positional
+        self.num_named_pars = num_named_pars
         self.vararg_type = vararg_type 
 
     def __repr__(self):
@@ -51,7 +51,7 @@ class FuncNode(object):
                 f'[pa: {",".join(p.name for p in self.parents)}]')
 
     def clone_node_only(self):
-        return type(self)(self.func, self.num_positional, self.vararg_type)
+        return type(self)(self.func, self.num_named_pars, self.vararg_type)
 
     @classmethod
     def add_node(cls, func, *parents):
@@ -84,20 +84,20 @@ class FuncNode(object):
                 f'{type(cls).__name__}: Function cannot have both **args and '
                 f'**kwargs in its signature')
         wildcard = args_par or kwds_par
-        pos_pars = [p for p in pars if p != wildcard]
+        named_pars = [p for p in pars if p != wildcard]
 
         if wildcard is None: 
-            if len(parents) != len(pos_pars):
+            if len(parents) != len(named_pars):
                 raise SchemaError(
-                    f'{type(cls).__qualname__}: function takes {len(pos_pars)} '
+                    f'{type(cls).__qualname__}: function takes {len(named_pars)} '
                     f'arguments, but {len(parents)} parents provided ')
         else:
-            if len(parents) < len(pos_pars):
+            if len(parents) < len(named_pars):
                 raise SchemaError(
-                    f'{type(cls).__qualname__}: function takes {len(pos_pars)} '
+                    f'{type(cls).__qualname__}: function takes {len(named_pars)} '
                     f'positional arguments but only {len(parents)} parents '
                     f'provided.')
-        num_pos_pars = len(pos_pars)
+        num_named_pars = len(named_pars)
         if wildcard is None:
             vararg_type = VarArgs.Empty
         elif wildcard == args_par:
@@ -105,7 +105,7 @@ class FuncNode(object):
         else:
             vararg_type = VarArgs.Keyword
 
-        node = cls(func, num_pos_pars, vararg_type)
+        node = cls(func, num_named_pars, vararg_type)
         for pa in parents:
             node.append_parent(pa)
         cls.registry[func.name] = node
@@ -183,13 +183,13 @@ class FuncNode(object):
         """
         all_args = [(n.func.sub_name, n.get_cached_value()) for n in
                 self.parents]
-        pos_args = [v for n,v in all_args[:self.num_positional]]
+        pos_args = [v for n,v in all_args[:self.num_named_pars]]
         if self.vararg_type == VarArgs.Positional:
-            args = tuple(v for n,v in all_args[self.num_positional:])
+            args = tuple(v for n,v in all_args[self.num_named_pars:])
             return self.func(*pos_args, *args)
         elif self.vararg_type == VarArgs.Keyword:
             kwargs = {}
-            for pos in range(self.num_positional, len(all_args)):
+            for pos in range(self.num_named_pars, len(all_args)):
                 name, val = all_args[pos]
                 if name is None:
                     raise SchemaError(
@@ -368,16 +368,4 @@ def func_graph_evaluate(nodes, use_subname=False):
         return { n.sub_name: n.get_cached_value() for n in topo_nodes }
     else:
         return { n.name: n.get_cached_value() for n in topo_nodes }
-
-def make_dot(title, filename, nodes):
-    import graphviz
-    dot = graphviz.Digraph(comment=title, graph_attr={'rankdir': 'BT'})
-    names = { n.name: n.name.replace(':', '_') for n in nodes }
-    for node in nodes:
-        dot.node(names[node.name], node.name)
-        for pa in node.parents:
-            dot.edge(names[node.name], names[pa.name])
-    dot.render(filename)
-
-
 

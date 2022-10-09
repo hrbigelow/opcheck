@@ -1,4 +1,4 @@
-from schema import flib
+from schema import flib, LAYOUT
 
 def init_schema(op):
     op.add_index('b', 'batch', 1, 1)
@@ -29,7 +29,24 @@ def init_schema(op):
     op.arg_unchecked('name')
     op.return_tensor('bof', 'bfo', 'bfoc')
 
-    op.valid_dtypes('input', ('int32', 'float32'))
+    op.valid_dtypes('input', ('bool', 'complex', 'qint8-', 'bfloat', 'int',
+        'float', 'uint'))
+
+    op.exclude_dtypes(
+            ('input', LAYOUT),
+            ('int', 1),
+            ('uint16+', 1),
+            ('float64', 1),
+            ('float64', 2),
+            ('bfloat', 1),
+            ('bool', 1),
+            ('complex', 1),
+            ('int', 2),
+            ('uint16+', 2),
+            ('bfloat', 2),
+            ('bool', 2),
+            ('complex128', 2)
+            )
 
     def odims(i, s):
         return flib.floordiv(i, s)
@@ -40,18 +57,18 @@ def init_schema(op):
     op.computed_index('o', odims, odims_template, 'is', 1)
 
     def fdims(z, c, s, k, layout):
-        if layout == 'NCHW_VECT_C':
+        if layout == 2:
             flat = s * s * z * c
         else:
             flat = s * s * flib.reduce_prod(k)
         return flat
 
     def fdims_template(z, c, s, k, layout):
-        if layout == 'NCHW_VECT_C':
+        if layout == 2:
             tmp = f'{s} * {s} * {z} * {c}'
         else:
             tmp = f'{s} * {s} * product({k})'
         return tmp
 
-    op.computed_index('f', fdims, fdims_template, 'zcsk', 1, 'data_format')
+    op.computed_index('f', fdims, fdims_template, 'zcsk', 1, LAYOUT)
 
