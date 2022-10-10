@@ -1,16 +1,14 @@
 import traceback
 import inspect
-import os, io, sys
+import sys
 import re
 import tensorflow as tf
 import numpy as np
 import itertools
-import copy
-from collections import defaultdict, OrderedDict
+from collections import defaultdict
 from . import predicates as pr
 from . import generators as ge
 from . import base
-from .redirect import stderr_redirector
 from . import fgraph
 from . import flib
 from .error import *
@@ -32,140 +30,6 @@ Both finished graphs must have exactly one node corresponding to each input
 argument, either the arg_name:tensor node (for tensor arguments) or the
 arg_name:arg node for non-tensors.
 """
-class _TestResult(object):
-    """
-    One schema test result.  Holds all sufficient information about the test.
-    Provides convenient reporting and classification functions
-    """
-    def __init__(self, op, _id, config):
-        self.op = op
-        self.id = _id
-        self.config = config
-        expect_status = fgraph.node_name(ge.StatusAggregator)
-        statuses = self.config[expect_status]
-        err = list(s for s in statuses if s != Success)
-        if len(err) > 1:
-            stat = None
-        else:
-            stat = err[0] if len(err) > 0 else Success
-        self.expect_class = stat
-
-    def add_result(self):
-        self.opgrind_status = self.op.input_status
-        if isinstance(self.op.framework_status, Success):
-            self.framework_status = self.op.framework_status
-        else:
-            self.framework_status = self.op.framework_status.ex
-
-        ex_stat_cls = self.expect_class
-        op_stat = self.opgrind_status
-        fr_stat = self.framework_status
-        if type(op_stat) != ex_stat_cls:
-            cat = 'FAIL'
-        else:
-            op_neg = isinstance(op_stat, Success)
-            fr_neg = isinstance(fr_stat, Success)
-            if op_neg:
-                cat = 'TN' if fr_neg else 'FN'
-            else:
-                cat = 'FP' if fr_neg else 'TP'
-        self.category = cat
-
-    def make_args(self):
-        # create arguments 
-        arg_dict = {}
-        for arg_name, node in self.op.arg_gen_nodes.items():
-            val = self.config.get(node.name, None)
-            if isinstance(node.func, ge.TensorStub):
-                val = ge.from_stub(val)
-            arg_dict[arg_name] = val
-        return arg_dict
-
-    def stat_keys(self):
-        # return an ordered set of keys
-        keys = ['ID', 'CATEGORY', 'EXPECT_STATUS', 'OPGRIND_STATUS',
-                'FRAMEWORK_STATUS', 'RANKS']
-        keys.extend(self.op.arg_order)
-        return keys
-
-    def stats(self):
-        # retrieve sufficient statistics to determine the kind of test
-        stats = []
-        keys = self.stat_keys()
-        ranks = self.config[fgraph.node_name(ge.GetRanks)]
-
-        stats = [ 
-                str(self.id), 
-                self.category, 
-                self.expect_class.__name__,
-                self.opgrind_status.__class__.__name__,
-                self.framework_status.__class__.__name__,
-                ','.join(str(r) for r in ranks.values())
-                ]
-
-        arg_shapes = self.config[fgraph.node_name(ge.GetArgShapes)]
-        arg_dtypes = self.config[fgraph.node_name(ge.GetDTypes)]
-
-        for arg, kn in self.op.arg_gen_nodes.items():
-            # any shape-related args are specially formatted
-            if arg in arg_shapes:
-                rep = str(arg_shapes[arg])
-                if arg in arg_dtypes:
-                    rep += ':' + arg_dtypes[arg].name 
-            else:
-                rep = self.config.get(kn.name, '')
-            stats.append(rep)
-
-        return stats
-
-    def run(self):
-        # run the op and store the results
-        string_err = io.BytesIO()
-        arg_dict = self.make_args()
-
-        try:
-            with stderr_redirector(string_err):
-                self.op.wrapped_op(**arg_dict)
-        except OpGrindInternalError as e:
-            print(string_err.getvalue().decode('UTF-8'))
-            raise e
-        except BaseException as e:
-            # this should always be from TensorFlow
-            trace = inspect.trace()
-            for frame in reversed(trace):
-                mod = inspect.getmodule(frame[0])
-                if mod is not None:
-                    break
-            modname = mod.__name__
-            # print(modname, flush=True)
-            if modname.split('.')[0] == 'tensorflow':
-                # print('exception inside tensorflow:')
-                # traceback.print_stack()
-                pass
-            else:
-                assert False, 'exception outside tf should not be possible'
-                print('exception outside of tensorflow')
-                traceback.print_stack()
-                raise e
-        self.add_result()
-
-    def report(self):
-        """
-        Generate a human-readable report
-        """
-        cat = self.category
-        op_stat = self.opgrind_status
-        op_msg = op_stat.message(self.op)
-        fr_msg = self.op.framework_status.message(self.op)
-        if cat == 'TP':
-            return f'Framework\n{fr_msg}\nOpGrind\n{op_msg}\n'
-        elif cat == 'TN':
-            return ''
-        elif cat == 'FP':
-            return f'OpGrind\n{op_msg}\n'
-        else:
-            return f'Framework\n{fr_msg}\n'
-
 class SchemaApi(object):
     def __init__(self, op_path):
         self.op_path = op_path
@@ -338,7 +202,7 @@ class SchemaApi(object):
         arg_order = self._shape_key_order(shape_args)
 
         rows = [arg_order]
-        shape_types = (ge.TensorStub, ge.ShapeList, ge.ShapeInt,
+        shape_types = (ge.DataTensor, ge.ShapeList, ge.ShapeInt,
                 ge.ShapeTensor)
 
         for ranks, sigs, dtypes, cand_format in geometry:
@@ -352,7 +216,7 @@ class SchemaApi(object):
                     sig = sigs[arg]
                     inst = ''.join(s * ranks[s] for s in sig)
                     row.append(inst)
-                if isinstance(func, ge.TensorStub):
+                if isinstance(func, ge.DataTensor):
                     dtype = dtypes[arg].name
                     row.append(dtype)
                 else:
@@ -410,7 +274,7 @@ class SchemaApi(object):
         """
         # need to augment this with another map of other argument values
         args = [ *shape_map ]
-        if self.data_formats.arg_name is not None:
+        if self.data_formats.configured:
             args.append(self.data_formats.arg_name)
         arg_order = self._shape_key_order(args)
         cand_reports = []
@@ -463,7 +327,7 @@ class SchemaApi(object):
                 col = [hdr, *shape_rows]
                 columns[name] = col
 
-            if self.data_formats.arg_name is not None:
+            if self.data_formats.configured:
                 if (
                         (data_format == cand.format) or
                         (data_format is None and cand.format is None)
@@ -614,7 +478,7 @@ class SchemaApi(object):
         for idx, rank in rank_map.items():
             row = [ f'\'{self.index[idx]}\' # dims', rank ]
             table.append(row)
-        if layout is not None:
+        if self.data_formats.configured:
             data_format = self._get_arg(self.data_formats.arg_name)
             row = [ f'\'{self.data_formats.arg_name}\'', data_format ]
             table.append(row)
@@ -628,103 +492,6 @@ class SchemaApi(object):
         main.append(inst)
         msg = '\n'.join(main)
         return msg
-
-    def _validate_schema(self, out_dir, test_ids=None, skip_ids=None):
-        """
-        Uses the gen_graph to produce a list of (<target_status>, <arg_dict>)
-        pairs for the op.  <target_status> is the correct type of SchemaStatus.
-        Runs the wrapped op on the <arg_dict> and collects the actual
-        SchemaStatus and any possible exception from the framework.
-
-        If {test_ids} is provided, it is an iterable of integers which specify
-        a subset of tests to run.  This is useful for speeding up debugging.
-        """
-        if not os.path.exists(out_dir):
-            raise RuntimeError(
-                f'{type(self).__qualname__}: Could not open output path '
-                f'\'{out_dir}\' for report generation')
-
-        if skip_ids is None:
-            skip_ids = set()
-
-        # list of successful arg_dict settings
-        key_order = [ 'TP', 'TN', 'FP', 'FN', 'FAIL' ]
-        suffixes = ['stats'] + [k for k in key_order]
-        stats = { 'TP': [], 'FP': [], 'TN': [], 'FN': [], 'FAIL': [] }
-        files = { sfx: os.path.join(out_dir,
-            f'{self.op_path}.{sfx.lower()}.txt') for sfx in suffixes }
-
-        print('Generating tests')
-        # list of node.name, value
-        test_id = 1
-        tests = []
-        config_list = list(fgraph.gen_graph_iterate(self.gen_graph.values()))
-        print(f'Generated {len(config_list)} candidates')
-        for cfg in config_list:
-            t = _TestResult(self, test_id, cfg)
-            test_id += 1
-            if t.expect_class is None:
-                test_id -= 1
-                continue
-            tests.append(t)
-
-        print()
-        print(f'created {len(tests)} tests')
-
-        test_id = 1
-        with open(files['TP'], 'w') as tp, \
-                open(files['TN'], 'w') as tn, \
-                open(files['FP'], 'w') as fp, \
-                open(files['FN'], 'w') as fn, \
-                open(files['FAIL'], 'w') as fail, \
-                open(files['stats'], 'w') as stats_fh:
-            fh = { 'TP': tp, 'TN': tn, 'FP': fp, 'FN': fn, 'FAIL':
-                    fail, 'stats': stats_fh }
-            is_first_line = True
-            for t in tests:
-                skip = False
-                if test_ids is not None:
-                    if len(test_ids) == 0:
-                        break
-                    if t.id not in test_ids:
-                        skip = True
-                    else: 
-                        test_ids.remove(t.id)
-                if t.id in skip_ids:
-                    skip = True
-
-                if skip:
-                    mat = ', '.join(f'{c}: {len(stats[c])}' for c in key_order)
-                    print('\r', end='')
-                    print(f'Skipping test: {t.id:-4d}  Stats: {mat}', end='')
-                    continue
-
-        
-                print('\r', end='')
-                print(f'Running test: {t.id:-4d}  ', end='')
-                t.run()
-                cat = t.category
-                row = t.stats()
-                stats[cat].append(t)
-                mat = ', '.join(f'{c}: {len(stats[c])}' for c in key_order)
-                print(f'Stats: {mat}', end='')
-
-                if is_first_line:
-                    hdr = t.stat_keys()
-                    hdr_line = '\t'.join(h for h in hdr)
-                    print(hdr_line, file=fh['stats'], flush=True)
-                    is_first_line = False
-
-                line = '\t'.join(r for r in row)
-                print(line, file=fh['stats'], flush=True)
-                print(line, file=fh[cat], flush=True)
-                print(t.report(), file=fh[cat], flush=True)
-
-        print()
-        print('Summary')
-        for cat in key_order:
-            res = stats[cat]
-            print(f'{cat}: {len(res)}')
 
     def _passed(self):
         return (
@@ -744,7 +511,7 @@ class SchemaApi(object):
                 f'{type(self).__qualname__}: name \'{name}\' not a named '
                 f'parameter.')
         cls = type(self.arg_gen_nodes[name].func)
-        if cls == ge.TensorStub:
+        if cls == ge.DataTensor:
             sfx = 'shape'
         elif cls == ge.ShapeTensor:
             sfx = 'numpy()'
@@ -1321,14 +1088,14 @@ class SchemaApi(object):
         """
         sigs_list = self._check_sigs_layout(arg_name, sigs_list)
         # node: ge.Sig 
-        # node: one of ge.TensorStub, ge.ShapeList, ge.ShapeInt, ge.ShapeTensor    
+        # node: one of ge.DataTensor, ge.ShapeList, ge.ShapeInt, ge.ShapeTensor    
         # edges: ge.SigMap -> ge.Sig, [newnode] -> ge.RankStatusArgShape 
         sig_obj = ge.Sig(arg_name, sigs_list)
         layout = self._gen_node(ge.Layout, base.LAYOUT)
         shape = self._gen_node(ge.GetArgShapes)
         arg_sigs = self._gen_node(ge.SigMap, 'input')
         sig = G.add_node(sig_obj, layout)
-        if isinstance(gen_obj, ge.TensorStub):
+        if isinstance(gen_obj, ge.DataTensor):
             dtypes = self._gen_node(ge.GetDTypes)
             arg_node = G.add_node(gen_obj, shape, dtypes)
         else:
@@ -1338,7 +1105,7 @@ class SchemaApi(object):
         arg_sigs.append_parent(sig)
 
         # node: pr.Sig
-        # node: one of pr.TensorStub, pr.ShapeList, pr.ShapeInt, pr.ShapeTensor  
+        # node: one of pr.DataTensor, pr.ShapeList, pr.ShapeInt, pr.ShapeTensor  
         # edges:
         # pr.Shape -> pred_node
         # pr.ShapeMap -> pr.Shape
@@ -1363,7 +1130,7 @@ class SchemaApi(object):
         arg_pobj = pr.DataTensor(arg_name)
         pred_arg = P.add_node(arg_pobj, schema)
         pred_obj = pr.TensorShape(arg_name)
-        gen_obj = ge.TensorStub(arg_name)
+        gen_obj = ge.DataTensor(arg_name)
         self._arg_shape_func(arg_name, sigs, pred_arg, pred_obj, gen_obj)
 
         gnode = self.gen_graph[gen_obj.name]
@@ -1442,7 +1209,7 @@ class SchemaApi(object):
         shape of a signature.  
         """
         schema = self._pred_node(pr.Schema)
-        arg_pobj = pr.ArgType(arg_name, int)
+        arg_pobj = pr.ArgType(arg_name, tf.Tensor)
         pred_arg = P.add_node(arg_pobj, schema)
 
         pred_obj = pr.ShapeTensor(arg_name)
@@ -1668,8 +1435,5 @@ class SchemaApi(object):
         sig = G.add_node(g_sig_obj, layout)
         sig_map = self._gen_node(ge.SigMap, 'return')
         sig_map.append_parent(sig)
-        # sig_gnode = G.add_node(sig_kname, sig_gobj, *layout) 
-        # sig_map_gnode = G.get_node(Kind.SIG_MAP)
-        # sig_map_gnode.append_parent(sig_gnode)
         self.num_returns += 1
 

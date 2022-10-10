@@ -177,8 +177,8 @@ class ShapeTensor2D(NodeFunc):
             return False, ArgValueError(self.arg_name, ten)  
         elif ten.shape[1] != self.num_slices:
             return False, ArgValueError(self.arg_name, ten)
-        vals = ten.transpose().numpy()
-        tup = tuple(vals.to_list())
+        vals = tf.transpose(ten).numpy()
+        tup = tuple(vals.tolist())
         return True, tup
 
 class SliceShape(NodeFunc):
@@ -191,8 +191,8 @@ class SliceShape(NodeFunc):
 
     def __call__(self, shape_tup):
         vals = shape_tup[self.index]
-        if np.any(vals < 0):
-            return False, ArgValueError(self.arg_name, ten)
+        if any(v < 0 for v in vals):
+            return False, ArgValueError(self.arg_name, vals)
         return True, vals 
 
 class DTypes(NodeFunc):
@@ -619,7 +619,7 @@ class DataFormat(NodeFunc):
         self.formats = formats
 
     def __call__(self, op):
-        if self.formats.arg_name is None:
+        if not self.formats.configured:
             return True, self.formats.default()
 
         arg_val = op._get_arg(self.formats.arg_name)

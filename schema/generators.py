@@ -10,6 +10,7 @@ from functools import partial
 from collections import defaultdict
 from .fgraph import FuncNode as F, func_graph_evaluate, NodeFunc
 from .error import *
+from . import oparg
 from . import util, base
 
 """
@@ -474,7 +475,7 @@ class SingleIndexDims(NodeFunc):
     def __call__(self, index_dims):
         return [index_dims[self.name]]
 
-class TensorStub(NodeFunc):
+class DataTensor(NodeFunc):
     """
     Produce the (shape, dtype) combo needed to produce a tensor
     """
@@ -485,45 +486,13 @@ class TensorStub(NodeFunc):
     def __call__(self, arg_shapes, dtypes, **kwargs):
         dtype = dtypes[self.arg_name]
         shape = arg_shapes[self.arg_name]
-        return [(shape, dtype)]
-
-def from_stub(stub):
-    shape, dtype = stub
-    nelem = np.prod(shape)
-    if nelem > 1e7:
-        raise SchemaError(f'Shape \'{shape}\' has {nelem} elements, '
-        f'which exceeds 1e7 elements')
-    if dtype.is_integer:
-        lo = max(dtype.min, -1000)
-        hi = min(dtype.max, 1000) 
-        ten = tf.random.uniform(shape, lo, hi, dtype=tf.int64)
-        ten = tf.cast(ten, dtype)
-    elif dtype.is_floating:
-        lo = max(dtype.min, -1.0)
-        hi = min(dtype.max, 1.0)
-        ten = tf.random.uniform(shape, lo, hi, dtype=tf.float64)
-        ten = tf.cast(ten, dtype)
-    elif dtype.is_bool:
-        ten = tf.random.uniform(shape, 0, 2, dtype=tf.int32)
-        ten = tf.cast(ten, dtype)
-    elif dtype.is_quantized:
-        lo, hi = -1000, 1000
-        ten = tf.random.uniform(shape, lo, hi, dtype=tf.float32)
-        quant = tf.quantization.quantize(ten, lo, hi, dtype)
-        ten = quant.output
-    elif dtype.is_complex:
-        lo, hi = -1.0, 1.0
-        real = tf.random.uniform(shape, lo, hi, dtype=tf.float64)
-        imag = tf.random.uniform(shape, lo, hi, dtype=tf.float64)
-        ten = tf.complex(real, imag, dtype)
-    else:
-        raise SchemaError(
-            f'Unexpected dtype when generating tensor: dtype=\'{dtype.name}\'')
-    return ten
+        arg = oparg.DataTensorArg(shape, dtype)
+        return [arg]
 
 class ShapeInt(NodeFunc):
     """
-    Produce an integer value representing the shape of arg_name.
+    Produce an integer value representing the shape of arg_name.  Returns the
+    empty list if the shape is inconsistent with a non-broadcasted integer.
     """
     def __init__(self, arg_name):
         super().__init__(arg_name)
@@ -534,7 +503,8 @@ class ShapeInt(NodeFunc):
         if len(shape) != 1:
             return []
         else:
-            return [shape[0]]
+            arg = oparg.ShapeIntArg(shape[0])
+            return [arg]
 
 class ShapeList(NodeFunc):
     """
@@ -546,7 +516,8 @@ class ShapeList(NodeFunc):
 
     def __call__(self, arg_shapes):
         shape = arg_shapes[self.arg_name]
-        return [shape]
+        arg = oparg.ShapeListArg(shape)
+        return [arg]
 
 class ShapeTensor(NodeFunc):
     """
@@ -558,12 +529,14 @@ class ShapeTensor(NodeFunc):
 
     def __call__(self, arg_shapes):
         shape = arg_shapes[self.arg_name]
-        ten = tf.constant(shape, dtype=tf.int32)
-        return [ten]
+        arg = oparg.ShapeTensorArg(shape)
+        return [arg]
 
 class ShapeTensor2D(NodeFunc):
     """
-    Generate a 2D tensor from dims and a list of signatures
+    Generate a 2D tensor from dims and a list of signatures.  Since it is
+    impossible to have input with non-rectangular shape, this node will produce
+    no output if shape is non-rectangular.
     """
     def __init__(self, arg_name, num_rows):
         super().__init__(arg_name)
@@ -573,9 +546,11 @@ class ShapeTensor2D(NodeFunc):
     def __call__(self, arg_shapes):
         names = [ f'{self.arg_name}.{i}' for i in range(self.num_rows) ]
         rows = [ arg_shapes[n] for n in names ]
-        ten = tf.constant(rows, dtype=tf.int32)
-        ten = tf.transpose(ten, (1,0))
-        return [ten]
+        if len({ len(r) for r in rows }) != 1:
+            # unequal length rows
+            return []
+        arg = oparg.ShapeTensor2DArg(rows)
+        return [arg]
 
 class SigMap(NodeFunc):
     """
@@ -655,6 +630,4 @@ class Options(NodeFunc):
 
     def __call__(self):
         return self.options
-
-
 

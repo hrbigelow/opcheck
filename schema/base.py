@@ -38,6 +38,9 @@ class DataFormats(object):
             return 1
         return len(self.layouts)
 
+    def default(self):
+        return 'default'
+
     def data_format(self, layout, ranks):
         """
         Return the data_format corresponding to the layout and rank

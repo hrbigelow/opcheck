@@ -3,7 +3,7 @@ import inspect
 from schema import SchemaApi
 from schema.error import OpGrindInternalError, FrameworkError, Success
 from schema.error import NotApplicable
-from schema import fgraph
+from schema import fgraph, runner
 
 REGISTRY = {}
 
@@ -93,7 +93,7 @@ def validate(op_path, out_dir, test_ids=None, skip_ids=None):
     appropriately, and does not flag errors where none exist.
     """
     op = _get_from_path(op_path)
-    op._validate_schema(out_dir, test_ids, skip_ids)
+    runner.validate(op, out_dir, test_ids, skip_ids)
 
 def explain(op_path):
     """

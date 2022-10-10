@@ -5,7 +5,7 @@ def init_schema(op):
     op.add_index('i', 'input spatial', 1, 3)
     op.add_index('j', 'padded input spatial')
     op.add_index('k', 'block shape')
-    op.add_index('r', 'remaining', 0, 10)
+    op.add_index('r', 'remaining', 0, 8)
     op.add_index('s', 'padding start')
     op.add_index('e', 'padding end')
     op.add_index('o', 'output spatial')
@@ -26,7 +26,7 @@ def init_schema(op):
     op.add_index_predicate('pad_input_block', flib.divis_by, 'jk')
 
     # generates i, s, e, and k dimensions compatible with the predicate
-    op.add_index_generator('isek', flib.gen_pad_input_blocked, 'i', 10, 50)
+    op.add_index_generator('isek', flib.gen_pad_input_blocked, 'i', 3, 20)
 
     op.valid_dtypes('input', ('int', 'uint', 'float', 'bfloat'))
 
