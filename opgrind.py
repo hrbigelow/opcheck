@@ -50,6 +50,9 @@ def _register_op(op_path):
     """
     Wrap the framework operation at {op_path} for OpGrind checking.
     """
+    if op_path in REGISTRY:
+        return
+
     main_mod_name = op_path.split('.')[0]
     func_mod_name, func_name = op_path.rsplit('.',1)
 

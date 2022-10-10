@@ -602,8 +602,8 @@ class GenIndices(object):
     def __init__(self):
         self.generators = []
     
-    def add_generator(self, gen_func, output_indices, input_indices, gen_args):
-        gen = GenIndex(gen_func, output_indices, input_indices, gen_args)
+    def add_generator(self, gen_func, output_idxs, input_idxs, gen_args=()):
+        gen = GenIndex(gen_func, output_idxs, input_idxs, gen_args)
         self.generators.append(gen)
 
     def __call__(self, index_ranks):

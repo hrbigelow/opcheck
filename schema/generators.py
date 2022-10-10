@@ -271,6 +271,15 @@ def shape_mutations(index_dims, arg_sigs, idx_usage, max_dimsize):
             results.append(dict(arg_shapes))
     return results 
 
+def check_sizes(arg_shapes, max_nelem):
+    for arg, shape in arg_shapes.items():
+        nelem = np.prod(shape)
+        if nelem < max_nelem:
+            continue
+        raise SchemaError(
+            f'Generated shape for argument \'{arg}\' was {shape} with '
+            f'{nelem} elements, exceeding the maximum allowed {max_nelem}')
+
 class RankStatusArgShape(NodeFunc):
     """
     Generate shapes for all registered input signatures, plus point-mutated
@@ -360,15 +369,7 @@ class RankStatusArgShape(NodeFunc):
                         f'broadcasting.')
                 input_dims[input_idx][inc] += 1
 
-        # print(index_dims)
-        arg_shapes = get_arg_shapes(index_dims, arg_sigs)
-        for arg, shape in arg_shapes.items():
-            nelem = np.prod(shape)
-            if nelem < 1e8:
-                continue
-            raise SchemaError(
-                f'Generated shape for argument \'{arg}\' was {shape} with '
-                f'{nelem} elements, exceeding the maximum allowed 1e8')
+        # TODO: move outside.  check this after applying indels
 
         for idx, dims in index_dims.items():
             if all(d >= 0 for d in dims):
@@ -400,12 +401,14 @@ class RankStatusArgShape(NodeFunc):
                 index_dims = self.index_dims(index_ranks, all_sigs,
                         gen_index_dims, max_dimsize, **kwargs)
                 arg_shapes = get_arg_shapes(index_dims, all_sigs)
+                check_sizes(arg_shapes, self.target_nelem * 5)
                 item = (index_ranks, (Success, arg_shapes))
                 shapes_list.append(item)
 
                 point_muts = shape_mutations(index_dims, all_sigs, idx_usage,
                         max_dimsize)
                 for arg_shapes in point_muts:
+                    check_sizes(arg_shapes, self.target_nelem)
                     item = (index_ranks, (IndexUsageError, arg_shapes))
                     shapes_list.append(item)
 
@@ -420,6 +423,7 @@ class RankStatusArgShape(NodeFunc):
                         gen_index_dims, max_dimsize, **kwargs)
                 arg_shapes = shape_indels(index_dims, all_sigs, indel,
                         max_dimsize)
+                check_sizes(arg_shapes, self.target_nelem * 5)
                 item = (indel.index_ranks, (NoMatchingRanks, arg_shapes))
                 shapes_list.append(item)
         return shapes_list
@@ -463,17 +467,6 @@ class GetDTypes(TupleElement):
 class GetArgShapes(TupleElement):
     def __init__(self):
         super().__init__(1)
-
-class SingleIndexDims(NodeFunc):
-    """
-    A simple node which extracts a single index dimension
-    """
-    def __init__(self, index_name):
-        super().__init__(index_name)
-        self.name = index_name
-
-    def __call__(self, index_dims):
-        return [index_dims[self.name]]
 
 class DataTensor(NodeFunc):
     """

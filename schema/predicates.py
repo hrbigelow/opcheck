@@ -334,6 +334,7 @@ class RanksSigsShapes(NodeFunc):
         candidates = []
 
         it = 0
+
         for ranks, arg_sigs, ret_sigs, cand_format in self.op.ranks_sigs_format_list:
             if ((data_format is None and cand_format is None) or 
                     (data_format == cand_format)):

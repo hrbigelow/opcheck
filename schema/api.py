@@ -598,7 +598,7 @@ class SchemaApi(object):
 
     def _init_gen_graph(self):
         G.set_registry(self.gen_graph)
-        target_tensor_size = 1e5
+        target_tensor_size = 1e6
 
         # NodeFuncs
         rank_stat_shape_obj = ge.RankStatusArgShape(self.dims_graph,
@@ -1297,11 +1297,15 @@ class SchemaApi(object):
         Register {arg_name} to be an integer argument which defines the rank of
         {sig}
         """
-        # arg_kname = base.kname(arg_name, Kind.ARG)
+        # node pr.ArgInt(arg_name)
+        # pr.ArgInt -> pr.Schema
+        # pr.RanksSigsShape -> pr.ArgInt
+        # node ge.Rank
+        # ge.Rank -> ge.GetRanks
         cons_name = f'rank({sig}) == \'{arg_name}\''
         rank_pobj = pr.ArgInt(arg_name, 0, None)
 
-        cons = base.IntRankConstraint(cons_name, rank_pobj.name, sig)
+        cons = base.IntRankConstraint(cons_name, rank_pobj.sub_name, sig)
         self.rank_cons.append(cons)
         schema = self._pred_node(pr.Schema)
         p_rank = P.add_node(rank_pobj, schema)
@@ -1311,8 +1315,8 @@ class SchemaApi(object):
         g_rank = G.add_node(ge.Rank(sig), g_ranks)
         self.arg_gen_nodes[arg_name] = g_rank
 
-        p_ranks = self._pred_node(pr.GetRanks)
-        p_ranks.maybe_append_parent(p_rank)
+        p_ranks_sigs_shape = self._pred_node(pr.RanksSigsShapes)
+        p_ranks_sigs_shape.maybe_append_parent(p_rank)
         self._add_definite_rank(sig)
 
     def rank_dims_constraint(self, constraint_name, get_dims, rank_sig,
@@ -1323,38 +1327,17 @@ class SchemaApi(object):
 
         Creates a generated index dimension:
         DIMS(dims_index) <- RANK(rank_sig)
-
-        get_dims(*args) must return the quantity equal to DIMS(dims_index).
-        Since this quantity is not directly available during the rank inference
-        phase, it must use other means to derive the quantity.
         """
         cons = base.DimRankConstraint(constraint_name, rank_sig, shape_arg,
                 get_dims, dims_index)
         self.rank_cons.append(cons)
-
-        shape_types = (pr.DataTensor, pr.TensorShape, pr.ShapeList,
-                pr.ShapeInt, pr.ShapeTensor, pr.ShapeTensor2D) 
-        shape_node = self.arg_pred_nodes.get(shape_arg, None)
-        if shape_node is None or not isinstance(shape_node.func, shape_types):
-            raise SchemaError(
-                f'{type(self).__qualname__}: provided shape_arg '
-                f'\'{shape_arg}\' must be an argument registered with one of '
-                f'\'arg_tensor\' or \'arg_shape_*\' API functions') 
-
-        rank = self._pred_node(pr.GetRanks)
-        rank.maybe_append_parent(shape_node)
 
         # 'sum' simply sums up the individual ranks of indices in rank_sig 
         def gen_single_index(ranks_list):
             val = sum(ranks_list)
             return [([val],)]
 
-        dims_gobj = ge.Dims(gen_single_index, dims_index, rank_sig, tuple())
-
-        g_ranks = self._gen_node(ge.GetRanks)
-        arg_shapes_ranks = self._gen_node(ge.RankStatusArgShape)
-        dims = G.add_node(dims_gobj, g_ranks)
-        arg_shapes_ranks.append_parent(dims)
+        self.gen_indices.add_generator(gen_single_index, dims_index, rank_sig)
         self.dims_graph.maybe_add_input_index(dims_index)
         self._add_definite_rank(rank_sig)
 
