@@ -171,40 +171,282 @@ class EquivRange(NodeFunc):
     def __call__(self, rank):
         yield rank
 
+class ArgRanks(NodeFunc):
+    """
+    Represent the induced ranks for arguments as determined by index ranks
+    Parents: Ranks, Sigs
+    """
+    def __init__(self):
+        super().__init__()
 
-"""
-class ArgRank(NodeFunc):
-    def __init__(self, op, arg_name):
-        super().__init__(arg_name)
+    def __call__(self, ranks, sigs):
+        arg_ranks = {}
+        for arg, sig in sigs.items():
+            rank = sum(ranks[idx] for idx in sig)
+            arg_ranks[arg] = rank
+        yield arg_ranks
+
+IndelMutation = namedtuple('IndelMutation', ['arg', 'delta'])
+
+class Indels(NodeFunc):
+    """
+    Represent an Indel mutation on one of the argument shapes
+    Parents: ArgRanks, Sigs
+    """
+    def __init__(self, op):
+        super().__init__()
         self.op = op
-        self.arg_name = arg_name
 
-    def __call__(self, obs_shapes, sigs, **index_ranks):
-        sig = sigs[self.arg_name]
-        rank = sum(index_ranks[idx] for idx in sig)
+    def __call__(self, arg_ranks, sigs):
         if self.op.generation_mode == GenMode.Inventory:
-            yield rank
+            yield None
         elif self.op.generation_mode == GenMode.Test:
-            yield rank
-            if self.op.test_error_cls is None:
-                # TODO: maybe fine-grain these errors
-                self.op.test_error_cls = NoMatchingRanks
-                yield rank + 1
-                if rank > 0:
-                    yield rank - 1
-                self.op.test_error_cls = None
+            yield None
+            if self.op.test_error_cls is not None:
+                return
+            # TODO: fine-grain this error
+            self.op.test_error_cls = NoMatchingRanks
+            definite_inds = self.op.definite_rank_indices
+            arg_names = list(arg_ranks.keys())
+            arg_ranks_tup = tuple(arg_ranks[n] for n in arg_names)
+            for t, arg in enumerate(arg_names):
+                sig = sigs[arg]
+                definite_sig = any(idx in definite_inds for idx in sig)
+                for delta in (-1, 1):
+                    z = enumerate(arg_ranks_tup)
+                    mut = tuple(r + delta if i == t else r for i, r in z)
+                    # collisions with valid ranks will be filtered out later
+                    if any(r < 0 for r in mut):
+                        continue
+                    # Mutating a rank to 1 aliases with the broadcasting
+                    # behavior of an indefinite sig.
+                    if not definite_sig and mut[t] == 1:
+                        continue
+                    indel = IndelMutation(arg, delta)
+                    yield indel
+            self.op.test_error_cls = None
+                    
         elif self.op.generation_mode == GenMode.Inference:
-            obs_shape = obs_shapes[self.arg_name]
-            obs_rank = len(obs_shape)
-            if rank == obs_rank:
-                yield rank
-            elif self.op.cur_edit_dist < self.op.max_edit_dist:
-                self.op.cur_edit_dist += 1
-                yield rank
-                self.op.cur_edit_dist -= 1
+            return
+
+class MutatedArgRanks(NodeFunc):
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, arg_ranks, indel):
+        if indel is not None:
+            arg_ranks[indel.arg] += indel.delta
+        yield arg_ranks
+
+class ArgRankHash(NodeFunc):
+    """
+    Identifies a specific configuration of final ranks.  Used to remove
+    synonymous rank mutations which would collide with a non-mutated test case.
+
+    Parents: MutatedArgRanks, Layout
+    """
+    def __init__(self):
+        super().__init__()
+        self.arg_names = []
+
+    def add_arg_name(self, arg_name):
+        self.arg_names.append(arg_name)
+
+    def __call__(self, mut_arg_ranks, layout):
+        ranks = (mut_arg_ranks[k] for k in self.arg_names)
+        yield hash((*ranks, layout))
+
+class IndexDims(NodeFunc):
+    """
+    Generate dims for indexes, making sure the predicted tensor sizes will be
+    close to a target value.
+    Parents: MutatedArgRanks, Ranks, Sigs
+    """
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
+
+    def __call__(self, mut_arg_ranks, index_ranks, arg_sigs, **comp_args):
+        max_dimsize = max(mut_arg_ranks.values())
+        """
+        Resolve a set of all index dims consistent with {index_ranks}.  First,
+        any indexes registered with add_index_generator or rank_dims_constraint
+        will be computed.  Then, remaining indexes not registered with
+        computed_index will be randomly generated in [1, max_dimsize].
+        Finally, the computed index dims are created.  The system iterates
+        until all computed index dims are non-negative.
+        """
+        gen_dims_list = self.op.gen_indices(index_ranks)
+        # indexes appearing in at least one data tensor signature.  (both input
+        # and return signatures) (some indexes are merely used as intermediate
+        # quantities to simplify computation)
+        # create deterministic order 
+        sig_indexes = { idx for sig in arg_sigs.values() for idx in sig }
+        sig_indexes = list(sorted(sig_indexes))
+
+        for gen_index_dims in gen_dims_list:
+            gen_indexes = ''.join(gen_index_dims.keys())
+
+            # generated dims will not change during the below iteration
+            input_dims = dict(gen_index_dims) 
+            for idx in sig_indexes:
+                if idx in input_dims:
+                    continue
+                if idx in self.op.dims_graph.computed_indexes():
+                    continue
+                dims = [ randint(1, max_dimsize) for _ in
+                        range(index_ranks[idx]) ]
+                input_dims[idx] = dims
+
+            while True:
+                comp_dims = self.op.dims_graph(input_dims, **comp_args) 
+
+                # fix any visible computed dims which are negative
+                # TODO: zero could need to be 1 for some dims.
+                todo = next(((idx, c, dim) 
+                    for idx, dims in comp_dims.items()
+                    for c, dim in enumerate(dims)
+                    if dim < 0), None)
+                if todo is None:
+                    index_dims = { **comp_dims, **input_dims }
+                    break
+                comp_idx, c, dim = todo
+                comp_inputs = self.op.dims_graph.get_index_inputs(comp_idx)
+                # apply the assumption that computed indexes are either
+                # component-wise or broadcasting.  secondly, assume that the
+                # computed index is monotonically increasing in the values of
+                # the input indices
+                comp_rank = index_ranks[comp_idx]
+                for input_idx in comp_inputs:
+                    if input_idx in gen_indexes:
+                        continue
+                    if input_idx not in input_dims:
+                        continue
+                    input_rank = index_ranks[input_idx]
+                    if input_rank == comp_rank:
+                        inc = c
+                    elif input_rank == 1:
+                        inc = 0
+                    else:
+                        raise SchemaError(
+                            f'Computed index \'{comp_idx}\' has rank '
+                            f'{comp_rank} but has input index \'{input_idx}\' '
+                            f'with rank {input_rank}.\n'
+                            f'Computed indices must either be component-wise '
+                            f'or broadcasting.')
+                    input_dims[input_idx][inc] += 1
+
+            for idx, dims in index_dims.items():
+                if all(d >= 0 for d in dims):
+                    continue
+                assert False, f'Index {idx} had negative dims {dims}'
+
+            yield index_dims
+
+class IndexUsage(NodeFunc):
+    """
+    Computes Index usage - needed for determining where index usages can be
+    mutated non-synonymously.
+    Parents: Sigs
+    """
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, sigs):
+        idx_usage = defaultdict(list)
+        indexes = { idx for sig in sigs.values() for idx in sig }
+        for arg, sig in sigs.items():
+            for idx in sig:
+                if idx not in indexes:
+                    continue
+                idx_usage[idx].append(arg) 
+        yield dict(idx_usage)
+
+class ArgShapes(NodeFunc):
+    """
+    Create argument shapes from sigs, index_dims, and indels
+    Parents: IndexDims, Sigs, IndexUsage, Indels, MutatedArgRanks
+    """
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
+
+    def shape_mutations(self, index_dims, sigs, idx_usage, max_dimsize):
+        """
+        Mutate individual dims of correct shapes to create IndexUsageErrors.
+        Only mutate indices which have multiple usage.
+        """
+        results = []
+        for idx, args in idx_usage.items():
+            if len(index_dims[idx]) == 0:
+                continue
+            if len(args) == 1:
+                continue
+            for mut_arg in args:
+                arg_shapes = defaultdict(list)
+                for arg, sig in sigs.items():
+                    # create a shape for arg, possibly mutated
+                    for usage in sig:
+                        snip = list(index_dims[usage])
+                        if arg == mut_arg and idx == usage:
+                            c = randint(0, len(snip)-1)
+                            new_val, alt_val = sample(range(1, max_dimsize), 2)
+                            val = new_val if new_val != snip[c] else alt_val
+                            yield (arg, c, val)
+                        arg_shapes[arg].extend(snip)
+                results.append(dict(arg_shapes))
+        return results 
+
+    @staticmethod
+    def shape_indels(arg_shapes, indel, max_dimsize):
+        """
+        Create one set of data tensor shapes according to the {indel}.
+        The indel specifies index_ranks, a changed data tensor, and a delta.
+
+        Dimension sizes are found such that the highest-rank (post-mutated) tensor
+        will have in the ball-park of {target_nelem} elements.
+        """
+        if indel is None:
+            return arg_shapes
+
+        # create the augmented shapes  
+        shape = arg_shapes[indel.arg]
+        if indel.delta < 0:
+            # delete dimensions from the shape
+            for _ in range(abs(indel.delta)):
+                p = choice(range(len(shape)))
+                shape.pop(p)
         else:
-            raise RuntimeError(f'generation mode not set')
-"""
+            for _ in range(indel.delta):
+                p = choice(range(len(shape) + 1))
+                new_dim = randint(1, max_dimsize)
+                shape.insert(p, new_dim) 
+        return arg_shapes
+
+    def __call__(self, index_dims, sigs, idx_usage, indel, mut_arg_ranks):
+        max_dimsize = max(mut_arg_ranks.values())
+        arg_shapes = {}
+        for arg, sig in sigs.items():
+            shape = [d for idx in sig for d in index_dims[idx]]
+            arg_shapes[arg] = shape
+        if self.op.generation_mode == GenMode.Inventory:
+            yield arg_shapes
+        elif self.op.generation_mode == GenMode.Test:
+            yield arg_shapes
+            if self.op.test_error_cls is None:
+                self.op.test_error_cls = IndexUsageError  
+                mutations = self.shape_mutations(index_dims, sigs, idx_usage,
+                        max_dimsize)
+                for arg, comp, val in mutations:
+                    mut_shapes = dict(arg_shapes)
+                    mut_shapes[arg][comp] = val
+                    yield mut_shapes
+                self.op.test_error_cls = NoMatchingRanks
+                mut_shapes = self.shape_indels(arg_shapes, indel, max_dimsize)
+                yield mut_shapes
+
+        elif self.op.generation_mode == GenMode.Inference:
+            return
 
 class DTypeIndiv(NodeFunc):
     """
@@ -364,6 +606,7 @@ class DTypesNotImplemented(NodeFunc):
 class TestErrorClass(NodeFunc):
     """
     Retrieve the current test error class from the schema
+    Parents: none
     """
     def __init__(self, op):
         super().__init__()
@@ -372,90 +615,16 @@ class TestErrorClass(NodeFunc):
     def __call__(self):
         yield self.op.test_error_cls
 
-class DTypesStatus(NodeFunc):
-    def __init__(self, dtype_cons):
-        super().__init__()
-        self.dtype_cons = dtype_cons
-        # double is alias for float64
-        # half is alias for float16
-        # tf.string, tf.variant, tf.resource are omitted
-        self.all_dtypes = (
-                tf.int8, tf.int16, tf.int32, tf.int64,
-                tf.uint8, tf.uint16, tf.uint32, tf.uint64,
-                tf.float16, tf.float32, tf.float64,
-                tf.qint8, tf.qint16, tf.qint32,
-                tf.bfloat16, 
-                tf.bool,
-                tf.complex64, tf.complex128
-                )
-
-    def __call__(self, ranks, layout):
-        """
-        Generate a list of all possible dtype combinations for data tensors.
-        Each combination is expressed as a map of arg => dtype.
-
-        Each item in the list is paired with the expected SchemaStatus object
-        that it would produce when validated.
-        """
-        tests = self.dtype_cons.tests
-        tensor_names = self.dtype_cons.tensors
-        k = len(tensor_names)
-        max_errors = 1
-
-        # list of (type, dtype_tuple), where <type> is a SchemaStatus expected
-        # to be produced from this tuple.
-        combo_gen = util.dtype_combos(k, self.all_dtypes, tests, max_errors,
-                ranks, layout)
-        combos = list(combo_gen)
-        combo_maps = [ (s, dict(zip(tensor_names, d))) for s, d in combos ]
-        return combo_maps
-
-class ValidDTypes(DTypesStatus):
-    def __init__(self, dtype_cons):
-        super().__init__(dtype_cons)
-
-    def __call__(self, ranks, layout):
-        combo_maps = super().__call__(ranks, layout)
-        valid_maps = [ d for stat_cls, d in combo_maps if stat_cls == Success ]
-        return valid_maps
-
-class Ranks(NodeFunc):
+class IndexRanks(NodeFunc):
     """
     Gather ranks together into one map
+    Parents:  RankRange and EquivRange nodes
     """
     def __init__(self):
         super().__init__()
 
     def __call__(self, **ranks):
         return [ranks]
-
-"""
-class Ranks(NodeFunc):
-    # Generates combinations of ranks according to the currently active
-    # constraints in the nodes.
-    def __init__(self, op):
-        super().__init__()
-        self.op = op
-
-    def __call__(self, **kwargs):
-        self.op.rank_input.set_cached(kwargs)
-        ranks_list = fgraph.gen_graph_iterate(*self.op.rank_graph.values())
-        return ranks_list
-"""
-
-"""
-class Ranks(NodeFunc):
-    def __init__(self, op, rank_candidates):
-        super().__init__()
-        self.op = op
-        self.rcands = rank_candidates
-
-    def __call__(self):
-        # Generate all allowed rank combinations.  Generates a list of maps.
-        # Each map has index => rank for each index in self.index
-        idx_ranks_list = list(self.rcands.all_index_ranks())
-        return idx_ranks_list 
-"""
 
 class Rank(NodeFunc):
     """
@@ -568,12 +737,6 @@ def get_arg_shapes(index_dims, arg_sigs):
             arg_shapes[arg].extend(dims)
     return dict(arg_shapes)
 
-def get_arg_ranks(index_ranks, arg_sigs):
-    arg_ranks = {}
-    for arg, sig in arg_sigs.items():
-        arg_ranks[arg] = sum(index_ranks[idx] for idx in sig)
-    return arg_ranks
-
 def shape_indels(index_dims, arg_sigs, indel, max_dimsize):
     """
     Create one set of data tensor shapes according to the {indel}.
@@ -638,13 +801,15 @@ class Inventory(NodeFunc):
     """
     def __init__(self, op):
         super().__init__()
-        self.obs_nodes = (op.obs_dtypes, op.obs_shapes, op.obs_layout)
-        self.outputs = op.inv_output_nodes
+        self.op = op
 
-    def __call__(self, **kwargs):
-        for n in self.obs_nodes:
-            n.set_cached(None)
-        yield from fgraph.all_values(*self.outputs)
+    def __call__(self):
+        self.op.obs_dtypes.set_cached(None)
+        self.op.obs_shapes.set_cached(None)
+        self.op.obs_layout.set_cached(None)
+        yield from fgraph.gen_graph_values(
+                self.op.inv_live_nodes,
+                self.op.inv_output_nodes)
 
 class RankStatusArgShape(NodeFunc):
     """
@@ -653,20 +818,64 @@ class RankStatusArgShape(NodeFunc):
 
     (index_ranks, (SchemaStatus, arg_shapes))
     """
-    def __init__(self, dims_graph, index_ranks_gen, index_dims_gen, op, nelem):
+    def __init__(self, dims_graph, index_dims_gen, op, nelem):
         super().__init__()
         self.dims_graph = dims_graph
-        self.ranks_gen = index_ranks_gen
         self.dims_gen = index_dims_gen
         self.op = op
         self.target_nelem = nelem
 
-    def max_dimsize(self, index_ranks, arg_sigs, indel):
-        ranks = get_arg_ranks(index_ranks, arg_sigs)
+    def max_dimsize(self, arg_ranks, indel):
+        ranks = dict(arg_ranks)
         if indel is not None:
             ranks[indel.arg] += indel.delta
         max_rank = max(ranks.values())
         return math.ceil(math.pow(self.target_nelem, 1.0 / max_rank))
+
+    def gen_configurations(self):
+        self.op.obs_dtypes.set_cached(None)
+        self.op.obs_shapes.set_cached(None)
+        self.op.obs_layout.set_cached(None)
+        self.op.generation_mode = GenMode.Test
+        self.op.test_error_cls = None
+        inv_list = list(fgraph.gen_graph_values(self.op.inv_live_nodes,
+            self.op.inv_output_nodes))
+        return inv_list
+
+    def filter_synonymous(self, inv_list):
+        item = inv_list[0]
+        akeys = list(item[1].keys())
+        dkeys = list(item[2].keys())
+
+        def item_hash(item):
+            mut_arg_ranks = item[0]
+            dtypes = item[2]
+            layout = item[4]
+            rt = tuple(mut_arg_ranks[k] for k in akeys)
+            dt = tuple(dtypes[k] for k in dkeys)
+            return hash(*rt, *dt, layout)
+
+        success = set()
+        for item in inv_list:
+            status = item[6]
+        if status is None:
+            h = item_hash(item)
+            success.add(h)
+
+        skip = set()
+        for i, item in enumerate(inv_list):
+            status = item[6]
+            if status is None:
+                continue
+            h = item_hash(item)
+            if h in success:
+                skip.add(i)
+
+        filtered = []
+        for i, item in enumerate(inv_list):
+            if i not in skip:
+                filtered.append(item)
+        return filtered
 
     def index_dims(self, index_ranks, arg_sigs, gen_index_dims, max_dimsize,
             **dims_comp_args):
@@ -744,70 +953,52 @@ class RankStatusArgShape(NodeFunc):
 
         return index_dims
 
-    def __call__(self, arg_sigs, ret_sigs, **kwargs):
+    def __call__(self, **kwargs):
         # idx_usage is a map of: idx => [arg1, arg2, ...] 
         # (arguments that the index appears in)
-        
-        all_sigs = { **arg_sigs, **ret_sigs }
+        inv_list = self.gen_configurations()
+        inv_list = self.filter_synonymous(inv_list)
+
         idx_usage = defaultdict(list)
-        indexes = { idx for sig in arg_sigs.values() for idx in sig }
-        for arg, sig in arg_sigs.items():
+        indexes = { idx for sig in sigs.values() for idx in sig }
+        for arg, sig in sigs.items():
             for idx in sig:
                 if idx not in indexes:
                     continue
                 idx_usage[idx].append(arg) 
 
-        # TODO: replace this with the graph generation
-        index_ranks_list = list(self.ranks_gen.all_index_ranks())
-        shapes_list = []
-        # Generate correct and point-mutated arg_shapes from each index_ranks
-        for index_ranks in index_ranks_list:
-            max_dimsize = self.max_dimsize(index_ranks, all_sigs, None)
+            # run dims generation to create arg_shapes, then yield it
+            max_dimsize = self.max_dimsize(arg_ranks, None)
             gen_dims_list = self.dims_gen(index_ranks)
             for gen_index_dims in gen_dims_list:
-                index_dims = self.index_dims(index_ranks, all_sigs,
+                index_dims = self.index_dims(index_ranks, sigs,
                         gen_index_dims, max_dimsize, **kwargs)
-                arg_shapes = get_arg_shapes(index_dims, all_sigs)
                 check_sizes(arg_shapes, self.target_nelem * 5)
                 item = (index_ranks, (Success, arg_shapes))
-                shapes_list.append(item)
+                yield item
 
-                point_muts = shape_mutations(index_dims, all_sigs, idx_usage,
+                point_muts = shape_mutations(index_dims, sigs, idx_usage,
                         max_dimsize)
                 for arg_shapes in point_muts:
                     check_sizes(arg_shapes, self.target_nelem)
                     item = (index_ranks, (IndexUsageError, arg_shapes))
-                    shapes_list.append(item)
+                    yield item
 
         # Generated indel-mutated arg_shapes from an indel_list
         # the indel_list is a set of mutations at the arg level
         indel_list = make_indel_mutations(index_ranks_list, arg_sigs,
                 self.op.definite_rank_indices)
         for indel in indel_list:
-            max_dimsize = self.max_dimsize(indel.index_ranks, all_sigs, indel)
+            max_dimsize = self.max_dimsize(indel.index_ranks, sigs, indel)
             gen_dims_list = self.dims_gen(indel.index_ranks)
             for gen_index_dims in gen_dims_list:
-                index_dims = self.index_dims(indel.index_ranks, all_sigs,
+                index_dims = self.index_dims(indel.index_ranks, sigs,
                         gen_index_dims, max_dimsize, **kwargs)
-                arg_shapes = shape_indels(index_dims, all_sigs, indel,
-                        max_dimsize)
+                arg_shapes = shape_indels(index_dims, sigs, indel, max_dimsize)
                 check_sizes(arg_shapes, self.target_nelem * 5)
                 item = (indel.index_ranks, (NoMatchingRanks, arg_shapes))
                 shapes_list.append(item)
         return shapes_list
-
-class StatusAggregator(NodeFunc):
-    """
-    Collects the first element of every pair tuple input.
-    Expects each to be a SchemaStatus type, and returns the first non-Success
-    one.
-    """
-    def __init__(self):
-        super().__init__()
-
-    def __call__(self, *args):
-        statuses = tuple(a[0] for a in args)
-        return [statuses]
 
 class TupleElement(NodeFunc):
     """
@@ -824,10 +1015,6 @@ class GetRanks(TupleElement):
     def __init__(self):
         super().__init__(0)
 
-class GetStatusArgShape(TupleElement):
-    def __init__(self):
-        super().__init__(1)
-
 class GetSigs(TupleElement):
     def __init__(self):
         super().__init__(2)
@@ -843,12 +1030,13 @@ class GetArgShapes(TupleElement):
 class DataTensor(NodeFunc):
     """
     Produce the (shape, dtype) combo needed to produce a tensor
+    Parents: ArgShapes, DTypes
     """
     def __init__(self, arg_name):
         super().__init__(arg_name)
         self.arg_name = arg_name
 
-    def __call__(self, arg_shapes, dtypes, **kwargs):
+    def __call__(self, arg_shapes, dtypes):
         dtype = dtypes[self.arg_name]
         shape = arg_shapes[self.arg_name]
         arg = oparg.DataTensorArg(shape, dtype)
@@ -940,8 +1128,8 @@ class DataFormat(NodeFunc):
     """
     Generate the special data_format argument, defined by the 'layout' API call
     """
-    def __init__(self, formats):
-        super().__init__()
+    def __init__(self, formats, arg_name):
+        super().__init__(arg_name)
         self.formats = formats
 
     # TODO: what is the logic for generating extra test values?
@@ -995,4 +1183,18 @@ class Options(NodeFunc):
 
     def __call__(self):
         return self.options
+
+class Args(NodeFunc):
+    """
+    Collects all arguments as an ordered dictionary
+    Parents: DataTensor, ShapeInt, ShapeList, ShapeTensor, ShapeTensor2D,
+    DataFormat (if non-default), Option.
+    Expect each argument to use the sub-name
+    """
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, **kwargs):
+        args = kwargs
+        yield args 
 

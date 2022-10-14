@@ -643,13 +643,13 @@ class CompDimsGraph(object):
         self.comp_indices = {}  # idx => FuncNode(CompIndex)
         self.nodes = {}
         F.set_registry(self.nodes)
-        node = F.add_node(InputVar('kwargs'))
+        node = F.add_node_sn(InputVar('kwargs'))
         self.kwnode = node
 
     def maybe_add_input_index(self, idx):
         node = self.input_indices.get(idx, None)
         if node is None:
-            node = F.add_node(InputVar(idx))
+            node = F.add_node_sn(InputVar(idx))
             self.input_indices[idx] = node
         return node
 
@@ -671,7 +671,7 @@ class CompDimsGraph(object):
             parents.append(node)
         
         ci_obj = CompIndex(idx, comp_func, const_args)
-        node = F.add_node(ci_obj, *parents)
+        node = F.add_node_sn(ci_obj, *parents)
         self.comp_indices[idx] = node
 
     def computed_indexes(self):
@@ -693,7 +693,7 @@ class CompDimsGraph(object):
 
     def finalize(self):
         for node in self.comp_indices.values():
-            node.append_parent(self.kwnode)
+            node.append_parent_sn(self.kwnode)
 
     def __call__(self, index_dims, **kwargs):
         self.kwnode.set_cached(kwargs)
@@ -704,7 +704,7 @@ class CompDimsGraph(object):
         comp_nodes = list(self.comp_indices.values())
 
         # this is node name => value
-        val_map = fgraph.func_graph_evaluate(comp_nodes, use_subname=True)
+        val_map = fgraph.func_graph_evaluate(*comp_nodes)
         return val_map
 
 class Constraint(object):

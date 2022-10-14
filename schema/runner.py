@@ -9,17 +9,12 @@ class TestResult(object):
     One schema test result.  Holds all sufficient information about the test.
     Provides convenient reporting and classification functions
     """
-    def __init__(self, op, _id, arg_map, index_ranks, status_list):
+    def __init__(self, op, _id, arg_map, index_ranks, status):
         self.op = op
         self.id = _id
         self.arg_map = arg_map
         self.index_ranks = index_ranks
-        err = list(s for s in status_list if s != Success)
-        if len(err) > 1:
-            stat = None
-        else:
-            stat = err[0] if len(err) > 0 else Success
-        self.expect_class = stat
+        self.expect_class = status
 
     def add_result(self):
         self.opgrind_status = self.op.input_status
@@ -167,33 +162,16 @@ def validate(op, out_dir, test_ids=None, skip_ids=None):
 
     print('Generating tests')
     # list of node.name, value
-    test_id = 1
+    configs = op._generate_tests() 
+    print(f'Generated {len(configs)} tests')
+
+    # Create the test instances
     tests = []
-    config_list = list(fgraph.gen_graph_iterate(*op.gen_graph.values()))
-    stat_name = fgraph.node_name(ge.StatusAggregator)
-    ranks_name = fgraph.node_name(ge.GetRanks)
-
-    print(f'Generated {len(config_list)} candidates')
-    for node_vals in config_list:
-        arg_vals = {}
-        for arg_name in op.arg_order:
-            node = op.arg_gen_nodes.get(arg_name, None)
-            if node is None:
-                continue
-            val = node_vals[node.name]
-            arg_vals[arg_name] = val
-
-        status_list = node_vals[stat_name]
-        index_ranks = node_vals[ranks_name]
-        t = TestResult(op, test_id, arg_vals, index_ranks, status_list)
-        test_id += 1
-        if t.expect_class is None:
-            test_id -= 1
-            continue
+    for test_id, (stat, args, ranks) in enumerate(configs, 1):
+        if stat is None:
+            stat = Success
+        t = TestResult(op, test_id, args, ranks, stat) 
         tests.append(t)
-
-    print(f'Created {len(tests)} tests')
-    print()
 
     test_id = 1
     with open(files['TP'], 'w') as tp, \

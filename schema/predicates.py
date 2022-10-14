@@ -3,7 +3,7 @@ import numpy as np
 import tensorflow as tf
 from collections import defaultdict
 from .error import *
-from . import util, base
+from . import util, base, fgraph
 from .fgraph import NodeFunc, node_name
 from .flib import Index
 from .base import GenMode
@@ -265,7 +265,7 @@ class GetArgSigs(TupleElement):
     Get the Sigs from RanksSigsShapes
     """
     def __init__(self):
-        super().__init__(1)
+        super().__init__(2)
 
 class GetReturnSigs(TupleElement):
     """
@@ -286,13 +286,34 @@ class Inventory(NodeFunc):
         super().__init__()
         self.op = op
 
+    def get_hits(self, max_edit_dist):
+        self.op.max_edit_dist = max_edit_dist
+        hits = list(fgraph.gen_graph_values(
+                        self.op.inv_live_nodes,
+                        self.op.inv_output_nodes))
+        return hits
+
     def __call__(self, dtypes, shapes, layout):
         # prepare the inventory graph
         self.op.obs_dtypes.set_cached(dtypes)
         self.op.obs_shapes.set_cached(shapes)
         self.op.obs_layout.set_cached(layout)
         self.op.generation_mode = GenMode.Inference
-        pass
+        
+        hits = self.get_hits(0)
+        if len(hits) > 0:
+            return True, hits
+
+        # produce up to some number of suggestions 
+        max_suggs = 5
+        all_hits = []
+        for dist in range(1, 3):
+            hits = self.get_hits(dist)
+            all_hits.extend(hits)
+            if len(all_hits) >= max_suggs:
+                break
+        return False, all_hits
+
 
 class RanksSigsShapes(NodeFunc):
     """
