@@ -9,9 +9,9 @@ from random import randint, choice, sample
 from functools import partial
 from collections import defaultdict
 from .fgraph import FuncNode as F, func_graph_evaluate, NodeFunc
+from .base import GenMode
 from .error import *
-from . import oparg
-from . import util, base
+from . import oparg, util, base, fgraph
 
 """
 This file provides the complete collection of NodeFuncs for use in the GenNodes
@@ -42,7 +42,335 @@ result.
 
 These implicit-success nodes should return an empty list if they receive
 invalid inputs.
+
+
+The inventory graph (inv_graph) will be run in three modes:
+
+INVENTORY:  produces a list of input configurations that satisfy all schema
+constraints
+
+TEST_GEN: produces the same set as INVENTORY (each tagged with expected status
+Success).  In addition, produces an additional set which violate exactly one
+type of schema constraint (though may violate multiple constraints of the same
+type).  These are also marked with the appropriate expected status.
+
+INFERENCE: produce a set of configurations which satisfy all schema
+constraints, and have up to op.max_observ_error observation constraint errors.
+
+Inference will be run starting with 0, 1, etc setting for op.max_observ_error.
+The majority of calls will find a configuration at 0 observed error.
+
 """
+ALL_DTYPES = (
+        tf.int8, tf.int16, tf.int32, tf.int64,
+        tf.uint8, tf.uint16, tf.uint32, tf.uint64,
+        tf.float16, tf.float32, tf.float64,
+        tf.qint8, tf.qint16, tf.qint32,
+        tf.bfloat16, 
+        tf.bool,
+        tf.complex64, tf.complex128
+        )
+
+
+class ObservedValue(NodeFunc):
+    """
+    Node for delivering inputs to any individual rank nodes.
+    This is the portal to connect the rank graph to its environment
+    """
+    def __init__(self, name):
+        super().__init__(name)
+
+    def __call__(self):
+        return [{}]
+
+class RankRange(NodeFunc):
+    """
+    Produce a range of ranks for a given index.  Takes the intersection of
+    legal values for each constraint
+    """
+    def __init__(self, op, name):
+        super().__init__(name)
+        self.op = op
+        self.schema_cons = []
+        self.observ_cons = []
+
+    def add_schema_constraint(self, cons):
+        self.schema_cons.append(cons)
+
+    def add_observ_constraint(self, cons):
+        self.observ_cons.append(cons)
+
+    def __call__(self, obs_dtypes, obs_shapes, obs_layout, sigs, **gen_inputs):
+        """
+        1. Produces the "schema interval" [lo, hi] which is the intersection of
+        all schema constraint intervals.
+
+        2. If enabled, each observational constraint is evaluated to yield an
+        "error-padded" interval [max(0, clo - err), chi + err] where [clo, chi]
+        is the observational constraint interval, and err is the maximum
+        tolerated error.
+
+        The final interval becomes the intersection of the schema interval with
+        all error-padded intervals.  Each position inside the padding incurs a
+        cost.  Any non-zero cost causes the op.error_status to be set while
+        yielding that value.
+        """
+        obs_map = { 
+                'dtypes': obs_dtypes, 
+                'shapes': obs_shapes, 
+                'layout': obs_layout,
+                'sigs': sigs }
+
+        # Get the initial bounds consistent with the schema
+        lo, hi = 0, 1e10
+        for cons in self.schema_cons:
+            args = tuple(obs_map[arg] for arg in cons.get_argnames())
+            clo, chi = cons(*args, **gen_inputs)
+            lo = max(lo, clo)
+            hi = min(hi, chi)
+
+        if self.op.generation_mode == GenMode.Inventory:
+            yield from range(lo, hi+1)
+        elif self.op.generation_mode == GenMode.Test:
+            yield from range(lo, hi+1)
+            if self.op.test_error_cls is None:
+                # TODO: maybe fine-grain this error?
+                self.op.test_error_cls = NoMatchingRanks
+                yield hi+1
+                if lo > 0:
+                    yield lo-1
+                self.op.test_error_cls = None
+        elif self.op.generation_mode == GenMode.Inference:
+            # each observation will further limit the range to [clo, chi]
+            cost = [0] * (hi+1)
+            margin = 1 # this is enough to discover an under-specified range
+            for cons in self.observ_cons:
+                args = tuple(obs_map[arg] for arg in cons.get_argnames())
+                clo, chi = cons(*args, **gen_inputs)
+                lpad = clo - 1
+                if lpad in range(lo, hi+1):
+                    cost[lpad] += 1
+                rpad = chi + 1
+                if rpad in range(lo, hi+1):
+                    cost[rpad] += 1
+            for i in range(lo, hi+1):
+                if self.op.cur_edit_dist + cost[i] <= self.op.max_edit_dist:
+                    self.op.cur_edit_dist += cost[i]
+                    yield i
+                    self.op.cur_edit_dist -= cost[i]
+        else:
+            raise RuntimeError('generation_mode not set')
+
+class EquivRange(NodeFunc):
+    """
+    Produce a range identical to the primary index
+    """
+    def __init__(self, name):
+        super().__init__(name)
+
+    def __call__(self, rank):
+        yield rank
+
+
+"""
+class ArgRank(NodeFunc):
+    def __init__(self, op, arg_name):
+        super().__init__(arg_name)
+        self.op = op
+        self.arg_name = arg_name
+
+    def __call__(self, obs_shapes, sigs, **index_ranks):
+        sig = sigs[self.arg_name]
+        rank = sum(index_ranks[idx] for idx in sig)
+        if self.op.generation_mode == GenMode.Inventory:
+            yield rank
+        elif self.op.generation_mode == GenMode.Test:
+            yield rank
+            if self.op.test_error_cls is None:
+                # TODO: maybe fine-grain these errors
+                self.op.test_error_cls = NoMatchingRanks
+                yield rank + 1
+                if rank > 0:
+                    yield rank - 1
+                self.op.test_error_cls = None
+        elif self.op.generation_mode == GenMode.Inference:
+            obs_shape = obs_shapes[self.arg_name]
+            obs_rank = len(obs_shape)
+            if rank == obs_rank:
+                yield rank
+            elif self.op.cur_edit_dist < self.op.max_edit_dist:
+                self.op.cur_edit_dist += 1
+                yield rank
+                self.op.cur_edit_dist -= 1
+        else:
+            raise RuntimeError(f'generation mode not set')
+"""
+
+class DTypeIndiv(NodeFunc):
+    """
+    A Dtype with an individual valid set
+    """
+    def __init__(self, op, arg_name, valid_dtypes):
+        super().__init__(arg_name)
+        self.arg_name = arg_name
+        self.op = op
+        self.valid_dtypes = valid_dtypes
+        self.invalid_dtypes = tuple(t for t in ALL_DTYPES if t not in
+                valid_dtypes)
+
+    def __call__(self, obs_dtypes):
+        if self.op.generation_mode == GenMode.Inventory:
+            yield from self.valid_dtypes
+        elif self.op.generation_mode == GenMode.Test:
+            yield from self.valid_dtypes
+            if self.op.test_error_cls is None:
+                self.op.test_error_cls = DTypeNotValid
+                yield from self.invalid_dtypes
+                self.op.test_error_cls = None
+        elif self.op.generation_mode == GenMode.Inference:
+            # get observation
+            # print(obs_dtypes)
+            obs_dtype = obs_dtypes[self.arg_name]
+            if obs_dtype in self.valid_dtypes:
+                yield obs_dtype
+            if self.op.cur_edit_dist < self.op.max_edit_dist:
+                self.op.cur_edit_dist += 1
+                for dtype in self.valid_dtypes:
+                    if dtype != obs_dtype:
+                        yield dtype
+                self.op.cur_edit_dist -= 1
+        else:
+            raise RuntimeError(f'generation mode not set')
+
+class DTypeEquiv(NodeFunc):
+    """
+    A DType which is declared equal to another using equate_dtypes 
+    """
+    def __init__(self, op, arg_name):
+        super().__init__(arg_name)
+        self.op = op
+        self.arg_name = arg_name
+        self.all_dtypes = ALL_DTYPES
+
+    def __call__(self, obs_dtypes, src_dtype):
+        if self.op.generation_mode == GenMode.Inventory:
+            yield src_dtype
+        elif self.op.generation_mode == GenMode.Test:
+            yield src_dtype # leave error alone
+            if self.op.test_error_cls is not None:
+                return
+            self.op.test_error_cls = DTypeNotEqual
+            for dtype in self.all_dtypes:
+                if dtype != src_dtype:
+                    yield dtype
+            self.op.test_error_cls = None
+        elif self.op.generation_mode == GenMode.Inference:
+            # get the observation
+            obs_dtype = obs_dtypes[self.arg_name]
+            if src_dtype == obs_dtype:
+                yield obs_dtype
+            else:
+                if self.op.cur_edit_dist < self.op.max_edit_dist:
+                    self.op.cur_edit_dist += 1
+                    yield src_dtype
+                    self.op.cur_edit_dist -= 1
+        else:
+            raise RuntimeError('generation_mode not set')
+
+class DTypesNotImplemented(NodeFunc):
+    """
+    Represents configurations that are not implemented, declared with API
+    function exclude_dtypes.  {fields} is a tuple containing members of:
+    - names of data tensors
+    - one-letter index names
+    - the base.LAYOUT constant
+
+    See api::exclude_dtypes for more detail
+    """
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
+        self.dtypes = []
+        self.dtype_names = []
+        self.indexes = []
+        self.layout = None
+        self.exclude = []
+
+    def add_dtype_node(self, node_name, tensor_name):
+        self.dtypes.append(node_name)
+        self.dtype_names.append(tensor_name)
+
+    def add_index(self, idx):
+        self.indexes.append(idx)
+
+    def add_layout(self):
+        self.layout = fgraph.node_name(Layout, base.LAYOUT)
+
+    def add_config(self, dtypes, index_ranks, layout):
+        self.exclude.append((dtypes, index_ranks, layout))
+
+    def is_excluded(self, dtypes, ranks, layout):
+        for exc_dtypes, exc_ranks, exc_layout in self.exclude:
+            zd = zip(exc_dtypes, dtypes)
+            zr = zip(exc_ranks, ranks)
+            if (all(sd is None or sd == d for sd, d in zd) and
+                    all(sr is None or sr == r for sr, r in zr) and
+                    (exc_layout is None or exc_layout == layout)):
+                return True
+        return False
+
+    def get_dtype_map(self, dtypes):
+        return { n: t for n, t in zip(self.dtype_names, dtypes) }
+
+    def __call__(self, obs_dtypes, **gen_input):
+        # gen_input should include:
+        # ge.DTypeIndiv, ge.DTypeEquiv
+        # ge.RankRange(idx) for idx in self.indexes
+        # ge.Layout 
+        # print(gen_input)
+        dtypes = tuple(gen_input[tn] for tn in self.dtypes)
+        ranks = tuple(gen_input[idx] for idx in self.indexes)
+        if self.layout is not None:
+            layout = gen_input[self.layout]
+        else:
+            layout = None
+
+        is_ex = self.is_excluded(dtypes, ranks, layout)
+
+        if self.op.generation_mode == GenMode.Inventory:
+            if is_ex:
+                return
+            else:
+                yield self.get_dtype_map(dtypes)
+        elif self.op.generation_mode == GenMode.Test:
+            if is_ex:
+                if self.op.test_error_cls is None:
+                    self.op.test_error_cls = DTypeComboExcluded
+                    yield self.get_dtype_map(dtypes)
+                    self.op.test_error_cls = None
+            else:
+                yield self.get_dtype_map(dtypes)
+
+        elif self.op.generation_mode == GenMode.Inference:
+            if is_ex:
+                return
+            else:
+                # get observed dtypes
+                obs_map = dict(zip(self.dtype_names, obs_dtypes.values()))
+                yield obs_map
+        else:
+            raise RuntimeError('generation_mode not set')
+
+class TestErrorClass(NodeFunc):
+    """
+    Retrieve the current test error class from the schema
+    """
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
+
+    def __call__(self):
+        yield self.op.test_error_cls
 
 class DTypesStatus(NodeFunc):
     def __init__(self, dtype_cons):
@@ -92,18 +420,42 @@ class ValidDTypes(DTypesStatus):
         return valid_maps
 
 class Ranks(NodeFunc):
+    """
+    Gather ranks together into one map
+    """
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, **ranks):
+        return [ranks]
+
+"""
+class Ranks(NodeFunc):
+    # Generates combinations of ranks according to the currently active
+    # constraints in the nodes.
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
+
+    def __call__(self, **kwargs):
+        self.op.rank_input.set_cached(kwargs)
+        ranks_list = fgraph.gen_graph_iterate(*self.op.rank_graph.values())
+        return ranks_list
+"""
+
+"""
+class Ranks(NodeFunc):
     def __init__(self, op, rank_candidates):
         super().__init__()
         self.op = op
         self.rcands = rank_candidates
 
     def __call__(self):
-        """
-        Generate all allowed rank combinations.  Generates a list of maps.
-        Each map has index => rank for each index in self.index
-        """
+        # Generate all allowed rank combinations.  Generates a list of maps.
+        # Each map has index => rank for each index in self.index
         idx_ranks_list = list(self.rcands.all_index_ranks())
         return idx_ranks_list 
+"""
 
 class Rank(NodeFunc):
     """
@@ -280,6 +632,20 @@ def check_sizes(arg_shapes, max_nelem):
             f'Generated shape for argument \'{arg}\' was {shape} with '
             f'{nelem} elements, exceeding the maximum allowed {max_nelem}')
 
+class Inventory(NodeFunc):
+    """
+    Generate inventory and test cases for the op.
+    """
+    def __init__(self, op):
+        super().__init__()
+        self.obs_nodes = (op.obs_dtypes, op.obs_shapes, op.obs_layout)
+        self.outputs = op.inv_output_nodes
+
+    def __call__(self, **kwargs):
+        for n in self.obs_nodes:
+            n.set_cached(None)
+        yield from fgraph.all_values(*self.outputs)
+
 class RankStatusArgShape(NodeFunc):
     """
     Generate shapes for all registered input signatures, plus point-mutated
@@ -391,9 +757,10 @@ class RankStatusArgShape(NodeFunc):
                     continue
                 idx_usage[idx].append(arg) 
 
+        # TODO: replace this with the graph generation
         index_ranks_list = list(self.ranks_gen.all_index_ranks())
         shapes_list = []
-        # Success and IndexUsageError lists
+        # Generate correct and point-mutated arg_shapes from each index_ranks
         for index_ranks in index_ranks_list:
             max_dimsize = self.max_dimsize(index_ranks, all_sigs, None)
             gen_dims_list = self.dims_gen(index_ranks)
@@ -412,7 +779,8 @@ class RankStatusArgShape(NodeFunc):
                     item = (index_ranks, (IndexUsageError, arg_shapes))
                     shapes_list.append(item)
 
-        # NoMatchingRanks list
+        # Generated indel-mutated arg_shapes from an indel_list
+        # the indel_list is a set of mutations at the arg level
         indel_list = make_indel_mutations(index_ranks_list, arg_sigs,
                 self.op.definite_rank_indices)
         for indel in indel_list:
@@ -459,6 +827,10 @@ class GetRanks(TupleElement):
 class GetStatusArgShape(TupleElement):
     def __init__(self):
         super().__init__(1)
+
+class GetSigs(TupleElement):
+    def __init__(self):
+        super().__init__(2)
 
 class GetDTypes(TupleElement):
     def __init__(self):

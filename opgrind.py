@@ -1,9 +1,11 @@
 import importlib
 import inspect
+import traceback
 from schema import SchemaApi
 from schema.error import OpGrindInternalError, FrameworkError, Success
 from schema.error import NotApplicable
 from schema import fgraph, runner
+from pprint import pprint
 
 REGISTRY = {}
 
@@ -18,6 +20,13 @@ def register(*op_paths):
         try:
             _register_op(op_path)
         except BaseException as ex:
+            trace = inspect.trace()
+            print('Trace:')
+            for t in trace:
+                print(inspect.getsource(t))
+            # print('\n'.join(str(t) for t in trace))
+            # trace = inspect.trace()
+            # print(inspect.stack())
             print(f'Got exception: {ex} while registering op '
                     f'\'{op_path}\'.  Skipping.')
 
@@ -125,15 +134,15 @@ def _dot_graph(op, nodes, out_file):
         color = 'red' if is_arg else 'black'
         dot.node(names[node.name], node.name, color=color)
         vtype = node.vararg_type
-        if vtype == fgraph.VarArgs.Positional:
-            alt_color = 'brown'
-        elif vtype == fgraph.VarArgs.Keyword:
-            alt_color = 'blue'
-        else:
-            alt_color = 'black'
-
-        for i, pa in enumerate(node.parents):
-            color = 'black' if (i < node.num_named_pars) else alt_color
+        for i, (pa,sn) in enumerate(node.parents):
+            if i < node.num_named_pars:
+                color = 'black'
+            elif vtype == fgraph.VarArgs.Positional:
+                color = 'brown'
+            elif vtype == fgraph.VarArgs.Keyword:
+                color = 'lightblue' if sn else 'blue'
+            else:
+                color = 'black'
             dot.edge(names[node.name], names[pa.name], _attributes={'color': color})
     dot.render(out_file)
     print(f'Wrote {out_file}.pdf')

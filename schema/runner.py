@@ -169,7 +169,7 @@ def validate(op, out_dir, test_ids=None, skip_ids=None):
     # list of node.name, value
     test_id = 1
     tests = []
-    config_list = list(fgraph.gen_graph_iterate(op.gen_graph.values()))
+    config_list = list(fgraph.gen_graph_iterate(*op.gen_graph.values()))
     stat_name = fgraph.node_name(ge.StatusAggregator)
     ranks_name = fgraph.node_name(ge.GetRanks)
 
@@ -192,8 +192,8 @@ def validate(op, out_dir, test_ids=None, skip_ids=None):
             continue
         tests.append(t)
 
+    print(f'Created {len(tests)} tests')
     print()
-    print(f'created {len(tests)} tests')
 
     test_id = 1
     with open(files['TP'], 'w') as tp, \
@@ -226,6 +226,10 @@ def validate(op, out_dir, test_ids=None, skip_ids=None):
     
             print('\r', end='')
             print(f'Running test: {t.id:-4d}  ', end='')
+            arg_dict = t.make_args()
+            t.op._prepare_call(**arg_dict)
+            t.op._check_args()
+            continue
             t.run()
             cat = t.category
             row = t.stats()

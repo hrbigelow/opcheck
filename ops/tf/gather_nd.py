@@ -1,13 +1,13 @@
 def init_schema(op):
     op.add_index('b', 'batch')
-    op.add_index('r', 'read location', 1, None)
-    op.add_index('w', 'write location', 1, None)
+    op.add_index('r', 'read location', (1, 100))
+    op.add_index('w', 'write location', (1, 100))
     op.add_index('e', 'slice element')
-    op.add_index('c', 'read address component', 1, 1)
+    op.add_index('c', 'read address component', (1, 1))
 
     # allowed rank combinations
-    op.limit_ranks('bre', None, 8)
-    op.limit_ranks('bwc', None, 8)
+    op.limit_ranks('bre', 0, 8)
+    op.limit_ranks('bwc', 0, 8)
 
     # argument interpretations
     op.arg_tensor('indices', 'bwc')

@@ -6,6 +6,7 @@ from .error import *
 from . import util, base
 from .fgraph import NodeFunc, node_name
 from .flib import Index
+from .base import GenMode
 
 """
 A collection of fgraph.NodeFunc derived classes for use in fgraph.PredNodes.
@@ -196,16 +197,28 @@ class SliceShape(NodeFunc):
         return True, vals 
 
 class DTypes(NodeFunc):
+    """
+    Aggregate the outputs of TensorDType nodes.  Always succeeds
+    """
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, **dtypes_map):
+        return True, dtypes_map
+
+"""
+class DTypes(NodeFunc):
     def __init__(self, dtype_cons):
         super().__init__()
         self.dtype_cons = dtype_cons
 
     def __call__(self, index_ranks, layout, **kwargs):
-        """Check that all tensor arguments have valid dtypes"""
+        # Check that all tensor arguments have valid dtypes
         arg_dtypes = kwargs
         stat = self.dtype_cons.status(arg_dtypes, index_ranks, layout)
         valid = isinstance(stat, Success)
         return valid, stat
+"""
 
 class ShapeMap(NodeFunc):
     """
@@ -268,6 +281,19 @@ class GetShapes(TupleElement):
     def __init__(self):
         super().__init__(3)
 
+class Inventory(NodeFunc):
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
+
+    def __call__(self, dtypes, shapes, layout):
+        # prepare the inventory graph
+        self.op.obs_dtypes.set_cached(dtypes)
+        self.op.obs_shapes.set_cached(shapes)
+        self.op.obs_layout.set_cached(layout)
+        self.op.generation_mode = GenMode.Inference
+        pass
+
 class RanksSigsShapes(NodeFunc):
     """
     Search the set of all valid index rank combinations, combined with all
@@ -310,15 +336,14 @@ class RanksSigsShapes(NodeFunc):
         return bcast_shapes
 
     @classmethod
-    def key(cls, cand):
-        delta, layout_delta, _ = cand
-        num_errors = len(list(d for d in delta if d != 0)) + layout_delta
-        tot_error = sum(abs(d) for d in delta) + layout_delta
+    def error_key(cls, deltas):
+        num_errors = len(list(d for d in deltas if d != 0))
+        tot_error = sum(abs(d) for d in deltas)
         return num_errors, tot_error
 
     @classmethod
-    def filt(cls, cand):
-        num_errors, tot_error = cls.key(cand)
+    def qualified(cls, deltas):
+        num_errors, tot_error = cls.error_key(deltas)
         return num_errors < 3 and tot_error < 3
 
     def __call__(self, shapes, data_format, **kwargs):
@@ -328,40 +353,19 @@ class RanksSigsShapes(NodeFunc):
         of that integer.
         """
         fields = ['format', 'sigs', 'ranks', 'suggestions', 'highlight']
-        Candidate = namedtuple('Candidate', fields)
+        Candidate = namedtuple('Candidate', fields[:3])
+        Report = namedtuple('Report', fields)
 
         result = None
-        candidates = []
+        error_tuples = []
 
         it = 0
-
         for ranks, arg_sigs, ret_sigs, cand_format in self.op.ranks_sigs_format_list:
-            if ((data_format is None and cand_format is None) or 
-                    (data_format == cand_format)):
-                layout_delta = 0
-            else:
-                layout_delta = 1
-
+            layout_delta = (data_format == cand_format)
             deltas = []
-            suggestions = []
-            highlight_map = defaultdict(list)
             for c in self.rcons:
                 delta = c.rank_error(arg_sigs, shapes, ranks, **kwargs)
                 deltas.append(delta)
-                sug = c.suggestion(delta)
-                if sug is not None:
-                    suggestions.append(sug)
-                if delta != 0:
-                    hl = c.highlight_map(arg_sigs, shapes, ranks)
-                    for arg, pos in hl.items():
-                        highlight_map[arg].extend(pos)
-
-            if layout_delta == 1:
-                sug = f'Use layout {cand_format}'
-                suggestions.append(sug)
-                data_format_arg = self.op.data_formats.arg_name
-                # highlight the argument itself
-                highlight_map[data_format_arg].append(0)
 
             if all(d == 0 for d in deltas) and layout_delta == 0:
                 if result is None:
@@ -374,14 +378,33 @@ class RanksSigsShapes(NodeFunc):
                         f'constraints.  Current constraints are:\n'
                         f'{", ".join(c.name for c in self.rcons)}')
 
-            cand = Candidate(cand_format, arg_sigs, ranks, suggestions,
-                    highlight_map)
-            candidates.append((deltas, layout_delta, cand))
+            cand = Candidate(cand_format, arg_sigs, ranks)
+            if self.qualified(deltas + [layout_delta]):
+                error_tuples.append((deltas, layout_delta, cand))
 
         if result is None:
-            filtered = filter(self.filt, candidates)
-            top = sorted(filtered, key=self.key)
-            report = [ t[2] for t in top ]
+            ordered = sorted(error_tuples, key=self.error_key)
+            bestk = ordered[:self.op.max_report_candidates]
+            reports = []
+            for deltas, layout_delta, cand in bestk:
+                report = Report(cand.format, cand.sigs, cand.ranks, [], {})
+                for c, delta in zip(self.rcons, deltas):
+                    sug = c.suggestion(delta)
+                    if sug is not None:
+                        report.suggestions.append(sug)
+                    if delta != 0:
+                        hl = c.highlight_map(arg_sigs, shapes, ranks)
+                        for arg, pos in hl.items():
+                            report.highlight_map[arg].extend(pos)
+
+                if layout_delta == 1:
+                    sug = f'Use layout {cand_format}'
+                    report.suggestions.append(sug)
+                    data_format_arg = self.op.data_formats.arg_name
+                    # highlight the argument itself
+                    report.highlight_map[data_format_arg].append(0)
+                reports.append(report)
+
             # restore the shape map to its original form
             orig_shapes = {}
             for arg, shape in shapes.items():

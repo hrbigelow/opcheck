@@ -1,13 +1,29 @@
 import numpy as np
 import itertools
+import enum
 from collections import namedtuple, defaultdict
-from . import predicates as pr
 from .error import * 
 from .fgraph import FuncNode as F, NodeFunc
 from . import fgraph
 from . import util
 
+
 LAYOUT = ':layout'
+
+class GenMode(enum.Enum):
+    Inventory = 0
+    Test = 1
+    Inference = 2
+
+class ShapeKind(enum.Enum):
+    """
+    For describing the kind of input that defines a shape
+    """
+    DataTensor = 0
+    List = 1
+    Int = 2
+    Tensor = 3
+    Tensor2D = 4
 
 class DataFormats(object):
     """
@@ -253,12 +269,6 @@ class ShapeRankConstraint(RankConstraint):
     def __init__(self, shape_arg, arg_type):
         name = f'rank(sig({shape_arg})) == len({shape_arg})'
         super().__init__(name, shape_arg, shape_rank)
-        allowed_types = (pr.TensorShape, pr.ShapeList, pr.ShapeInt,
-                pr.ShapeTensor, pr.ShapeTensor2D)
-        if arg_type not in allowed_types:
-            raise RuntimeError(
-                f'{type(self).__qualname__}: got illegal arg_type '
-                f'\'{arg_type}\'')
         self.arg_type = arg_type
         
     def highlight_map(self, sig_map, shape_map, rank_map):
@@ -274,22 +284,22 @@ class ShapeRankConstraint(RankConstraint):
         if rank_error == 0:
             return None
         elif rank_error < 0:
-            if self.arg_type == pr.TensorShape:
+            if self.arg_type == ShapeKind.DataTensor:
                 msg = f'Add {-rank_error} dimension{s} to \'{self.shape_arg}\''
-            elif self.arg_type in (pr.ShapeTensor, pr.ShapeList):
+            elif self.arg_type in (ShapeKind.Tensor, ShapeKind.List):
                 msg = f'Add {-rank_error} element{s} to \'{self.shape_arg}\''
-            elif self.arg_type == pr.ShapeInt:
+            elif self.arg_type == ShapeKind.Int:
                 msg = f'Increase \'{self.shape_arg}\' by {-rank_error}'
             else:
                 pass
         else:
-            if self.arg_type == pr.TensorShape:
+            if self.arg_type == ShapeKind.Tensor:
                 msg = (f'Remove {rank_error} dimension{s} from '
                 f'\'{self.shape_arg}\'')
-            elif self.arg_type in (pr.ShapeTensor, pr.ShapeList):
+            elif self.arg_type in (ShapeKind.Tensor, ShapeKind.List):
                 msg = (f'Remove {rank_error} element{s} from '
                         f'\'{self.shape_arg}\'')
-            elif self.arg_type == pr.ShapeInt:
+            elif self.arg_type == ShapeKind.Int:
                 msg = f'Decrease \'{self.shape-arg}\' by {-rank_error}'
         return msg
 
@@ -686,14 +696,71 @@ class CompDimsGraph(object):
             node.append_parent(self.kwnode)
 
     def __call__(self, index_dims, **kwargs):
-        self.kwnode.set_cached_value(kwargs)
+        self.kwnode.set_cached(kwargs)
         for idx, node in self.input_indices.items():
             # that any unavailable indices are not needed for this layout
             val = index_dims.get(idx, None)
-            node.set_cached_value(val)
+            node.set_cached(val)
         comp_nodes = list(self.comp_indices.values())
 
         # this is node name => value
         val_map = fgraph.func_graph_evaluate(comp_nodes, use_subname=True)
         return val_map
-        
+
+class Constraint(object):
+    """
+    Static list of argument names to retrieve from a map
+    """
+    def __init__(self, *names):
+        self.arg_names = names
+
+    def get_argnames(self):
+        return self.arg_names
+
+class SumRangeConstraint(Constraint):
+    """
+    Expresses the constraint RANK(sig) in [lo, hi].  When called, it provides a
+    residual range based on values provided for some subset of indexes in the
+    signature.
+    """
+    def __init__(self, op, sig, lo, hi):
+        super().__init__()
+        self.op = op
+        self.sig = sig
+        self.lo = lo
+        self.hi = hi
+
+    def __call__(self, **index_ranks):
+        residual = sum(index_ranks.get(idx, 0) for idx in self.sig)
+        return (
+                max(0, self.lo - residual - self.op.max_edit_dist), 
+                max(0, self.hi - residual + self.op.max_edit_dist)
+                )
+
+class ArgRankConstraint(Constraint):
+    """
+    Expresses one of these constraints:
+    1. RANK(SIG(arg)) = RANK(arg) 
+    2. RANK(SIG(arg)) in [0, RANK(arg)]
+
+    Option 1 is in effect if low_bound is True, Option 2 otherwise
+    dist is a search parameter set by the schema.
+    """
+    def __init__(self, op, arg_name, with_low_bound=False):
+        super().__init__('shapes', 'sigs')
+        self.arg_name = arg_name
+        self.op = op
+        self.with_low_bound = with_low_bound
+
+    def __call__(self, obs_shapes, sigs, **gen_input):
+        if self.op.generation_mode != GenMode.Inference:
+            return 0, 10000
+        # get arg signature and shape
+        arg_sig = sigs[self.arg_name]
+        obs_shape = obs_shapes[self.arg_name]
+        obs_rank = len(obs_shape)
+        tlo = obs_rank if self.with_low_bound else 0
+        thi = obs_rank 
+        residual = sum(gen_input.get(idx, 0) for idx in arg_sig)
+        return max(0, tlo - residual), max(0, thi - residual)
+

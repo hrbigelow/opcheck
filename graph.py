@@ -17,9 +17,9 @@ if __name__ == '__main__':
                 f'Output directory \'{out_dir}\' does not exist')
         op_path = sys.argv[2]
         opgrind.register(op_path)
+        opgrind.print_inventory_graph(op_path, out_dir)
         opgrind.print_gen_graph(op_path, out_dir)
         opgrind.print_pred_graph(op_path, out_dir)
-        opgrind.print_inventory_graph(op_path, out_dir)
         opgrind.print_comp_dims_graph(op_path, out_dir)
 
 

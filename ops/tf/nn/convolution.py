@@ -1,19 +1,14 @@
 from schema import flib, LAYOUT
 
 def init_schema(op):
-    op.add_index('b', 'batch', 1, 5)
-    op.add_index('i', 'input spatial', 1, 3)
-    op.add_index('f', 'filter spatial', None, None)
-    op.add_index('o', 'output spatial')
-    op.add_index('k', 'input channel', 1, 1)
-    op.add_index('l', 'output channel', 1, 1)
-    op.add_index('s', 'strides', None, None)
-    op.add_index('d', 'dilations', None, None)
-
-    op.equate_ranks('f', 'i')
-    op.equate_ranks('o', 'i')
-    op.equate_ranks('s', 'i')
-    op.equate_ranks('d', 'i')
+    op.add_index('b', 'batch', (1,5))
+    op.add_index('i', 'input spatial', (1,3))
+    op.add_index('f', 'filter spatial', 'i')
+    op.add_index('o', 'output spatial', 'i')
+    op.add_index('k', 'input channel', (1, 1))
+    op.add_index('l', 'output channel', (1, 1))
+    op.add_index('s', 'strides', 'i')
+    op.add_index('d', 'dilations', 'i')
 
     data_formats = [ 
             { 1: 'NCW', 2: 'NCHW', 3: 'NCDHW' },
