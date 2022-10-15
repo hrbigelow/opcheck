@@ -70,7 +70,7 @@ class SchemaApi(object):
         # These will be set to ge.ObservedValue nodes
         self.obs_dtypes = None
         self.obs_shapes = None
-        self.obs_layout = None
+        self.obs_args = None
         self.inv_output_nodes = None
         self.inv_live_nodes = None
         self.dtypes_not_impl = None 
@@ -206,7 +206,8 @@ class SchemaApi(object):
         self.generation_mode = GenMode.Inventory
         self.obs_dtypes.set_cached(None)
         self.obs_shapes.set_cached(None)
-        self.obs_layout.set_cached(None)
+        # self.obs_layout.set_cached(None)
+        self.obs_args.set_cached(None)
         ranks = self._inv_node(ge.IndexRanks)
         sigs = self._inv_node(ge.SigMap)
         dtypes = self.dtypes_not_impl
@@ -601,16 +602,16 @@ class SchemaApi(object):
         ranks_sigs_shapes_obj = pr.RanksSigsShapes(self, self.rank_candidates,
                 self.rank_cons)
         dtypes_obj = pr.DTypes()
-        data_format_obj = pr.DataFormat(self.data_formats)
-        layout_obj = pr.Layout(self.data_formats, base.LAYOUT)
+        # layout_obj = pr.Layout(self.data_formats, base.LAYOUT)
+        args_obj = pr.ArgMap()
 
         # graph nodes
-        schema = P.add_node(pr.Schema(self))
-        data_format = P.add_node(data_format_obj, schema)
+        P.add_node(pr.Schema(self))
         shapes = P.add_node(pr.ShapeMap())
         dtypes = P.add_node(dtypes_obj)
-        layout = P.add_node(layout_obj, data_format)
-        inventory = P.add_node(inv_obj, dtypes, shapes, layout)
+        # layout = P.add_node(layout_obj, data_format)
+        argmap = P.add_node(args_obj)
+        inventory = P.add_node(inv_obj, dtypes, shapes, argmap)
         # ranks_sigs_shapes = P.add_node(ranks_sigs_shapes_obj, shapes,
          #        data_format)
         ranks = P.add_node(pr.GetRanks(), inventory)
@@ -622,7 +623,8 @@ class SchemaApi(object):
         G.set_registry(self.inv_graph)
         self.obs_dtypes = G.add_node(ge.ObservedValue('dtypes'))
         self.obs_shapes = G.add_node(ge.ObservedValue('shapes'))
-        self.obs_layout = G.add_node(ge.ObservedValue('layout'))
+        # self.obs_layout = G.add_node(ge.ObservedValue('layout'))
+        self.obs_args = G.add_node(ge.ObservedValue('args'))
         niobj = ge.DTypesNotImplemented(self)
         self.dtypes_not_impl = G.add_node(niobj, self.obs_dtypes)
         layout = G.add_node(ge.Layout(self, base.LAYOUT))
@@ -631,6 +633,8 @@ class SchemaApi(object):
         argranks = G.add_node(ge.ArgRanks(), ranks, sigs)
         indels = G.add_node(ge.Indels(self), argranks, sigs)
         mut_argranks = G.add_node(ge.MutatedArgRanks(), argranks, indels) 
+
+        layout.append_parent_sn(self.obs_args)
 
         # must append each shape arg
         self.mut_rank_func = ge.ArgRankHash()
@@ -708,7 +712,7 @@ class SchemaApi(object):
 
     def _finalize(self):
         self.dims_graph.finalize()
-        obs_nodes = (self.obs_dtypes, self.obs_shapes, self.obs_layout)
+        obs_nodes = (self.obs_dtypes, self.obs_shapes, self.obs_args)
         nodes = set(self.inv_graph.values()).difference(obs_nodes)
         self.inv_live_nodes = list(nodes)
 
@@ -736,7 +740,8 @@ class SchemaApi(object):
         """
 
     def _generate_tests(self):
-        self.generation_mode = GenMode.Test
+        # self.generation_mode = GenMode.Test
+        self.generation_mode = GenMode.Inventory
         live_nodes = list(self.inv_graph.values())
         err_node = self._inv_node(ge.TestErrorClass)
         hash_node = self._inv_node(ge.ArgRankHash)
@@ -794,8 +799,7 @@ class SchemaApi(object):
             cons = base.SumRangeConstraint(self, idx, lo, hi)
             obj.add_schema_constraint(cons)
             sigs_node = self._inv_node(ge.SigMap, '')
-            idx_node = G.add_node_sn(obj, self.obs_dtypes, self.obs_shapes,
-                    self.obs_layout, sigs_node)
+            idx_node = G.add_node_sn(obj, self.obs_shapes, sigs_node)
             ranks_node.append_parent_sn(idx_node)
             self.equiv_index[idx] = idx
 
@@ -803,8 +807,7 @@ class SchemaApi(object):
             self.equiv_index[idx] = idx
             obj = ge.RankRange(self, idx)
             sigs_node = self._inv_node(ge.SigMap, '')
-            idx_node = G.add_node_sn(obj, self.obs_dtypes, self.obs_shapes,
-                    self.obs_layout, sigs_node)
+            idx_node = G.add_node_sn(obj, self.obs_shapes, sigs_node)
             ranks_node.append_parent_sn(idx_node)
         else:
             raise SchemaError(
@@ -1216,11 +1219,13 @@ class SchemaApi(object):
         """
         G.set_registry(self.inv_graph)
         P.set_registry(self.pred_graph)
-        options_gobj = ge.Options(arg_name, options)
-        g_arg = G.add_node(options_gobj)
+        options_gobj = ge.Options(self, arg_name, options)
+        g_arg = G.add_node(options_gobj, self.obs_args)
         options_pobj = pr.Options(arg_name, options)
         schema = self._pred_node(pr.Schema)
         p_arg = P.add_node(options_pobj, schema)
+        arg_node = self._pred_node(pr.ArgMap)
+        arg_node.append_parent_sn(p_arg)
         self.arg_pred_nodes[arg_name] = p_arg
         self.arg_gen_nodes[arg_name] = g_arg
         self.args_node.append_parent_sn(g_arg)
@@ -1232,18 +1237,24 @@ class SchemaApi(object):
         The rank of {rank_idx} determines which layout is mapped.
         """
         G.set_registry(self.inv_graph)
+        P.set_registry(self.pred_graph)
         self.data_formats.configure(arg_name, layouts, rank_idx)
         
         # define the real arg 
         layout = self._inv_node(ge.Layout, base.LAYOUT)
         ranks = self._inv_node(ge.IndexRanks)
-        obj = ge.DataFormat(self.data_formats, arg_name)
-        g_arg = G.add_node(obj, ranks, layout) 
+        obj = ge.DataFormat(self, self.data_formats, arg_name)
+        g_arg = G.add_node(obj, ranks, layout, self.obs_args) 
         self.arg_gen_nodes[arg_name] = g_arg
         self.args_node.append_parent_sn(g_arg)
 
-        p_arg = self._pred_node(pr.DataFormat)
+        schema = self._pred_node(pr.Schema)
+        data_format_obj = pr.DataFormat(self.data_formats, arg_name)
+        p_arg = P.add_node(data_format_obj, schema) 
         self.arg_pred_nodes[arg_name] = p_arg
+
+        arg_node = self._pred_node(pr.ArgMap)
+        arg_node.append_parent_sn(p_arg)
 
     def _check_sigs_layout(self, arg_name, sigs_list):
         num_layouts = self.data_formats.num_layouts()
@@ -1310,7 +1321,7 @@ class SchemaApi(object):
                 node = node_map[idx]
                 cons = final_cons if idx == last_idx else non_final_cons
                 node.func.add_observ_constraint(cons)
-                node.maybe_append_parent(sig_node)
+                # node.maybe_append_parent(sig_node)
             self._inv_graph_add_sig(sig)
 
         # node: pr.Sig
@@ -1318,7 +1329,7 @@ class SchemaApi(object):
         # edges:
         # pr.Shape -> pred_node
         # pr.ShapeMap -> pr.Shape
-        layout = self._pred_node(pr.Layout, base.LAYOUT)
+        # layout = self._pred_node(pr.Layout, base.LAYOUT)
         shape_pobj = pred_obj
         shape = P.add_node(shape_pobj, pred_node)
         shape_map = self._pred_node(pr.ShapeMap)
@@ -1489,7 +1500,7 @@ class SchemaApi(object):
         g_sig_map = self._gen_node(ge.SigMap, 'input')
         g_layout = self._gen_node(ge.Layout, base.LAYOUT)
         p_shape_map = self._pred_node(pr.ShapeMap)
-        p_layout = self._pred_node(pr.Layout, base.LAYOUT)
+        # p_layout = self._pred_node(pr.Layout, base.LAYOUT)
 
         for i, sig in enumerate(sigs):
             prefix = f'{arg_name}.{i}'
@@ -1628,7 +1639,7 @@ class SchemaApi(object):
         pred_shape_pobj = pr.PredictedShape(ret_name)
 
         schema = self._pred_node(pr.Schema)
-        layout = self._pred_node(pr.Layout, base.LAYOUT)
+        # layout = self._pred_node(pr.Layout, base.LAYOUT)
         rten = P.add_node(rten_pobj, schema)
         sigs_node = self._pred_node(pr.GetReturnSigs)
         # sig = P.add_node(p_sig_obj, layout)

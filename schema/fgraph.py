@@ -255,8 +255,6 @@ class FuncNode(object):
     def all_children(self):
         return self.children
 
-
-
     def value(self):
         """
         Evaluate the current node based on cached values of the parents
@@ -458,7 +456,7 @@ def gen_graph_values(live_nodes, result_nodes):
         values = node.values()
         for val in values:
             node.set_cached(val)
-            name = node.used_name()
+            # print(' ' * i + f'{node.name}: {node.get_cached()}')
             ri = imap[i]
             if ri >= 0:
                 result[ri] = val

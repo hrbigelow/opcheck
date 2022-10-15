@@ -293,11 +293,11 @@ class Inventory(NodeFunc):
                         self.op.inv_output_nodes))
         return hits
 
-    def __call__(self, dtypes, shapes, layout):
+    def __call__(self, dtypes, shapes, args):
         # prepare the inventory graph
         self.op.obs_dtypes.set_cached(dtypes)
         self.op.obs_shapes.set_cached(shapes)
-        self.op.obs_layout.set_cached(layout)
+        self.op.obs_args.set_cached(args)
         self.op.generation_mode = GenMode.Inference
         
         hits = self.get_hits(0)
@@ -643,10 +643,8 @@ class TemplateFunc(NodeFunc):
         ctexts.append(computation_text)
         return True, (ftexts, ctexts, indices)
 
+"""
 class Layout(NodeFunc):
-    """
-    Determine the layout corresponding to a given data_format
-    """
     def __init__(self, formats, name):
         super().__init__(name)
         self.formats = formats
@@ -657,22 +655,25 @@ class Layout(NodeFunc):
             return False, ArgValueError(self.formats.arg_name, data_format)
         else:
             return True, layout 
+"""
+
 
 class DataFormat(NodeFunc):
-    def __init__(self, formats):
-        super().__init__()
+    def __init__(self, formats, arg_name):
+        super().__init__(arg_name)
         self.formats = formats
+        self.arg_name = arg_name
 
     def __call__(self, op):
         if not self.formats.configured:
             return True, self.formats.default()
 
-        arg_val = op._get_arg(self.formats.arg_name)
+        arg_val = op._get_arg(self.arg_name)
         valid = self.formats.valid_format(arg_val)
         if valid:
             return True, arg_val
         else:
-            return False, ArgValueError(self.formats.arg_name, arg_val) 
+            return False, ArgValueError(self.arg_name, arg_val) 
 
 class ArgInt(NodeFunc):
     def __init__(self, arg_name, lo, hi):
@@ -733,6 +734,13 @@ class Options(NodeFunc):
             return True, arg_val
         else:
             return False, NonOptionError(arg_name, arg_val) 
+
+class ArgMap(NodeFunc):
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, **kwargs):
+        return True, kwargs
 
 class Schema(NodeFunc):
     def __init__(self, op):

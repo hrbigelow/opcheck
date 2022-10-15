@@ -57,6 +57,9 @@ class DataFormats(object):
     def default(self):
         return 'default'
 
+    def all_formats(self):
+        return list(self.formats.keys())
+
     def data_format(self, layout, ranks):
         """
         Return the data_format corresponding to the layout and rank
@@ -739,12 +742,11 @@ class SumRangeConstraint(Constraint):
 
 class ArgRankConstraint(Constraint):
     """
+    Used during the GenMode.Inference phase
     Expresses one of these constraints:
-    1. RANK(SIG(arg)) = RANK(arg) 
-    2. RANK(SIG(arg)) in [0, RANK(arg)]
+    1. RANK(SIG(arg)) = RANK(arg)   (if with_low_bound is True)
+    2. RANK(SIG(arg)) in [0, RANK(arg)]   (otherwise)
 
-    Option 1 is in effect if low_bound is True, Option 2 otherwise
-    dist is a search parameter set by the schema.
     """
     def __init__(self, op, arg_name, with_low_bound=False):
         super().__init__('shapes', 'sigs')
@@ -752,15 +754,18 @@ class ArgRankConstraint(Constraint):
         self.op = op
         self.with_low_bound = with_low_bound
 
-    def __call__(self, obs_shapes, sigs, **gen_input):
+    def __call__(self, obs_shapes, sigs, **index_ranks):
         if self.op.generation_mode != GenMode.Inference:
             return 0, 10000
         # get arg signature and shape
         arg_sig = sigs[self.arg_name]
         obs_shape = obs_shapes[self.arg_name]
+        if isinstance(obs_shape, int):
+            # rank is indeterminate
+            return 0, 10000 
         obs_rank = len(obs_shape)
         tlo = obs_rank if self.with_low_bound else 0
         thi = obs_rank 
-        residual = sum(gen_input.get(idx, 0) for idx in arg_sig)
+        residual = sum(index_ranks.get(idx, 0) for idx in arg_sig)
         return max(0, tlo - residual), max(0, thi - residual)
 

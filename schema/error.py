@@ -156,6 +156,9 @@ class NonOptionError(SchemaStatus):
                 f'{self.arg_val}')
         return msg
 
+class DataFormatError(SchemaStatus):
+    pass
+
 class CustomError(SchemaStatus):
     def __init__(self, message):
         self.msg = message

@@ -1,3 +1,4 @@
+import pdb
 import sys
 import math
 import tensorflow as tf
@@ -71,7 +72,6 @@ ALL_DTYPES = (
         tf.complex64, tf.complex128
         )
 
-
 class ObservedValue(NodeFunc):
     """
     Node for delivering inputs to any individual rank nodes.
@@ -100,7 +100,7 @@ class RankRange(NodeFunc):
     def add_observ_constraint(self, cons):
         self.observ_cons.append(cons)
 
-    def __call__(self, obs_dtypes, obs_shapes, obs_layout, sigs, **gen_inputs):
+    def __call__(self, obs_shapes, sigs, **index_ranks):
         """
         1. Produces the "schema interval" [lo, hi] which is the intersection of
         all schema constraint intervals.
@@ -115,17 +115,13 @@ class RankRange(NodeFunc):
         cost.  Any non-zero cost causes the op.error_status to be set while
         yielding that value.
         """
-        obs_map = { 
-                'dtypes': obs_dtypes, 
-                'shapes': obs_shapes, 
-                'layout': obs_layout,
-                'sigs': sigs }
+        constraint_args = { 'shapes': obs_shapes, 'sigs': sigs }
 
         # Get the initial bounds consistent with the schema
         lo, hi = 0, 1e10
         for cons in self.schema_cons:
-            args = tuple(obs_map[arg] for arg in cons.get_argnames())
-            clo, chi = cons(*args, **gen_inputs)
+            args = tuple(constraint_args[arg] for arg in cons.get_argnames())
+            clo, chi = cons(*args, **index_ranks)
             lo = max(lo, clo)
             hi = min(hi, chi)
 
@@ -145,8 +141,8 @@ class RankRange(NodeFunc):
             cost = [0] * (hi+1)
             margin = 1 # this is enough to discover an under-specified range
             for cons in self.observ_cons:
-                args = tuple(obs_map[arg] for arg in cons.get_argnames())
-                clo, chi = cons(*args, **gen_inputs)
+                args = tuple(constraint_args[arg] for arg in cons.get_argnames())
+                clo, chi = cons(*args, **index_ranks)
                 lpad = clo - 1
                 if lpad in range(lo, hi+1):
                     cost[lpad] += 1
@@ -624,7 +620,7 @@ class IndexRanks(NodeFunc):
         super().__init__()
 
     def __call__(self, **ranks):
-        return [ranks]
+        yield ranks
 
 class Rank(NodeFunc):
     """
@@ -636,7 +632,7 @@ class Rank(NodeFunc):
 
     def __call__(self, ranks_map):
         rank = sum(ranks_map[s] for s in self.sig)
-        return [rank]
+        yield rank
 
 class Dims(NodeFunc):
     """
@@ -1128,17 +1124,35 @@ class DataFormat(NodeFunc):
     """
     Generate the special data_format argument, defined by the 'layout' API call
     """
-    def __init__(self, formats, arg_name):
+    def __init__(self, op, formats, arg_name):
         super().__init__(arg_name)
+        self.op = op
         self.formats = formats
+        self.arg_name = arg_name
 
-    # TODO: what is the logic for generating extra test values?
-    def __call__(self, ranks, layout):
-        df = self.formats.data_format(layout, ranks)
-        if df is None:
-            return [None]
-        else:
-            return [df]
+    # TODO: What happens for ops without a data_format argument?
+    def __call__(self, ranks, layout, obs_args):
+        inferred_df = self.formats.data_format(layout, ranks)
+        if self.op.generation_mode == GenMode.Inventory:
+            yield inferred_df
+        elif self.op.generation_mode == GenMode.Test:
+            yield inferred_df
+            if self.op.test_error_cls is None:
+                self.op.test_error_cls = DataFormatError 
+                for fmt in self.formats.all_formats():
+                    if fmt != inferred_df:
+                        yield fmt
+                self.op.test_error_cls = None
+        elif self.op.generation_mode == GenMode.Inference:
+            obs_format = obs_args[self.arg_name]
+            if inferred_df == obs_format:
+                yield obs_format
+            elif self.op.cur_edit_dist < self.op.max_edit_dist:
+                self.op.cur_edit_dist += 1
+                yield obs_format
+                self.op.cur_edit_dist -= 1
+            else:
+                return
 
 class Sig(NodeFunc):
     """
@@ -1171,8 +1185,10 @@ class Options(NodeFunc):
     """
     Represent a specific set of options known at construction time
     """
-    def __init__(self, name, options):
+    def __init__(self, op, name, options):
         super().__init__(name)
+        self.op = op
+        self.arg_name = name
         try:
             iter(options)
         except TypeError:
@@ -1181,8 +1197,27 @@ class Options(NodeFunc):
                 f'iterable.  Got {type(options)}')
         self.options = options
 
-    def __call__(self):
-        return self.options
+    def __call__(self, argmap):
+        if self.op.generation_mode == GenMode.Inventory:
+            yield from self.options
+        elif self.op.generation_mode == GenMode.Test:
+            yield from self.options
+            if self.op.test_error_cls is None:
+                self.op.test_error_cls = NonOptionError 
+                yield 'DUMMY'
+                self.op.test_error_cls = None
+        elif self.op.generation_mode == GenMode.Inference:
+            option = argmap[self.arg_name]
+            if option in self.options: 
+                yield option
+            elif self.op.cur_edit_dist < self.op.max_edit_dist:
+                self.op.cur_edit_dist += 1
+                yield from self.options
+                self.op.cur_edit_dist -= 1
+            else:
+                return
+        else:
+            raise RuntimeError('generation_mode not set')
 
 class Args(NodeFunc):
     """
