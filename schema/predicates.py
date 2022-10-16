@@ -84,16 +84,6 @@ class TensorShape(NodeFunc):
     def __call__(self, tensor):
         return True, tensor.shape.as_list()
 
-class PredictedShape(NodeFunc):
-    def __init__(self, name):
-        super().__init__(name)
-        self.ret_name = name
-
-    def __call__(self, ret_sigs, **kwargs):
-        sig = ret_sigs[self.ret_name]
-        shape = [ kwargs[s] for s in sig ]
-        return True, shape
-
 class ShapeList(NodeFunc):
     """
     Interpret the contents as a shape.
@@ -207,20 +197,6 @@ class DTypes(NodeFunc):
     def __call__(self, **dtypes_map):
         return True, dtypes_map
 
-"""
-class DTypes(NodeFunc):
-    def __init__(self, dtype_cons):
-        super().__init__()
-        self.dtype_cons = dtype_cons
-
-    def __call__(self, index_ranks, layout, **kwargs):
-        # Check that all tensor arguments have valid dtypes
-        arg_dtypes = kwargs
-        stat = self.dtype_cons.status(arg_dtypes, index_ranks, layout)
-        valid = isinstance(stat, Success)
-        return valid, stat
-"""
-
 class ShapeMap(NodeFunc):
     """
     Produce a map of arg_name => shape 
@@ -268,16 +244,9 @@ class GetArgSigs(TupleElement):
     def __init__(self):
         super().__init__(2)
 
-class GetReturnSigs(TupleElement):
-    """
-    Get the Sigs from RanksSigsShapes
-    """
-    def __init__(self):
-        super().__init__(2)
-
 class GetShapes(TupleElement):
     """
-    Get the (possibly broadcast-realized) Shapes from RanksSigsShapes
+    Get the (possibly broadcast-realized) Shapes from Inventory
     """
     def __init__(self):
         super().__init__(3)
@@ -289,6 +258,9 @@ class Inventory(NodeFunc):
 
     def get_hits(self, max_edit_dist):
         self.op.max_edit_dist = max_edit_dist
+        self.op._clear_inv_graph()
+
+        # ranks, dtypes, sigs, arg_shapes, error
         hits = list(fgraph.gen_graph_values(
                         self.op.inv_live_nodes,
                         self.op.inv_output_nodes))
@@ -314,7 +286,6 @@ class Inventory(NodeFunc):
             if len(all_hits) >= max_suggs:
                 break
         return False, all_hits
-
 
 class RanksSigsShapes(NodeFunc):
     """
@@ -644,20 +615,6 @@ class TemplateFunc(NodeFunc):
         ctexts.append(computation_text)
         return True, (ftexts, ctexts, indices)
 
-"""
-class Layout(NodeFunc):
-    def __init__(self, formats, name):
-        super().__init__(name)
-        self.formats = formats
-
-    def __call__(self, data_format):
-        layout = self.formats.layout(data_format)
-        if layout is None:
-            return False, ArgValueError(self.formats.arg_name, data_format)
-        else:
-            return True, layout 
-"""
-
 class DataFormat(NodeFunc):
     def __init__(self, formats, arg_name):
         super().__init__(arg_name)
@@ -707,14 +664,6 @@ class Sig(NodeFunc):
 
     def __call__(self, layout):
         return True, self.sig_list[layout]
-
-class Closure(NodeFunc):
-    def __init__(self, name, obj):
-        super().__init__(name)
-        self.obj = obj
-
-    def __call__(self):
-        return self.obj
 
 class Options(NodeFunc):
     def __init__(self, arg_name, options):

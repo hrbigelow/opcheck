@@ -15,51 +15,28 @@ from .error import *
 from . import oparg, util, base, fgraph
 
 """
-This file provides the complete collection of NodeFuncs for use in the GenNodes
-of the generative graphs op.gen_graph and op.inv_graph (api.py).  
+The inventory graph (inv_graph) is constructed using NodeFuncs in this file.
+Each node in the graph is run in one of three GenModes (Inventory, Test,
+Inference) as controlled by op.generation_mode.
 
-The goal of op.gen_graph is to produce a thorough set of test cases for the
-predicate graph op.input_pred_graph, which produce either 'TP' or 'TN' (true
-positive or true negative) results.
+GenMode.Inventory:  produces a list of input configurations that satisfy all
+schema constraints
 
-Each test is defined as the tuple (expected_status, config).  The test proceeds
-as follows:
+GenMode.Test: produces the same set as GenMode.Inventory, but also an
+additional set which violate exactly one type of schema constraint (though may
+violate multiple constraints of the same type).  These are also marked with the
+appropriate expected status.
 
-1. call arguments are produced from config
-2. the wrapped framework op is called with the call arguments
-3. the actual status is collected
-4. the expected_status and actual_status are compared, generating TP, FP, TN,
-or FN result.
+GenMode.Inference: produce a set of configurations which satisfy all schema
+constraints, and come within op.max_edit_dist edit distance of satisfying all
+'observed' quantities.  The observed quantities are supplied by the node type
+ObservedValue. 
 
-In order to construct a generative graph that produces only TP and TN results,
-the following notions are followed.
-
-Each NodeFunc is one of two types.  A node's item type (the type of item in
-the returned list) can either be a 'status tuple' consisting of (status,
-value) or just a value.  The first kind produces a list containing tuples with
-both Success as the status, and various test Status types.  The second kind of
-node implicitly generates values that are expected to produce Success as a
-result.
-
-These implicit-success nodes should return an empty list if they receive
-invalid inputs.
-
-
-The inventory graph (inv_graph) will be run in three modes:
-
-INVENTORY:  produces a list of input configurations that satisfy all schema
-constraints
-
-TEST_GEN: produces the same set as INVENTORY (each tagged with expected status
-Success).  In addition, produces an additional set which violate exactly one
-type of schema constraint (though may violate multiple constraints of the same
-type).  These are also marked with the appropriate expected status.
-
-INFERENCE: produce a set of configurations which satisfy all schema
-constraints, and have up to op.max_observ_error observation constraint errors.
-
-Inference will be run starting with 0, 1, etc setting for op.max_observ_error.
-The majority of calls will find a configuration at 0 observed error.
+GenMode.Inference will be run starting with 0, 1, etc setting for
+op.max_edit_dist.  If exactly one configuration is found with zero edit
+distance from the observations, it means the operation succeeded.  Otherwise,
+the graph produces a set of suggestions for inputs.  Each suggested edit will
+fix the problem, but may require more than one 'edit'.
 
 """
 ALL_DTYPES = (
@@ -768,51 +745,21 @@ class Rank(NodeFunc):
         rank = sum(ranks_map[s] for s in self.sig)
         yield rank
 
-class Dims(NodeFunc):
+class Inventory(NodeFunc):
     """
-    Generate dimensions for {output_indices} using {gen_func}. 
-
-    Calls gen_func(ranks_list, *gen_args).  ranks_list are the ranks of each
-    index in {input_indices} in order.
-
-    returns a list of shape tuples, one shape for each index in output_indices.
-    A shape is an integer list.  
-
-    For example, if output_indices has two indices, a return value could be:
-    [ 
-      ([1,2,3], [4,5]),
-      ([6,4,2], [5,4]) 
-    ]
+    Generate inventory and test cases for the op.
     """
-    def __init__(self, gen_func, output_indices, input_indices, gen_args):
-        super().__init__(output_indices)
-        self.output_indices = output_indices 
-        self.input_indices = input_indices 
-        self.func = gen_func
-        self.gen_args = gen_args
+    def __init__(self, op):
+        super().__init__()
+        self.op = op
 
-    @staticmethod
-    def valid_return(vals):
-        return (
-                isinstance(vals, list) and
-                all(isinstance(v, tuple) for v in vals) and
-                all(isinstance(s, list) for v in vals for s in v)
-                )
-
-    def __call__(self, ranks_map):
-        ranks_list = [ ranks_map[i] for i in self.input_indices ]
-        vals = self.func(ranks_list, *self.gen_args)
-        if not self.valid_return(vals):
-            raise SchemaError(
-                f'{type(self).__qualname__}: Custom Dims generation function '
-                f'\'{self.func.__name__}\' returned the wrong type.  Expected '
-                f'a list of shape tuples, for example like: \n'
-                f'[ \n'
-                f'  ([1,2,3], [4,5]),\n'
-                f'  ([6,4,2], [5,4]) \n'
-                f'].\n'
-                f'Got: {vals}\n')
-        return [ dict(zip(self.output_indices,v)) for v in vals ]
+    def __call__(self):
+        self.op.obs_dtypes.set_cached(None)
+        self.op.obs_shapes.set_cached(None)
+        self.op.obs_layout.set_cached(None)
+        yield from fgraph.gen_graph_values(
+                self.op.inv_live_nodes,
+                self.op.inv_output_nodes)
 
 # Specifies a set of data tensor shapes, in which one tensor has an insertion
 # or deletion of a dimension relative to a valid set.
@@ -923,22 +870,6 @@ def check_sizes(arg_shapes, max_nelem):
         raise SchemaError(
             f'Generated shape for argument \'{arg}\' was {shape} with '
             f'{nelem} elements, exceeding the maximum allowed {max_nelem}')
-
-class Inventory(NodeFunc):
-    """
-    Generate inventory and test cases for the op.
-    """
-    def __init__(self, op):
-        super().__init__()
-        self.op = op
-
-    def __call__(self):
-        self.op.obs_dtypes.set_cached(None)
-        self.op.obs_shapes.set_cached(None)
-        self.op.obs_layout.set_cached(None)
-        yield from fgraph.gen_graph_values(
-                self.op.inv_live_nodes,
-                self.op.inv_output_nodes)
 
 class RankStatusArgShape(NodeFunc):
     """
@@ -1139,18 +1070,6 @@ class TupleElement(NodeFunc):
 
     def __call__(self, tup):
         return [tup[self.index]]
-
-class GetRanks(TupleElement):
-    def __init__(self):
-        super().__init__(0)
-
-class GetSigs(TupleElement):
-    def __init__(self):
-        super().__init__(2)
-
-class GetDTypes(TupleElement):
-    def __init__(self):
-        super().__init__(1)
 
 class GetArgShapes(TupleElement):
     def __init__(self):

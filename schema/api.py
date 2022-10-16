@@ -601,6 +601,8 @@ class SchemaApi(object):
         dtypes = P.add_node(pr.DTypes())
         argmap = P.add_node(pr.ArgMap())
         inventory = P.add_node(pr.Inventory(self), dtypes, shapes, argmap)
+        get_shapes = P.add_node(pr.GetShapes(), inventory)
+        self.return_nodes.append(get_shapes)
         # ranks_sigs_shapes = P.add_node(ranks_sigs_shapes_obj, shapes,
          #        data_format)
         # ranks = P.add_node(pr.GetRanks(), inventory)
@@ -638,7 +640,8 @@ class SchemaApi(object):
         test_err = G.add_node(ge.TestErrorClass(self))
         test_err.append_parent(self.dtypes_not_impl)
         test_err.append_parent(arg_shapes)
-        self.inv_output_nodes = (ranks, self.dtypes_not_impl, sigs, test_err)
+        self.inv_output_nodes = (ranks, self.dtypes_not_impl, sigs, arg_shapes,
+                test_err)
 
         G.set_registry(self.gen_graph)
         target_tensor_size = 1e6
@@ -647,25 +650,6 @@ class SchemaApi(object):
         inv_obj = ge.Inventory(self)
         inv_node = G.add_node(inv_obj) 
         
-        # rank_stat_shape_obj = ge.RankStatusArgShape(self.dims_graph,
-                # self.rank_candidates, self.gen_indices, self,
-                # target_tensor_size)
-        # dtypes_status_obj = ge.DTypesStatus(self.dtype_cons)
-
-        # graph nodes
-        # layout = G.add_node(ge.Layout(self, base.LAYOUT))
-        # arg_sigs = G.add_node(ge.SigMap('input'))
-        # ret_sigs = G.add_node(ge.SigMap('return'))
-        # rank_stat_shape = G.add_node(rank_stat_shape_obj, arg_sigs, ret_sigs) 
-        # status_arg = G.add_node(ge.GetStatusArgShape(), rank_stat_shape)
-        # data_format = G.add_node(data_format_obj, ranks, layout)
-        # dtypes_status = G.add_node(dtypes_status_obj, ranks, layout)
-        # G.add_node(ge.GetRanks(), inv_node)
-        # G.add_node(ge.GetArgShapes(), inv_node)
-        # G.add_node(ge.GetDTypes(), inv_node)
-        # G.add_node(ge.GetSigs(), inv_node)
-        # G.add_node(ge.StatusAggregator(), dtypes_status, status_arg) 
-
     def _add_pred_graph(self):
         # add single-index dims nodes that are not already added
         P.set_registry(self.pred_graph)
@@ -730,9 +714,13 @@ class SchemaApi(object):
             print(cfg)
         print('Finished')
         """
+    def _clear_inv_graph(self):
+        self.test_error_cls = None
+        self.cur_edit_dist = 0
 
     def _generate_tests(self):
         self.generation_mode = GenMode.Test
+        self._clear_inv_graph()
         # self.generation_mode = GenMode.Inventory
         live_nodes = list(self.inv_graph.values())
         err_node = self._inv_node(ge.TestErrorClass)
@@ -1513,11 +1501,6 @@ class SchemaApi(object):
         Register {arg_name} to be an integer argument which defines the rank of
         {sig}
         """
-        # node pr.ArgInt(arg_name)
-        # pr.ArgInt -> pr.Schema
-        # pr.RanksSigsShape -> pr.ArgInt
-        # node ge.Rank
-        # ge.Rank -> ge.GetRanks
         cons_name = f'rank({sig}) == \'{arg_name}\''
         rank_pobj = pr.ArgInt(arg_name, 0, None)
 
@@ -1630,14 +1613,11 @@ class SchemaApi(object):
         schema = self._pred_node(pr.Schema)
         # layout = self._pred_node(pr.Layout, base.LAYOUT)
         rten = P.add_node(rten_pobj, schema)
-        # sigs_node = self._pred_node(pr.GetReturnSigs)
-        # sig = P.add_node(p_sig_obj, layout)
-        # pred_shape = P.add_node(pred_shape_pobj, sigs_node)
 
         # sig_inds = { idx for sig in sigs for idx in sig }
         # self.pending_index_edges[pred_shape.name] = list(sig_inds)
-        inv_node = self._pred_node(pr.Inventory) 
-        rval = P.add_node(rvalid_pobj, rten, inv_node)
+        shapes = self._pred_node(pr.GetShapes)
+        rval = P.add_node(rvalid_pobj, rten, shapes)
         self.return_nodes.extend((rten, rval))
         self.num_returns += 1
 
