@@ -456,7 +456,8 @@ def gen_graph_values(live_nodes, result_nodes):
         values = node.values()
         for val in values:
             node.set_cached(val)
-            # print(' ' * i + f'{node.name}: {node.get_cached()}')
+            # err = node.func.op.test_error_cls if hasattr(node.func, 'op') else '---'
+            # print(' ' * i + f'{node.name}: ({repr(err_cls)})')# {node.get_cached()}')
             ri = imap[i]
             if ri >= 0:
                 result[ri] = val

@@ -140,20 +140,12 @@ def _dot_graph(op, nodes, out_file):
             elif vtype == fgraph.VarArgs.Positional:
                 color = 'brown'
             elif vtype == fgraph.VarArgs.Keyword:
-                color = 'lightblue' if sn else 'blue'
+                color = 'purple' if sn else 'blue'
             else:
                 color = 'black'
             dot.edge(names[node.name], names[pa.name], _attributes={'color': color})
     dot.render(out_file)
     print(f'Wrote {out_file}.pdf')
-
-def print_gen_graph(op_path, out_dir):
-    """
-    Print a pdf of {op_path} generative graph used for generating test cases 
-    """
-    op = REGISTRY[op_path]
-    nodes = op.gen_graph.values()
-    _dot_graph(op, nodes, f'{out_dir}/{op_path}.gen')
 
 def print_pred_graph(op_path, out_dir):
     """

@@ -205,9 +205,9 @@ def validate(op, out_dir, test_ids=None, skip_ids=None):
             print('\r', end='')
             print(f'Running test: {t.id:-4d}  ', end='')
             arg_dict = t.make_args()
-            t.op._prepare_call(**arg_dict)
-            t.op._check_args()
-            continue
+            # t.op._prepare_call(**arg_dict)
+            # t.op._check_args()
+            # return
             t.run()
             cat = t.category
             row = t.stats()

@@ -62,8 +62,9 @@ class ValidReturnShape(NodeFunc):
         super().__init__(ret_name)
         self.ret_name = ret_name
 
-    def __call__(self, tensor, predicted_shape):
+    def __call__(self, tensor, shapes):
         actual_shape = tensor.shape.as_list()
+        predicted_shape = shapes[self.ret_name]
         if actual_shape == predicted_shape:
             return True, None
         else:
@@ -301,8 +302,8 @@ class Inventory(NodeFunc):
         self.op.generation_mode = GenMode.Inference
         
         hits = self.get_hits(0)
-        if len(hits) > 0:
-            return True, hits
+        if len(hits) == 1:
+            return True, hits[0]
 
         # produce up to some number of suggestions 
         max_suggs = 5
@@ -657,7 +658,6 @@ class Layout(NodeFunc):
             return True, layout 
 """
 
-
 class DataFormat(NodeFunc):
     def __init__(self, formats, arg_name):
         super().__init__(arg_name)
@@ -665,15 +665,15 @@ class DataFormat(NodeFunc):
         self.arg_name = arg_name
 
     def __call__(self, op):
-        if not self.formats.configured:
+        if self.arg_name is None:
             return True, self.formats.default()
 
-        arg_val = op._get_arg(self.arg_name)
-        valid = self.formats.valid_format(arg_val)
+        data_format = op._get_arg(self.arg_name)
+        valid = (data_format in self.formats.all_formats()) 
         if valid:
-            return True, arg_val
+            return True, data_format
         else:
-            return False, ArgValueError(self.arg_name, arg_val) 
+            return False, ArgValueError(self.arg_name, data_format) 
 
 class ArgInt(NodeFunc):
     def __init__(self, arg_name, lo, hi):

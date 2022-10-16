@@ -85,6 +85,74 @@ class ObservedValue(NodeFunc):
 
 class RankRange(NodeFunc):
     """
+    Produce a range of ranks for a given primary index.
+    """
+    def __init__(self, op, name):
+        super().__init__(name)
+        self.op = op
+        self.schema_cons = []
+
+    def add_schema_constraint(self, cons):
+        self.schema_cons.append(cons)
+
+    def __call__(self, obs_shapes, sigs, **index_ranks):
+        # Get the initial bounds consistent with the schema
+        lo, hi = 0, 1e10
+        for cons in self.schema_cons:
+            clo, chi = cons(**index_ranks)
+            lo = max(lo, clo)
+            hi = min(hi, chi)
+
+        if self.op.generation_mode == GenMode.Inventory:
+            yield from range(lo, hi+1)
+        elif self.op.generation_mode == GenMode.Test:
+            yield from range(lo, hi+1)
+            if self.op.test_error_cls is None:
+                # TODO: maybe fine-grain this error?
+                self.op.test_error_cls = NoMatchingRanks
+                yield hi+1
+                if lo > 0:
+                    yield lo-1
+                self.op.test_error_cls = None
+        elif self.op.generation_mode == GenMode.Inference:
+            idx = self.sub_name
+
+            # Narrow the schema lo, hi interval based on observed shapes
+            test_lo, test_hi = lo, hi
+            for arg, obs_shape in obs_shapes.items():
+                sig = sigs[arg]
+                # an integer shape is rank-agnostic, so doesn't define any
+                # rank-constraint
+                if isinstance(obs_shape, int):
+                    continue
+                obs_rank = len(obs_shape)
+                pri_sig = sorted(self.op.equiv_index[idx] for idx in sig)
+                if idx not in pri_sig:
+                    continue
+                prev_rank = sum(index_ranks.get(i, 0) for i in pri_sig)
+
+                todo_inds = tuple(k for k in pri_sig if k not in index_ranks)
+                target = obs_rank - prev_rank
+                if len(todo_inds) == 1:
+                    clo, chi = target, target
+                else:
+                    clo, chi = 0, target
+                test_lo = max(test_lo, clo)
+                test_hi = min(test_hi, chi)
+
+            # produce values from this new interval, plus one on each margin 
+            yield from range(test_lo, test_hi+1)
+            if self.op.cur_edit_dist < self.op.max_edit_dist:
+                self.op.cur_edit_dist += 1
+                if test_lo > 0:
+                    yield test_lo - 1
+                yield test_hi + 1
+                self.op.cur_edit_dist -= 1
+        else:
+            raise RuntimeError('generation_mode not set')
+
+class RankRangeBck(NodeFunc):
+    """
     Produce a range of ranks for a given index.  Takes the intersection of
     legal values for each constraint
     """
@@ -193,7 +261,7 @@ class Indels(NodeFunc):
         super().__init__()
         self.op = op
 
-    def __call__(self, arg_ranks, sigs):
+    def __call__(self, arg_ranks, sigs, obs_shapes):
         if self.op.generation_mode == GenMode.Inventory:
             yield None
         elif self.op.generation_mode == GenMode.Test:
@@ -221,9 +289,29 @@ class Indels(NodeFunc):
                     indel = IndelMutation(arg, delta)
                     yield indel
             self.op.test_error_cls = None
-                    
         elif self.op.generation_mode == GenMode.Inference:
-            return
+            indel = None
+            for arg, obs_shape in obs_shapes.items():
+                if isinstance(obs_shape, int):
+                    continue
+                delta = arg_ranks[arg] - len(obs_shape)
+                if delta != 0:
+                    if indel is not None:
+                        # we won't make a two-indel suggestion
+                        return
+                    indel = IndelMutation(arg, delta)
+            edit = 0 if indel is None else abs(indel.delta)
+            if indel is None:
+                yield indel
+            elif self.op.cur_edit_dist + edit <= self.op.max_edit_dist:
+                self.op.cur_edit_dist += edit 
+                yield indel
+                self.op.cur_edit_dist -= edit
+            else:
+                return
+
+        else:
+            raise RuntimeError('generation_mode not set')
 
 class MutatedArgRanks(NodeFunc):
     def __init__(self):
@@ -262,7 +350,46 @@ class IndexDims(NodeFunc):
         super().__init__()
         self.op = op
 
-    def __call__(self, mut_arg_ranks, index_ranks, arg_sigs, **comp_args):
+    def __call__(self, mut_arg_ranks, index_ranks, sigs, obs_shapes,
+            **comp_args):
+        if self.op.generation_mode in (GenMode.Inventory, GenMode.Test):
+            yield self.compute_dims(mut_arg_ranks, index_ranks, sigs,
+                    **comp_args)
+        elif self.op.generation_mode == GenMode.Inference:
+            # idx => { dims, dims, ... } distinct 
+            idx_shapes = {} # 
+            idx_count = defaultdict(int)
+            for arg, shape in obs_shapes.items():
+                sig = sigs[arg]
+                it = base.shape_iter(shape)
+                for idx in sig:
+                    r = index_ranks[idx]
+                    dims = base.shape_nextn(it, r)
+                    tmap = idx_shapes.setdefault(idx, {})
+                    tmap.setdefault(tuple(dims), 0)
+                    tmap[tuple(dims)] += 1
+                    idx_count[idx] += 1
+
+            inds, map_list = zip(*idx_shapes.items())
+            list_list = [ list(ml.items()) for ml in map_list ]
+            totals = tuple(idx_count[idx] for idx in inds)
+            # one dims_set is: ( (dims, ct), (dims, ct), ... )
+            # inds is ( idx, idx, ... )
+            for dims_set in itertools.product(*list_list):
+                dist = sum(t - ds[1] for t, ds in zip(totals, dims_set))
+                if self.op.cur_edit_dist + dist <= self.op.max_edit_dist:
+                    self.op.cur_edit_dist += dist
+                    z = zip(inds, dims_set)
+                    index_dims = { i: list(ds[0]) for i, ds in z }
+                    # TODO: compute computed indexes here
+                    comp_dims = self.op.dims_graph(index_dims, **comp_args) 
+                    index_dims.update(comp_dims)
+                    yield index_dims
+                    self.op.cur_edit_dist -= dist
+        else:
+            raise RuntimeError(f'generation mode not set')
+
+    def compute_dims(self, mut_arg_ranks, index_ranks, arg_sigs, **comp_args):
         max_dimsize = max(mut_arg_ranks.values())
         """
         Resolve a set of all index dims consistent with {index_ranks}.  First,
@@ -336,8 +463,7 @@ class IndexDims(NodeFunc):
                 if all(d >= 0 for d in dims):
                     continue
                 assert False, f'Index {idx} had negative dims {dims}'
-
-            yield index_dims
+            return index_dims
 
 class IndexUsage(NodeFunc):
     """
@@ -440,9 +566,16 @@ class ArgShapes(NodeFunc):
                 self.op.test_error_cls = NoMatchingRanks
                 mut_shapes = self.shape_indels(arg_shapes, indel, max_dimsize)
                 yield mut_shapes
-
+                self.op.test_error_cls = None
         elif self.op.generation_mode == GenMode.Inference:
-            return
+            arg_shapes = {}
+            for arg, sig in sigs.items():
+                shape = [ dim for idx in sig for dim in index_dims[idx] ]
+                arg_shapes[arg] = shape
+            # what to do about indels?
+            yield arg_shapes
+        else:
+            raise RuntimeError('generation_mode not set')
 
 class DTypeIndiv(NodeFunc):
     """
@@ -574,22 +707,23 @@ class DTypesNotImplemented(NodeFunc):
             layout = None
 
         is_ex = self.is_excluded(dtypes, ranks, layout)
+        dtypes_map = self.get_dtype_map(dtypes)
 
         if self.op.generation_mode == GenMode.Inventory:
             if is_ex:
                 return
             else:
-                yield self.get_dtype_map(dtypes)
+                yield dtypes_map 
         elif self.op.generation_mode == GenMode.Test:
             if is_ex:
                 if self.op.test_error_cls is None:
                     self.op.test_error_cls = DTypeComboExcluded
-                    yield self.get_dtype_map(dtypes)
+                    yield dtypes_map 
                     self.op.test_error_cls = None
             else:
-                yield self.get_dtype_map(dtypes)
-
+                yield dtypes_map 
         elif self.op.generation_mode == GenMode.Inference:
+            # TODO: Fix this
             if is_ex:
                 return
             else:
@@ -682,7 +816,6 @@ class Dims(NodeFunc):
 
 # Specifies a set of data tensor shapes, in which one tensor has an insertion
 # or deletion of a dimension relative to a valid set.
-IndelMutation = namedtuple('IndelMutation', ['index_ranks', 'arg', 'delta'])
 
 def make_indel_mutations(index_ranks_list, arg_sigs, definite_inds):
     """
@@ -1117,8 +1250,23 @@ class Layout(NodeFunc):
         super().__init__(name)
         self.op = op
 
-    def __call__(self):
-        return list(range(self.op.data_formats.num_layouts()))
+    def __call__(self, obs_args):
+        formats = self.op.data_formats
+        all_layouts = list(range(formats.num_layouts()))
+        if self.op.generation_mode == GenMode.Inventory:
+            yield from all_layouts
+        elif self.op.generation_mode == GenMode.Test:
+            yield from all_layouts
+        elif self.op.generation_mode == GenMode.Inference:
+            obs_format = obs_args.get(formats.arg_name, base.DEFAULT_FORMAT)
+            obs_layout = formats.layout(obs_format)
+            yield obs_layout
+            if self.op.cur_edit_dist < self.op.max_edit_dist:
+                self.op.cur_edit_dist += 1
+                for alt_layout in all_layouts:
+                    if alt_layout != obs_layout:
+                        yield alt_layout
+                self.op.cur_edit_dist -= 1
 
 class DataFormat(NodeFunc):
     """
@@ -1130,7 +1278,6 @@ class DataFormat(NodeFunc):
         self.formats = formats
         self.arg_name = arg_name
 
-    # TODO: What happens for ops without a data_format argument?
     def __call__(self, ranks, layout, obs_args):
         inferred_df = self.formats.data_format(layout, ranks)
         if self.op.generation_mode == GenMode.Inventory:
@@ -1144,7 +1291,7 @@ class DataFormat(NodeFunc):
                         yield fmt
                 self.op.test_error_cls = None
         elif self.op.generation_mode == GenMode.Inference:
-            obs_format = obs_args[self.arg_name]
+            obs_format = obs_args.get(self.arg_name, base.DEFAULT_FORMAT)
             if inferred_df == obs_format:
                 yield obs_format
             elif self.op.cur_edit_dist < self.op.max_edit_dist:
@@ -1153,6 +1300,8 @@ class DataFormat(NodeFunc):
                 self.op.cur_edit_dist -= 1
             else:
                 return
+        else:
+            raise RuntimeError('generation_mode not set')
 
 class Sig(NodeFunc):
     """

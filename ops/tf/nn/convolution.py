@@ -10,12 +10,12 @@ def init_schema(op):
     op.add_index('s', 'strides', 'i')
     op.add_index('d', 'dilations', 'i')
 
-    data_formats = [ 
+    layouts = [ 
             { 1: 'NCW', 2: 'NCHW', 3: 'NCDHW' },
             { 1: 'NWC', 2: 'NHWC', 3: 'NDHWC' }
             ]
 
-    op.arg_layout('data_format', data_formats, 'i')
+    op.arg_layout('data_format', layouts, 'i')
     op.arg_tensor('input', 'bki', 'bik')
     op.arg_tensor('filters', 'fkl')
     op.arg_option('padding', ('VALID', 'SAME'))

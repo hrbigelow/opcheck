@@ -9,6 +9,7 @@ from . import util
 
 
 LAYOUT = ':layout'
+DEFAULT_FORMAT = ':default'
 
 class GenMode(enum.Enum):
     Inventory = 0
@@ -33,29 +34,27 @@ class DataFormats(object):
     first' (layout 0), while the data_formats 'NWC', 'NHWC', and 'NDHWC' are
     'channel last', and given layout 1.
 
-    We can assume one of two modes:
-    1. There is a single layout.
+    {layouts} is a list of maps of rank => data_format 
     """
-    def __init__(self):
-        self.configured = False
-
-    def configure(self, arg_name, layouts, rank_index):
-        self.configured = True
+    def __init__(self, arg_name, layouts, rank_index):
         self.arg_name = arg_name
-        self.layouts = layouts
-        self.formats = {}
-        for l, rmap in enumerate(layouts):
-            for fmt in rmap.values():
-                self.formats[fmt] = l
-        self.rank_index = rank_index
-
-    def num_layouts(self):
-        if not self.configured:
-            return 1
-        return len(self.layouts)
+        if layouts is None:
+            self.layouts = [ { 0: DEFAULT_FORMAT } ]
+            self.formats = { DEFAULT_FORMAT: 0 }
+            self.rank_index = None
+        else:
+            self.layouts = layouts
+            self.formats = {}
+            for l, rmap in enumerate(layouts):
+                for fmt in rmap.values():
+                    self.formats[fmt] = l
+            self.rank_index = rank_index
 
     def default(self):
-        return 'default'
+        return DEFAULT_FORMAT
+
+    def num_layouts(self):
+        return len(self.layouts)
 
     def all_formats(self):
         return list(self.formats.keys())
@@ -63,35 +62,22 @@ class DataFormats(object):
     def data_format(self, layout, ranks):
         """
         Return the data_format corresponding to the layout and rank
-        combination, or None if invalid input
+        combination.  If the rank is not found, return None.  This is done to
+        allow exploring non-registered ranks
         """
-        if not self.configured:
-            return 'default'
-
-        if layout not in range(len(self.layouts)):
-            return None
         rmap = self.layouts[layout]
-        rank = ranks[self.rank_index]
-        if rank not in rmap:
-            return None
-        return rmap[rank]
+        rank = 0 if self.rank_index is None else ranks[self.rank_index]
+        return rmap.get(rank, None)
 
     def layout(self, data_format):
         """
-        Return the layout corresponding with this data format, or None if
-        invalid
+        Return the layout corresponding with this data format
         """
-        if not self.configured:
-            return 0
         if data_format not in self.formats:
-            return None
+            raise RuntimeError(
+                f'{type(self).__qualname__}: received unknown data_format '
+                f'\'{data_format}\'')
         return self.formats[data_format]
-
-    def valid_format(self, data_format):
-        if not self.configured:
-            return True
-        return data_format in self.formats
-
 
 class RankCandidates(object):
     """
@@ -733,6 +719,9 @@ class SumRangeConstraint(Constraint):
         self.lo = lo
         self.hi = hi
 
+    def __repr__(self):
+        return f'{type(self).__name__}: RANK({self.sig}) in [{self.lo}, {self.hi}]'
+
     def __call__(self, **index_ranks):
         residual = sum(index_ranks.get(idx, 0) for idx in self.sig)
         return (
@@ -753,6 +742,14 @@ class ArgRankConstraint(Constraint):
         self.arg_name = arg_name
         self.op = op
         self.with_low_bound = with_low_bound
+
+    def __repr__(self):
+        r = f'{type(self).__name__}: RANK(SIG({self.arg_name}))'
+        if self.with_low_bound:
+            r += f' = RANK({self.arg_name})'
+        else:
+            r += f' in [0, RANK({self.arg_name})]'
+        return r
 
     def __call__(self, obs_shapes, sigs, **index_ranks):
         if self.op.generation_mode != GenMode.Inference:
