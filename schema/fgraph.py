@@ -456,8 +456,9 @@ def gen_graph_values(live_nodes, result_nodes):
         values = node.values()
         for val in values:
             node.set_cached(val)
-            # err = node.func.op.test_error_cls if hasattr(node.func, 'op') else '---'
-            # print(' ' * i + f'{node.name}: ({repr(err_cls)})')# {node.get_cached()}')
+            # edits = node.func.op.avail_edits if hasattr(node.func, 'op') else '-'
+            # err = node.func.op.errors if hasattr(node.func, 'op') else ''
+            # print(' ' * i + f'{node.name}: [{edits}] ({len(err)}) {node.get_cached()}')
             ri = imap[i]
             if ri >= 0:
                 result[ri] = val
@@ -465,7 +466,10 @@ def gen_graph_values(live_nodes, result_nodes):
     yield from gen_rec(0)
 
 def pred_graph_evaluate(*nodes):
-    """Evaluate PredNodes in dependency order until a predicate fails"""
+    """
+    Evaluate PredNodes in dependency order until a predicate fails.
+    If any predicate fails, return its value.  Otherwise, return None
+    """
     topo_nodes = _topo_sort(nodes)
     for n in topo_nodes:
         if not n.evaluate():

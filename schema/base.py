@@ -34,27 +34,24 @@ class DataFormats(object):
     first' (layout 0), while the data_formats 'NWC', 'NHWC', and 'NDHWC' are
     'channel last', and given layout 1.
 
-    {layouts} is a list of maps of rank => data_format 
+    {formats} is a map of data_format => (layout, rank).  The layout is an
+    integer index specifying the layout.  The rank specifies RANK(rank_index)
+    or None if it is agnostic to the index.
     """
-    def __init__(self, arg_name, layouts, rank_index):
+    def __init__(self, arg_name, formats, rank_index):
         self.arg_name = arg_name
-        if layouts is None:
-            self.layouts = [ { 0: DEFAULT_FORMAT } ]
-            self.formats = { DEFAULT_FORMAT: 0 }
+        if formats is None:
+            self.formats = { DEFAULT_FORMAT: (0, None) }
             self.rank_index = None
         else:
-            self.layouts = layouts
-            self.formats = {}
-            for l, rmap in enumerate(layouts):
-                for fmt in rmap.values():
-                    self.formats[fmt] = l
+            self.formats = formats
             self.rank_index = rank_index
 
     def default(self):
         return DEFAULT_FORMAT
 
     def num_layouts(self):
-        return len(self.layouts)
+        return len({ lr[0] for lr in self.formats.values() })
 
     def all_formats(self):
         return list(self.formats.keys())
@@ -62,12 +59,15 @@ class DataFormats(object):
     def data_format(self, layout, ranks):
         """
         Return the data_format corresponding to the layout and rank
-        combination.  If the rank is not found, return None.  This is done to
-        allow exploring non-registered ranks
+        combination.
         """
-        rmap = self.layouts[layout]
-        rank = 0 if self.rank_index is None else ranks[self.rank_index]
-        return rmap.get(rank, None)
+        it = self.formats.items()
+        rank = None if self.rank_index is None else ranks[self.rank_index]
+        if rank is None:
+            return next((df for df, (l, _) in it if l == layout), None)
+        else:
+            return next((df for df, (l, r) in it if l == layout and (r is None
+                or r == rank)), None)
 
     def layout(self, data_format):
         """
@@ -77,7 +77,7 @@ class DataFormats(object):
             raise RuntimeError(
                 f'{type(self).__qualname__}: received unknown data_format '
                 f'\'{data_format}\'')
-        return self.formats[data_format]
+        return self.formats[data_format][0]
 
 class RankCandidates(object):
     """
@@ -358,173 +358,6 @@ class DimRankConstraint(RankConstraint):
             return (f'Decrease the dimension of index \'{self.source_idx}\' by '
                     f'{rank_error}')
 
-class DTypeTest(object):
-    def __init__(self, status_type):
-        self.status_type = status_type
-
-    def left_ind(self):
-        # return index of left-most input
-        raise NotImplementedError
-
-    def __call__(self, dtype_tuple, index_ranks, layout):
-        # evaluate the dtype_tuple, returning True or False
-        # the tuple are the dtypes corresponding to DTypeConstraints.tensors 
-        # True means the test passed
-        raise NotImplementedError
-
-    def status(self, dtype_tuple, tensors):
-        # return a SchemaStatus object representing the failure of this test
-        raise NotImplementedError
-
-class DTypeValidTest(DTypeTest):
-    def __init__(self, valid_dtypes, index):
-        super().__init__(DTypeNotValid)
-        self.valid_dtypes = valid_dtypes
-        self.index = index
-
-    def left_ind(self):
-        return self.index
-
-    def __call__(self, dtype_tuple, ranks_dummy, layout_dummy):
-        return dtype_tuple[self.index] in self.valid_dtypes
-
-    def status(self, dtype_tuple, tensors):
-        ten_name = tensors[self.index] 
-        ten_dtype = dtype_tuple[self.index]
-        stat = DTypeNotValid(ten_name, ten_dtype, self.valid_dtypes)
-        return stat
-
-class DTypeEquivTest(DTypeTest):
-    def __init__(self, target_index, source_index):
-        super().__init__(DTypeNotEqual)
-        self.src = source_index
-        self.trg = target_index
-
-    def left_ind(self):
-        return min(self.src, self.trg)
-
-    def __call__(self, dtype_tuple, ranks_dummy, layout_dummy):
-        src_dtype = dtype_tuple[self.src]
-        trg_dtype = dtype_tuple[self.trg]
-        return src_dtype == trg_dtype
-
-    def status(self, dtype_tuple, tensors):
-        src_name = tensors[self.src]
-        src_dtype = dtype_tuple[self.src]
-        trg_name = tensors[self.trg]
-        trg_dtype = dtype_tuple[self.trg]
-        stat = DTypeNotEqual(src_name, src_dtype, trg_name, trg_dtype)
-        return stat
-
-class DTypeExcludedComboTest(DTypeTest):
-    """
-    This test represents one combination of data tensor dtypes, index ranks,
-    and layout, which is marked as 'excluded' (invalid).  Usually this is
-    because the framework hasn't implemented it.
-
-    {index_tuple} are indexes into a list of tensors provided by
-    DTypeConstraints.  {dtypes} correspond to this sublist of tensors.
-    {rank_map} represents a particular configuration of index ranks that are
-    disallowed.  If it is empty, it indicates that all rank combinations are
-    disallowed.
-
-    layout is an integer in [0, schema.num_layouts).  If it is None, all
-    layouts for this combination of dtypes are disallowed.
-    """
-    def __init__(self, index_tuple, dtypes, rank_map, layout):
-        super().__init__(DTypeComboExcluded)
-        self.inds = index_tuple
-        self.dtypes = dtypes
-        self.rank_map = rank_map
-        self.layout = layout 
-
-    def left_ind(self):
-        return min(self.inds)
-
-    def __call__(self, dtype_tuple, index_ranks, layout):
-        layout_match = self.layout is None or self.layout == layout
-        if self.rank_map is None:
-            ranks_match = True
-        else:
-            ranks_match = all(r == index_ranks[k] for k,r in
-                    self.rank_map.items())
-
-        dtypes_match = all(self.dtypes[i] == dtype_tuple[i] for i in self.inds)
-        excluded = not (layout_match and ranks_match and dtypes_match)
-        return excluded
-
-    def status(self, dtype_tuple, tensors):
-        names = [ tensors[i] for i in self.inds ]
-        stat = DTypeComboExcluded(names, self.dtypes, self.rank_map,
-                self.layout)
-        return stat
-    
-class DTypeConstraints(object):
-    def __init__(self):
-        self.tensors = []
-        self.tests = []
-        self.equated = {} # trg_index => src_index 
-        self.valid = []
-
-    def _get_index(self, tensor):
-        if tensor not in self.tensors:
-            self.tensors.append(tensor)
-        return self.tensors.index(tensor)
-
-    def get_equate_source(self, tensor):
-        if tensor not in self.tensors:
-            return None
-        index = self.tensors.index(tensor)
-        src_index = self.equated.get(index, None)
-        if src_index is None:
-            return None
-        else:
-            return self.tensors[src_index]
-
-    def has_valid_dtypes(self, tensor):
-        if tensor not in self.tensors:
-            return False
-        index = self.tensors.index(tensor)
-        return index in self.valid
-
-    def add_valid(self, tensor, dtypes):
-        # add a constraint that tensor.dtype must be in dtypes
-        index = self._get_index(tensor)
-        test = DTypeValidTest(tuple(dtypes), index)
-        self.tests.append(test)
-        self.valid.append(index)
-
-    def add_equiv(self, target_tensor, source_tensor):
-        # add a constraint target_tensor.dtype == source_tensor.dtype
-        src_index = self._get_index(source_tensor)
-        trg_index = self._get_index(target_tensor)
-        test = DTypeEquivTest(trg_index, src_index)
-        self.tests.append(test)
-        self.equated[trg_index] = src_index
-
-    def add_excluded(self, tensors, dtypes, rank_combo, layout):
-        # add a constraint that:
-        # (tensor[0].dtype, tensor[1].dtype, ..., tensor[k].dtype,
-        # rank_combo) must not equal:
-        # (dtypes[0], dtypes[1], ..., dtypes[k], layout, rank_combo)
-        # in combination with the values in layout and rank_combo, if they are
-        # provided
-        indexes = tuple(self._get_index(n) for n in tensors)
-        test = DTypeExcludedComboTest(indexes, dtypes, rank_combo, layout)
-        self.tests.append(test)
-
-    def status(self, arg_dtypes, index_ranks, layout):
-        # reports Success if all tests pass, otherwise the status of the
-        # first failing test
-        dtype_tuple = tuple(arg_dtypes[n] for n in self.tensors)
-        stat = Success()
-        for test in self.tests:
-            passed = test(dtype_tuple, index_ranks, layout)
-            if not passed:
-                stat = test.status(dtype_tuple, self.tensors)
-                break
-        return stat 
-
 class CompIndex(NodeFunc):
     # FuncNode object for indices registered with computed_index
     # {comp_func} 
@@ -725,8 +558,8 @@ class SumRangeConstraint(Constraint):
     def __call__(self, **index_ranks):
         residual = sum(index_ranks.get(idx, 0) for idx in self.sig)
         return (
-                max(0, self.lo - residual - self.op.max_edit_dist), 
-                max(0, self.hi - residual + self.op.max_edit_dist)
+                max(0, self.lo - residual - self.op.avail_edits), 
+                max(0, self.hi - residual + self.op.avail_edits)
                 )
 
 class ArgRankConstraint(Constraint):

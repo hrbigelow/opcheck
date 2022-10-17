@@ -10,12 +10,17 @@ def init_schema(op):
     op.add_index('s', 'strides', 'i')
     op.add_index('d', 'dilations', 'i')
 
-    layouts = [ 
-            { 1: 'NCW', 2: 'NCHW', 3: 'NCDHW' },
-            { 1: 'NWC', 2: 'NHWC', 3: 'NDHWC' }
-            ]
+    formats = {
+            'NCW': (0, 1),
+            'NCHW': (0, 2),
+            'NCDHW': (0, 3),
+            'NWC': (1, 1),
+            'NHWC': (1, 2),
+            'NDHWC': (1, 3),
+            None: (1, None),
+            }
 
-    op.arg_layout('data_format', layouts, 'i')
+    op.arg_layout('data_format', formats, 'i')
     op.arg_tensor('input', 'bki', 'bik')
     op.arg_tensor('filters', 'fkl')
     op.arg_option('padding', ('VALID', 'SAME'))
@@ -28,7 +33,7 @@ def init_schema(op):
 
     op.exclude_dtypes(
             ('input', 'i', LAYOUT),
-            ('int32', 3, 0),    # 3D int32 channel-first layout not implemented 
+            ('int32', None, 0),    # 3D int32 channel-first layout not implemented 
             ('int32', None, 1),   # all int32 channel-last not implemented 
             ('bfloat16', 1, None), # 1D bfloat16, any layout
             ('bfloat16', 3, None)  # 3D bfloat16, any layout

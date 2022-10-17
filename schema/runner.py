@@ -1,7 +1,7 @@
 import io, os
 import inspect
 from .redirect import stderr_redirector
-from .error import Success, OpGrindInternalError
+from .error import OpGrindInternalError
 from . import fgraph, oparg, generators as ge
 
 class TestResult(object):
@@ -9,28 +9,27 @@ class TestResult(object):
     One schema test result.  Holds all sufficient information about the test.
     Provides convenient reporting and classification functions
     """
-    def __init__(self, op, _id, arg_map, index_ranks, status):
+    def __init__(self, op, _id, arg_map, index_ranks, gen_errors):
         self.op = op
         self.id = _id
         self.arg_map = arg_map
         self.index_ranks = index_ranks
-        self.expect_class = status
+        self.gen_errors = gen_errors
+        self.opgrind_errors = None
+        self.framework_error = None
 
     def add_result(self):
-        self.opgrind_status = self.op.input_status
-        if isinstance(self.op.framework_status, Success):
-            self.framework_status = self.op.framework_status
+        self.opgrind_errors = self.op.input_errors
+        if self.op.framework_error is None:
+            self.framework_error = self.op.framework_error
         else:
-            self.framework_status = self.op.framework_status.ex
+            self.framework_error = self.op.framework_error.ex
 
-        ex_stat_cls = self.expect_class
-        op_stat = self.opgrind_status
-        fr_stat = self.framework_status
-        if type(op_stat) != ex_stat_cls:
+        if self.opgrind_errors != self.gen_errors:
             cat = 'FAIL'
         else:
-            op_neg = isinstance(op_stat, Success)
-            fr_neg = isinstance(fr_stat, Success)
+            op_neg = (len(self.opgrind_errors) == 0) 
+            fr_neg = (self.framework_error is None)
             if op_neg:
                 cat = 'TN' if fr_neg else 'FN'
             else:
@@ -60,13 +59,25 @@ class TestResult(object):
         # summary statistics for the test
         stats = []
         keys = self.stat_keys()
+        expect_error_str = ','.join(e.__class__.__name__ for e in self.gen_errors)
+        opgrind_error_str = ','.join(e.__class__.__name__ for e in
+                self.opgrind_errors)
+
+        if expect_error_str == '':
+            expect_error_str = 'Success'
+        if opgrind_error_str == '':
+            opgrind_error_str = 'Success'
+        if self.framework_error is None:
+            framework_error_str = 'Success'
+        else:
+            framework_error_str = self.framework_error.__class__.__name__
 
         stats = [ 
                 str(self.id), 
                 self.category, 
-                self.expect_class.__name__,
-                self.opgrind_status.__class__.__name__,
-                self.framework_status.__class__.__name__,
+                expect_error_str,
+                opgrind_error_str,
+                framework_error_str,
                 ','.join(str(r) for r in self.index_ranks.values())
                 ]
 
@@ -117,9 +128,9 @@ class TestResult(object):
         Generate a human-readable report
         """
         cat = self.category
-        op_stat = self.opgrind_status
-        op_msg = op_stat.message(self.op)
-        fr_msg = self.op.framework_status.message(self.op)
+        op_msg = repr(self.opgrind_errors)
+        fr_msg = repr(self.op.framework_error)
+
         if cat == 'TP':
             return f'Framework\n{fr_msg}\nOpGrind\n{op_msg}\n'
         elif cat == 'TN':
@@ -136,8 +147,8 @@ class TestResult(object):
 
 def validate(op, out_dir, test_ids=None, skip_ids=None):
     """
-    Uses the gen_graph to produce a list of (<target_status>, <arg_dict>)
-    pairs for the op.  <target_status> is the correct type of SchemaStatus.
+    Uses the gen_graph to produce a list of (<target_error>, <arg_dict>)
+    pairs for the op.  <target_error> is the correct type of SchemaStatus.
     Runs the wrapped op on the <arg_dict> and collects the actual
     SchemaStatus and any possible exception from the framework.
 
@@ -168,8 +179,6 @@ def validate(op, out_dir, test_ids=None, skip_ids=None):
     # Create the test instances
     tests = []
     for test_id, (stat, args, ranks) in enumerate(configs, 1):
-        if stat is None:
-            stat = Success
         t = TestResult(op, test_id, args, ranks, stat) 
         tests.append(t)
 

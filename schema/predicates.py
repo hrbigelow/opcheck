@@ -31,7 +31,7 @@ class ArgType(NodeFunc):
     def __call__(self, op):
         arg_val = op._get_arg(self.arg_name)
         if not isinstance(arg_val, self.allowed_types):
-            return False, ArgTypeError(self.arg_name)
+            return False, self
         else:
             return True, arg_val
 
@@ -95,9 +95,9 @@ class ShapeList(NodeFunc):
 
     def __call__(self, shape, *shapes):
         if not all(isinstance(v, int) for v in shape):
-            return False, ArgValueError(self.arg_name, shape)
+            return False, self
         if not all(v >= 0 for v in shape):
-            return False, ArgValueError(self.arg_name, shape)
+            return False, self
         else:
             # In broadcast mode, return an integer rather than integer list.
             # see base.shape_rank
@@ -115,7 +115,7 @@ class ShapeInt(NodeFunc):
 
     def __call__(self, i):
         if i < 0:
-            return False, ArgValueError(self.arg_name, i)
+            return False, self
         else:
             return True, [i]
 
@@ -133,10 +133,10 @@ class ShapeTensorFunc(NodeFunc):
 
     def __call__(self, ten, *shapes):
         if ten.dtype != tf.int32:
-            return False, ArgValueError(self.arg_name, ten)
+            return False, self
         nums = ten.numpy().tolist()
         if any(n < 0 for n in nums):
-            return False, ArgValueError(self.arg_name, ten)
+            return False, self
         else:
             return self.func(nums, *shapes)
 
@@ -164,11 +164,11 @@ class ShapeTensor2D(NodeFunc):
     def __call__(self, op):
         ten = op._get_arg(self.arg_name) 
         if not ten.dtype.is_integer:
-            return False, ArgValueError(self.arg_name, ten)
+            return False, self
         elif ten.shape.rank != 2:
-            return False, ArgValueError(self.arg_name, ten)  
+            return False, self
         elif ten.shape[1] != self.num_slices:
-            return False, ArgValueError(self.arg_name, ten)
+            return False, self
         vals = tf.transpose(ten).numpy()
         tup = tuple(vals.tolist())
         return True, tup
@@ -184,7 +184,7 @@ class SliceShape(NodeFunc):
     def __call__(self, shape_tup):
         vals = shape_tup[self.index]
         if any(v < 0 for v in vals):
-            return False, ArgValueError(self.arg_name, vals)
+            return False, self
         return True, vals 
 
 class DTypes(NodeFunc):
@@ -256,36 +256,38 @@ class Inventory(NodeFunc):
         super().__init__()
         self.op = op
 
-    def get_hits(self, max_edit_dist):
-        self.op.max_edit_dist = max_edit_dist
-        self.op._clear_inv_graph()
+    def get_hits(self, max_edits, dtypes, shapes, args):
+        self.op._prep_gen_inference(max_edits, dtypes, shapes, args)
 
         # ranks, dtypes, sigs, arg_shapes, error
-        hits = list(fgraph.gen_graph_values(
-                        self.op.inv_live_nodes,
-                        self.op.inv_output_nodes))
+        report_nodes = (self.op.error_node,)
+        live_nodes = self.op.inference_nodes
+        hits = []
+        for hit in fgraph.gen_graph_values(live_nodes, report_nodes):
+            hits.append(hit[0]) # extract from tuple
         return hits
 
     def __call__(self, dtypes, shapes, args):
         # prepare the inventory graph
-        self.op.obs_dtypes.set_cached(dtypes)
-        self.op.obs_shapes.set_cached(shapes)
-        self.op.obs_args.set_cached(args)
-        self.op.generation_mode = GenMode.Inference
-        
-        hits = self.get_hits(0)
-        if len(hits) == 1:
+        hits = self.get_hits(0, dtypes, shapes, args)
+        if len(hits) > 1:
+            raise SchemaError(
+                f'{type(self).__qualname__}: Got multiple matches with '
+                f'zero edits for framework op \'{self.op.op_path}\'')
+
+        elif len(hits) == 1:
             return True, hits[0]
 
-        # produce up to some number of suggestions 
-        max_suggs = 5
-        all_hits = []
-        for dist in range(1, 3):
-            hits = self.get_hits(dist)
-            all_hits.extend(hits)
-            if len(all_hits) >= max_suggs:
-                break
-        return False, all_hits
+        else:
+            # produce up to some number of suggestions 
+            min_hits = 1
+            all_hits = []
+            for dist in range(1, 3):
+                hits = self.get_hits(dist, dtypes, shapes, args)
+                all_hits.extend(hits)
+                if len(all_hits) >= min_hits:
+                    break
+            return False, all_hits
 
 class RanksSigsShapes(NodeFunc):
     """
@@ -626,11 +628,11 @@ class DataFormat(NodeFunc):
             return True, self.formats.default()
 
         data_format = op._get_arg(self.arg_name)
-        valid = (data_format in self.formats.all_formats()) 
+        valid = (data_format in self.formats.all_formats())
         if valid:
             return True, data_format
         else:
-            return False, ArgValueError(self.arg_name, data_format) 
+            return False, self
 
 class ArgInt(NodeFunc):
     def __init__(self, arg_name, lo, hi):
@@ -648,9 +650,9 @@ class ArgInt(NodeFunc):
     def __call__(self, op):
         arg_val = op._get_arg(self.arg_name) 
         if not isinstance(arg_val, int):
-            return False, ArgTypeError(self.arg_name)
+            return False, self
         elif arg_val not in range(self.lo, self.hi + 1):
-            return False, ArgValueError(self.arg_name)
+            return False, self
         else:
             return True, arg_val
 
@@ -682,7 +684,7 @@ class Options(NodeFunc):
         if arg_val in self.options:
             return True, arg_val
         else:
-            return False, NonOptionError(arg_name, arg_val) 
+            return False, self
 
 class ArgMap(NodeFunc):
     def __init__(self):

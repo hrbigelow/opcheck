@@ -44,13 +44,11 @@ class SchemaApi(object):
         # mode for running the inv_graph
         self.generation_mode = None
 
-        # maximum and current edit distance a suggestion can be from the
-        # observed configuration.
-        self.max_edit_dist = 0
-        self.cur_edit_dist = 0
+        self.avail_edits = 0
+        self.errors = []
 
-        # current error state of inv_graph iteration
-        self.test_error_cls = None
+        # used by IndexDims and ArgShapes to compute index dimensions 
+        self.target_nelem = 1e6
 
         # indices which a change in rank always affects generated inputs.
         # mutations to rank 1 for these indices are not accepted.
@@ -74,6 +72,9 @@ class SchemaApi(object):
         self.inv_output_nodes = None
         self.inv_live_nodes = None
         self.dtypes_not_impl = None 
+        self.error_node = None
+        self.inference_nodes = None
+        self.predicate_nodes = None
 
         # Objects shared between graphs
         self.data_formats = None
@@ -88,8 +89,8 @@ class SchemaApi(object):
         self.return_nodes = []
 
         # error status
-        self.input_status = None
-        self.framework_status = None
+        self.input_errors = None
+        self.framework_error = None
 
         # call time values
         self.arguments = {}
@@ -135,16 +136,16 @@ class SchemaApi(object):
                 ret_val = self.framework_op(**self.arguments)
                 # ret_val = None
             except BaseException as ex:
-                self.framework_status = FrameworkError(ex)
+                self.framework_error = FrameworkError(ex)
                 self.return_status = NotApplicable()
             else:
-                self.framework_status = Success()
+                self.framework_error = None
                 self._check_return(ret_val)
             finally:
                 if not self._passed():
                     self._report()
-                if isinstance(self.framework_status, FrameworkError):
-                    raise self.framework_status.ex
+                if isinstance(self.framework_error, FrameworkError):
+                    raise self.framework_error.ex
                 return ret_val
 
         self.wrapped_op = wrapped_op
@@ -156,24 +157,23 @@ class SchemaApi(object):
         bind.apply_defaults()
         self.arguments = bind.arguments
         self.returns.clear()
-        self.input_status = None
-        self.framework_status = None
+        self.input_errors = None
+        self.framework_error = None
 
     def _check_args(self):
         """
         The main function to check all input arguments for all constraints
         registered on the schema
         """
-        nodes = set(self.pred_graph.values()).difference(self.return_nodes)
-        error = fgraph.pred_graph_evaluate(*nodes)
-        self.input_status = Success() if error is None else error
+        ret = fgraph.pred_graph_evaluate(*self.predicate_nodes)
+        self.input_errors = [] if ret is None else ret
 
     def _check_return(self, op_return):
         """
         Check the return tensors' shapes and types against those predicted by
         the framework
         """
-        if not isinstance(self.input_status, Success):
+        if not isinstance(self.input_errors, Success):
             return
 
         if not isinstance(op_return, (list, tuple)):
@@ -516,10 +516,8 @@ class SchemaApi(object):
         return msg
 
     def _passed(self):
-        return (
-                isinstance(self.input_status, Success) and
-                isinstance(self.framework_status, Success)
-                )
+        return (self.input_errors is None and
+                self.framework_error is None)
 
     def _shape_header(self, shape_arg):
         # translate a plain argument name  
@@ -566,8 +564,9 @@ class SchemaApi(object):
         return call_string
 
     def _report(self):
-        msg = self.input_status.message(self)
-        print(msg, file=sys.stderr)
+        print(repr(self.input_errors), file=sys.stderr)
+        # msg = self.input_errors.message(self)
+        # print(msg, file=sys.stderr)
 
     def _get_arg(self, arg_name):
         """Retrieve the value of {arg_name} argument at call-time."""
@@ -623,7 +622,7 @@ class SchemaApi(object):
         sigs = G.add_node(ge.SigMap(''))
         argranks = G.add_node(ge.ArgRanks(), ranks, sigs)
         indels = G.add_node(ge.Indels(self), argranks, sigs, self.obs_shapes)
-        mut_argranks = G.add_node(ge.MutatedArgRanks(), argranks, indels) 
+        mut_argranks = G.add_node(ge.MutatedArgRanks(self), argranks, indels) 
 
         # must append each shape arg
         self.mut_rank_func = ge.ArgRankHash()
@@ -642,6 +641,7 @@ class SchemaApi(object):
         test_err.append_parent(arg_shapes)
         self.inv_output_nodes = (ranks, self.dtypes_not_impl, sigs, arg_shapes,
                 test_err)
+        self.error_node = test_err
 
         G.set_registry(self.gen_graph)
         target_tensor_size = 1e6
@@ -686,11 +686,16 @@ class SchemaApi(object):
 
     def _finalize(self):
         self.dims_graph.finalize()
+        if self.data_formats is None:
+            self.arg_layout(None, None, None)
+
         obs_nodes = (self.obs_dtypes, self.obs_shapes, self.obs_args)
         nodes = set(self.inv_graph.values()).difference(obs_nodes)
         self.inv_live_nodes = list(nodes)
-        if self.data_formats is None:
-            self.arg_layout(None, None, None)
+        err_ancestors = fgraph.get_ancestors(self.error_node)
+        self.inference_nodes = set(err_ancestors).difference(obs_nodes)
+        pred = set(self.pred_graph.values()).difference(self.return_nodes)
+        self.predicate_nodes = pred
 
         """
         inv_node = self.gen_graph['Inventory']
@@ -714,20 +719,36 @@ class SchemaApi(object):
             print(cfg)
         print('Finished')
         """
-    def _clear_inv_graph(self):
-        self.test_error_cls = None
-        self.cur_edit_dist = 0
+    def _prep_gen_inference(self, edits, obs_dtypes, obs_shapes, obs_args):
+        self.avail_edits = edits
+        self.generation_mode = GenMode.Inference
+        self.obs_dtypes.set_cached(obs_dtypes)
+        self.obs_shapes.set_cached(obs_shapes)
+        self.obs_args.set_cached(obs_args)
+        self.errors.clear()
+
+    def _prep_gen_inventory(self):
+        self.errors.clear()
+        self.avail_edits = 0
+        self.generation_mode = GenMode.Inventory
+
+    def _prep_gen_tests(self):
+        self.errors.clear()
+        self.avail_edits = 1
+        self.generation_mode = GenMode.Test
 
     def _generate_tests(self):
-        self.generation_mode = GenMode.Test
-        self._clear_inv_graph()
-        # self.generation_mode = GenMode.Inventory
+        self._prep_gen_tests()
+        self._prep_gen_inventory()
         live_nodes = list(self.inv_graph.values())
         err_node = self._inv_node(ge.TestErrorClass)
         hash_node = self._inv_node(ge.ArgRankHash)
         index_ranks = self._inv_node(ge.IndexRanks)
         out_nodes = (hash_node, err_node, self.args_node, index_ranks)
-        tests = list(fgraph.gen_graph_values(live_nodes, out_nodes))
+        tests = []
+        gen = fgraph.gen_graph_values(live_nodes, out_nodes)
+        for test in gen:
+            tests.append(test)
         good = { t[0] for t in tests if t[1] is None }
         filtered = [ t[1:] for t in tests if t[1] is None or t[0] not in good ]
         return filtered
@@ -1198,7 +1219,7 @@ class SchemaApi(object):
         self.arg_gen_nodes[arg_name] = g_arg
         self.args_node.append_parent_sn(g_arg)
 
-    def arg_layout(self, arg_name, layouts, rank_idx):
+    def arg_layout(self, arg_name, formats, rank_idx):
         """
         Declares {arg_name} to control layout-dependent signatures for tensors. 
         {layouts} is an array, where each element is a map of: rank => code
@@ -1206,7 +1227,7 @@ class SchemaApi(object):
         """
         G.set_registry(self.inv_graph)
         P.set_registry(self.pred_graph)
-        self.data_formats = base.DataFormats(arg_name, layouts, rank_idx)
+        self.data_formats = base.DataFormats(arg_name, formats, rank_idx)
         
         # define the real arg 
         layout = self._inv_node(ge.Layout, base.LAYOUT)
