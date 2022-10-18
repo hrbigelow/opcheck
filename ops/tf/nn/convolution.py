@@ -35,8 +35,9 @@ def init_schema(op):
             ('input', 'i', LAYOUT),
             ('int32', None, 0),    # 3D int32 channel-first layout not implemented 
             ('int32', None, 1),   # all int32 channel-last not implemented 
-            ('bfloat16', 1, None), # 1D bfloat16, any layout
-            ('bfloat16', 3, None)  # 3D bfloat16, any layout
+            ('bfloat16', None, None), # any kind of bfloat16 not implemented 
+            # ('bfloat16', None, None), # 1D bfloat16, any layout
+            # ('bfloat16', 3, None)  # 3D bfloat16, any layout
             )
 
     op.add_index_predicate('s-d exclusion', flib.not_both_over_one, 'sd')

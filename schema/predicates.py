@@ -17,33 +17,26 @@ details on how the predicate graph works.
 The constructed Predicate Graph is used to evaluate all arguments to the
 framework op, and either return a Success state, or various kinds of
 SchemaError classes expressing the nature of the error.
+
+The failure value for each of these NodeFuncs should be a list of suggestions
+in cost-increasing order.  An empty list signifies that the predicate could not
+find any suggestions which would fix the framework op inputs.
 """
-# TODO: Specialize ArgType for DataTensor, ShapeTensor etc
-class ArgType(NodeFunc):
-    """
-    Validate that the argument is of allowed type.
-    """
-    def __init__(self, arg_name, allowed_types):
-        super().__init__(arg_name)
-        self.arg_name = arg_name
-        self.allowed_types = allowed_types
-
-    def __call__(self, op):
-        arg_val = op._get_arg(self.arg_name)
-        if not isinstance(arg_val, self.allowed_types):
-            return False, self
-        else:
-            return True, arg_val
-
-class DataTensor(ArgType):
+class DataTensor(NodeFunc):
     """
     Represent a tensor with data (as opposed to shape-based meta-data)
     """
-    def __init__(self, arg_name):
-        super().__init__(arg_name, tf.Tensor) 
+    def __init__(self, arg_name, gen_node):
+        super().__init__(arg_name)
+        self.arg_name = arg_name
+        self.gen_node = gen_node
 
     def __call__(self, op):
-        return super().__call__(op)
+        ten = op._get_arg(self.arg_name)
+        if not isinstance(ten, tf.Tensor):
+            return False, [[self.gen_node]]
+        else:
+            return True, ten
 
 class GetReturnTensor(NodeFunc):
     def __init__(self, ret_name):
@@ -53,7 +46,7 @@ class GetReturnTensor(NodeFunc):
     def __call__(self, op):
         ten = op._get_return(self.ret_name)
         if not isinstance(ten, tf.Tensor):
-            return False, ArgTypeError(f'Return Tensor {self.ret_name}')
+            return False, [[self]] 
         else:
             return True, ten
 
@@ -68,7 +61,7 @@ class ValidReturnShape(NodeFunc):
         if actual_shape == predicted_shape:
             return True, None
         else:
-            return False, ReturnShapeError(self.ret_name) 
+            return False, [[self]] 
 
 class TensorDType(NodeFunc):
     def __init__(self, name):
@@ -88,16 +81,20 @@ class ShapeList(NodeFunc):
     """
     Interpret the contents as a shape.
     """
-    def __init__(self, arg_name, broadcast_mode):
+    def __init__(self, arg_name, gen_node, broadcast_mode):
         super().__init__(arg_name)
         self.arg_name = arg_name
+        self.gen_node = gen_node
         self.broadcast_mode = broadcast_mode
 
-    def __call__(self, shape, *shapes):
+    def __call__(self, op):
+        shape = op._get_arg(self.arg_name)
+        if not isinstance(shape, list):
+            return False, [[self.gen_node]] 
         if not all(isinstance(v, int) for v in shape):
-            return False, self
+            return False, [[self.gen_node]]
         if not all(v >= 0 for v in shape):
-            return False, self
+            return False, [[self.gen_node]]
         else:
             # In broadcast mode, return an integer rather than integer list.
             # see base.shape_rank
@@ -109,13 +106,17 @@ class ShapeInt(NodeFunc):
     """
     Interpret the integer as a shape.
     """
-    def __init__(self, arg_name):
+    def __init__(self, arg_name, gen_node):
         super().__init__(arg_name)
         self.arg_name = arg_name
+        self.gen_node = gen_node
 
-    def __call__(self, i):
+    def __call__(self, op):
+        i = op._get_arg(self.arg_name)
+        if not isinstance(i, int):
+            return False, [[self.gen_node]]
         if i < 0:
-            return False, self
+            return False, [[self.gen_node]]
         else:
             return True, [i]
 
@@ -126,65 +127,69 @@ class ShapeTensorFunc(NodeFunc):
     {pred_func} accepts the integer list shape extracted from the tensor as
     well as any integer lists provided by *shapes.
     """
-    def __init__(self, arg_name, pred_func):
+    def __init__(self, arg_name, gen_node, pred_func):
         super().__init__(arg_name)
         self.arg_name = arg_name
+        self.gen_node = gen_node
         self.func = pred_func 
 
-    def __call__(self, ten, *shapes):
+    def __call__(self, op, *shapes):
+        ten = op._get_arg(self.arg_name)
+        if not isinstance(ten, tf.Tensor):
+            return False, [[self.gen_node]]
         if ten.dtype != tf.int32:
-            return False, self
+            return False, [[self.gen_node]]
         nums = ten.numpy().tolist()
         if any(n < 0 for n in nums):
-            return False, self
+            return False, [[self.gen_node]]
         else:
             return self.func(nums, *shapes)
 
 class ShapeTensor(ShapeTensorFunc):
     """
-
     Specialization of ShapeTensorFunc that performs no additional checks
     """
-    def __init__(self, arg_name):
+    def __init__(self, arg_name, gen_node):
         pred_func = lambda shape: (True, shape)
-        super().__init__(arg_name, pred_func)
+        super().__init__(arg_name, gen_node, pred_func)
 
-
-# TODO: differentiate each SchemaStatus result
 class ShapeTensor2D(NodeFunc):
     """
     Validate a 2D shape tensor, and return its contents as a tuple of integer
     lists.
     """
-    def __init__(self, arg_name, num_slices):
+    def __init__(self, arg_name, gen_node, num_slices):
         super().__init__(arg_name)
         self.arg_name = arg_name
+        self.gen_node = gen_node
         self.num_slices = num_slices
 
     def __call__(self, op):
         ten = op._get_arg(self.arg_name) 
         if not ten.dtype.is_integer:
-            return False, self
+            return False, [[self.gen_node]]
         elif ten.shape.rank != 2:
-            return False, self
+            return False, [[self.gen_node]]
         elif ten.shape[1] != self.num_slices:
-            return False, self
+            return False, [[self.gen_node]]
         vals = tf.transpose(ten).numpy()
         tup = tuple(vals.tolist())
         return True, tup
 
+# TODO: add gen_node
 class SliceShape(NodeFunc):
     """
     Get a slice from a tuple of shapes.
     """
     def __init__(self, name, tup_index):
         super().__init__(f'{name}.{tup_index}')
+        self.gen_node = gen_node
         self.index = tup_index
 
     def __call__(self, shape_tup):
         vals = shape_tup[self.index]
         if any(v < 0 for v in vals):
-            return False, self
+            return False, [[self]]
         return True, vals 
 
 class DTypes(NodeFunc):
@@ -276,7 +281,7 @@ class Inventory(NodeFunc):
                 f'zero edits for framework op \'{self.op.op_path}\'')
 
         elif len(hits) == 1:
-            return True, hits[0]
+            return True, hits
 
         else:
             # produce up to some number of suggestions 
@@ -618,10 +623,11 @@ class TemplateFunc(NodeFunc):
         return True, (ftexts, ctexts, indices)
 
 class DataFormat(NodeFunc):
-    def __init__(self, formats, arg_name):
+    def __init__(self, formats, gen_node, arg_name):
         super().__init__(arg_name)
         self.formats = formats
         self.arg_name = arg_name
+        self.gen_node = gen_node
 
     def __call__(self, op):
         if self.arg_name is None:
@@ -632,7 +638,7 @@ class DataFormat(NodeFunc):
         if valid:
             return True, data_format
         else:
-            return False, self
+            return False, [[self.gen_node]]
 
 class ArgInt(NodeFunc):
     def __init__(self, arg_name, lo, hi):
@@ -650,9 +656,9 @@ class ArgInt(NodeFunc):
     def __call__(self, op):
         arg_val = op._get_arg(self.arg_name) 
         if not isinstance(arg_val, int):
-            return False, self
+            return False, [[self]]
         elif arg_val not in range(self.lo, self.hi + 1):
-            return False, self
+            return False, [[self]] 
         else:
             return True, arg_val
 
@@ -668,9 +674,10 @@ class Sig(NodeFunc):
         return True, self.sig_list[layout]
 
 class Options(NodeFunc):
-    def __init__(self, arg_name, options):
+    def __init__(self, arg_name, gen_node, options):
         super().__init__(arg_name)
         self.arg_name = arg_name
+        self.gen_node = gen_node
         try:
             iter(options)
         except TypeError:
@@ -684,7 +691,7 @@ class Options(NodeFunc):
         if arg_val in self.options:
             return True, arg_val
         else:
-            return False, self
+            return False, [[self.gen_node]]
 
 class ArgMap(NodeFunc):
     def __init__(self):
@@ -699,5 +706,5 @@ class Schema(NodeFunc):
         self.op = op
 
     def __call__(self):
-        return (True, self.op)
+        return True, self.op
 

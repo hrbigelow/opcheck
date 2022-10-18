@@ -1,36 +1,53 @@
+import tensorflow as tf
+import numpy as np
 import io, os
 import inspect
+import traceback
 from .redirect import stderr_redirector
 from .error import OpGrindInternalError
 from . import fgraph, oparg, generators as ge
+from tensorflow.python.framework import ops
 
 class TestResult(object):
     """
     One schema test result.  Holds all sufficient information about the test.
     Provides convenient reporting and classification functions
     """
-    def __init__(self, op, _id, arg_map, index_ranks, gen_errors):
+    def __init__(self, op, _id, arg_map, index_ranks, gen_error_state):
         self.op = op
         self.id = _id
         self.arg_map = arg_map
         self.index_ranks = index_ranks
-        self.gen_errors = gen_errors
-        self.opgrind_errors = None
+
+        # list of errors (expected to be zero or one) incurred during the
+        # generation of the test example
+        self.gen_error_state = gen_error_state
+
+        # list of suggested fixes.  each item in the list is an error state
+        # the list could be empty if no suggested fixes could be found
+        self.suggestions = []
         self.framework_error = None
+        self.framework_msg = None
 
     def add_result(self):
-        self.opgrind_errors = self.op.input_errors
+        self.suggestions = self.op.input_errors
         if self.op.framework_error is None:
             self.framework_error = self.op.framework_error
         else:
-            self.framework_error = self.op.framework_error.ex
+            # holding a reference to the actual framework exception here
+            # results in GPU tensor memory not being freed 
+            self.framework_error = type(self.op.framework_error.ex)
+            self.framework_msg = str(self.op.framework_error.ex)
 
-        if self.opgrind_errors != self.gen_errors:
+        if len(self.suggestions) == 0:
+            top_hit = ['No Hit found']
+        else:
+            top_hit = self.suggestions[0]
+        if top_hit != self.gen_error_state:
             cat = 'FAIL'
         else:
-            op_neg = (len(self.opgrind_errors) == 0) 
             fr_neg = (self.framework_error is None)
-            if op_neg:
+            if len(self.gen_error_state) == 0:
                 cat = 'TN' if fr_neg else 'FN'
             else:
                 cat = 'FP' if fr_neg else 'TP'
@@ -59,18 +76,23 @@ class TestResult(object):
         # summary statistics for the test
         stats = []
         keys = self.stat_keys()
-        expect_error_str = ','.join(e.__class__.__name__ for e in self.gen_errors)
-        opgrind_error_str = ','.join(e.__class__.__name__ for e in
-                self.opgrind_errors)
+        expect_error_str = ','.join(e.__class__.__name__ for e in
+                self.gen_error_state)
+
+        if len(self.suggestions) == 0:
+            opgrind_error_str = 'Success'
+        else:
+            opgrind_error_str = ','.join(e.__class__.__name__ for e in
+                self.suggestions[0])
+            if opgrind_error_str == '':
+                opgrind_error_str = 'Success'
 
         if expect_error_str == '':
             expect_error_str = 'Success'
-        if opgrind_error_str == '':
-            opgrind_error_str = 'Success'
         if self.framework_error is None:
             framework_error_str = 'Success'
         else:
-            framework_error_str = self.framework_error.__class__.__name__
+            framework_error_str = self.framework_error.__name__
 
         stats = [ 
                 str(self.id), 
@@ -128,8 +150,8 @@ class TestResult(object):
         Generate a human-readable report
         """
         cat = self.category
-        op_msg = repr(self.opgrind_errors)
-        fr_msg = repr(self.op.framework_error)
+        op_msg = repr(self.suggestions)
+        fr_msg = self.framework_msg
 
         if cat == 'TP':
             return f'Framework\n{fr_msg}\nOpGrind\n{op_msg}\n'
@@ -183,6 +205,8 @@ def validate(op, out_dir, test_ids=None, skip_ids=None):
         tests.append(t)
 
     test_id = 1
+    run_number = 0
+    mem = { 'current': 0 }
     with open(files['TP'], 'w') as tp, \
             open(files['TN'], 'w') as tn, \
             open(files['FP'], 'w') as fp, \
@@ -210,14 +234,15 @@ def validate(op, out_dir, test_ids=None, skip_ids=None):
                 print(f'Skipping test: {t.id:-4d}  Stats: {mat}', end='')
                 continue
 
-    
             print('\r', end='')
             print(f'Running test: {t.id:-4d}  ', end='')
-            arg_dict = t.make_args()
-            # t.op._prepare_call(**arg_dict)
-            # t.op._check_args()
-            # return
             t.run()
+            # pre = mem
+            # mem = tf.config.experimental.get_memory_info('GPU:0')
+            # delta = mem['current'] - pre['current']
+            # print(f'Test {t.id:-4d}: {delta}', flush=True)
+            # continue
+
             cat = t.category
             row = t.stats()
             stats[cat].append(t)

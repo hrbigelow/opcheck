@@ -54,14 +54,6 @@ class NoMatchingRanks(SchemaStatus):
                 self.report)
         return msg
 
-class ArgTypeError(SchemaStatus):
-    def __init__(self, arg_name):
-        self.arg_name = arg_name
-
-    def message(self, op):
-        msg = f'Argument \'{self.arg_name}\' received invalid type'
-        return msg
-
 class ArgValueError(SchemaStatus):
     def __init__(self, arg_name, arg_val):
         self.arg_name = arg_name

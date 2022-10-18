@@ -545,9 +545,8 @@ class SumRangeConstraint(Constraint):
     residual range based on values provided for some subset of indexes in the
     signature.
     """
-    def __init__(self, op, sig, lo, hi):
+    def __init__(self, sig, lo, hi):
         super().__init__()
-        self.op = op
         self.sig = sig
         self.lo = lo
         self.hi = hi
@@ -557,10 +556,7 @@ class SumRangeConstraint(Constraint):
 
     def __call__(self, **index_ranks):
         residual = sum(index_ranks.get(idx, 0) for idx in self.sig)
-        return (
-                max(0, self.lo - residual - self.op.avail_edits), 
-                max(0, self.hi - residual + self.op.avail_edits)
-                )
+        return max(0, self.lo - residual), max(0, self.hi - residual)
 
 class ArgRankConstraint(Constraint):
     """

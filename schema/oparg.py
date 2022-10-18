@@ -31,11 +31,25 @@ class DataTensorArg(OpArg):
         self.shape = shape
         self.dtype = dtype
 
+    def __repr__(self):
+        return f'[{self.shape}]:{self.dtype.name}'
+
     def value(self):
+        try:
+            return self._value()
+        except BaseException as ex:
+            raise SchemaError(
+                f'{type(self).__qualname__}: Couldn\'t create value for '
+                f'argument with shape \'{self.shape}\' and dtype '
+                f'\'{self.dtype.name}\'.  Got exception: '
+                f'{ex}')
+
+    def _value(self):
         nelem = np.prod(self.shape)
-        if nelem > 1e8:
+        # print(repr(self), nelem)
+        if nelem > int(1e8):
             raise SchemaError(f'Shape \'{self.shape}\' has {nelem} elements, '
-            f'which exceeds 1e8 elements')
+                    f'which exceeds 1e8 elements')
         if self.dtype.is_integer:
             lo = max(self.dtype.min, -1000)
             hi = min(self.dtype.max, 1000) 

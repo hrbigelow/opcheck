@@ -128,6 +128,7 @@ class RankRange(ReportNodeFunc):
         elif self.op.generation_mode == GenMode.Test:
             yield from range(sch_lo, sch_hi+1)
             # print(f'{self.sub_name}: [{sch_lo}, {sch_hi}]')
+            """
             with self.new_error(1) as avail:
                 # TODO: maybe add additional cost?
                 if not avail:
@@ -135,6 +136,7 @@ class RankRange(ReportNodeFunc):
                 yield sch_hi+1
                 if sch_lo > 0:
                     yield sch_lo-1
+            """
         elif self.op.generation_mode == GenMode.Inference:
             idx = self.sub_name
 
@@ -162,6 +164,7 @@ class RankRange(ReportNodeFunc):
                 test_hi = min(test_hi, chi)
 
             yield from range(test_lo, test_hi+1)
+            """
             # if the schema range [sch_lo, sch_hi] permits additional ranks
             # yield those as well
             with self.new_error(1) as avail:
@@ -171,6 +174,7 @@ class RankRange(ReportNodeFunc):
                     yield test_lo - 1
                 if test_hi < sch_hi:
                     yield test_hi + 1
+            """
         else:
             raise RuntimeError('generation_mode not set')
 
@@ -393,9 +397,57 @@ class IndexDims(ReportNodeFunc):
     def __init__(self, op):
         super().__init__(op)
 
+    def shape_mutations(self, mut_arg_ranks, index_dims, sigs):
+        """
+        Mutate individual dims of correct shapes to create IndexDims errors.
+        Only mutate indices which have multiple usage.
+        """
+        idx_usage = defaultdict(list)
+        indexes = { idx for sig in sigs.values() for idx in sig }
+        for arg, sig in sigs.items():
+            for idx in sig:
+                if idx not in indexes:
+                    continue
+
+        max_dimsize = get_max_dimsize(self.op.target_nelem, mut_arg_ranks)
+        results = []
+
+        for idx, args in idx_usage.items():
+            if len(index_dims[idx]) == 0:
+                continue
+            if len(args) == 1:
+                continue
+            for mut_arg in args:
+                arg_shapes = defaultdict(list)
+                for arg, sig in sigs.items():
+                    # create a shape for arg, possibly mutated
+                    for usage in sig:
+                        snip = list(index_dims[usage])
+                        if arg == mut_arg and idx == usage:
+                            c = randint(0, len(snip)-1)
+                            new_val, alt_val = sample(range(1, max_dimsize), 2)
+                            val = new_val if new_val != snip[c] else alt_val
+                            yield (arg, c, val)
+                        arg_shapes[arg].extend(snip)
+                results.append(dict(arg_shapes))
+        return results 
+
     def __call__(self, mut_arg_ranks, index_ranks, sigs, obs_shapes, **comp):
-        if self.op.generation_mode in (GenMode.Inventory, GenMode.Test):
-            yield self.compute_dims(mut_arg_ranks, index_ranks, sigs, **comp)
+        if self.op.generation_mode == GenMode.Inventory:
+            dims = self.compute_dims(mut_arg_ranks, index_ranks, sigs, **comp)
+            yield dims
+        elif self.op.generation_mode == GenMode.Test:
+            dims = self.compute_dims(mut_arg_ranks, index_ranks, sigs, **comp)
+            yield dims
+            with self.new_error(1) as avail:
+                if not avail:
+                    return
+                point_muts = self.shape_mutations(mut_arg_ranks, dims, sigs)
+                for arg, comp, val in point_muts:
+                    point_mut_shapes = dict(arg_shapes)
+                    point_mut_shapes[arg][comp] = val
+                    yield point_mut_shapes
+
         elif self.op.generation_mode == GenMode.Inference:
             # If ranks don't all match, we won't use this suggestion anyway
             for arg, shape in obs_shapes.items():
@@ -426,15 +478,18 @@ class IndexDims(ReportNodeFunc):
             # inds is ( idx, idx, ... )
             for dims_set in itertools.product(*list_list):
                 dist = sum(t - ds[1] for t, ds in zip(totals, dims_set))
-                with self.new_error(dist) as avail:
-                    if not avail:
-                        return
-                    z = zip(inds, dims_set)
-                    index_dims = { i: list(ds[0]) for i, ds in z }
-                    comp_dims = self.op.dims_graph(index_dims, **comp) 
-                    # TODO: check comp_dims are within bounds
-                    index_dims.update(comp_dims)
+                z = zip(inds, dims_set)
+                index_dims = { i: list(ds[0]) for i, ds in z }
+                comp_dims = self.op.dims_graph(index_dims, **comp) 
+                # TODO: check comp_dims are within bounds
+                index_dims.update(comp_dims)
+                if dist == 0:
                     yield index_dims
+                else:
+                    with self.new_error(dist) as avail:
+                        if not avail:
+                            return
+                        yield index_dims
         else:
             raise RuntimeError(f'generation mode not set')
 
@@ -544,32 +599,6 @@ class ArgShapes(ReportNodeFunc):
     def __init__(self, op):
         super().__init__(op)
 
-    def shape_mutations(self, index_dims, sigs, idx_usage, max_dimsize):
-        """
-        Mutate individual dims of correct shapes to create IndexUsageErrors.
-        Only mutate indices which have multiple usage.
-        """
-        results = []
-        for idx, args in idx_usage.items():
-            if len(index_dims[idx]) == 0:
-                continue
-            if len(args) == 1:
-                continue
-            for mut_arg in args:
-                arg_shapes = defaultdict(list)
-                for arg, sig in sigs.items():
-                    # create a shape for arg, possibly mutated
-                    for usage in sig:
-                        snip = list(index_dims[usage])
-                        if arg == mut_arg and idx == usage:
-                            c = randint(0, len(snip)-1)
-                            new_val, alt_val = sample(range(1, max_dimsize), 2)
-                            val = new_val if new_val != snip[c] else alt_val
-                            yield (arg, c, val)
-                        arg_shapes[arg].extend(snip)
-                results.append(dict(arg_shapes))
-        return results 
-
     @staticmethod
     def shape_indels(arg_shapes, indel, max_dimsize):
         """
@@ -606,19 +635,12 @@ class ArgShapes(ReportNodeFunc):
         if self.op.generation_mode == GenMode.Inventory:
             assert indel is None, 'Indel should be none in Inventory mode'
             yield arg_shapes
+
         elif self.op.generation_mode == GenMode.Test:
             assert arg_shapes != Unused
             indel_shapes = self.shape_indels(arg_shapes, indel, max_dimsize)
             yield indel_shapes 
-            with self.new_error(1) as avail:
-                if not avail:
-                    return
-                mutations = self.shape_mutations(index_dims, sigs, idx_usage,
-                        max_dimsize)
-                for arg, comp, val in mutations:
-                    point_mut_shapes = dict(arg_shapes)
-                    point_mut_shapes[arg][comp] = val
-                    yield point_mut_shapes
+
         elif self.op.generation_mode == GenMode.Inference:
             assert indel is None, 'Indel should be None in Inference mode'
             yield arg_shapes
@@ -650,12 +672,11 @@ class DTypeIndiv(ReportNodeFunc):
             obs_dtype = obs_dtypes[self.arg_name]
             if obs_dtype in self.valid_dtypes:
                 yield obs_dtype
-            with self.new_error(1) as avail:
-                if not avail:
-                    return
-                for dtype in self.valid_dtypes:
-                    if dtype != obs_dtype:
-                        yield dtype
+            else:
+                with self.new_error(1) as avail:
+                    if not avail:
+                        return
+                    yield from self.valid_dtypes
         else:
             raise RuntimeError(f'generation mode not set')
 
@@ -663,9 +684,10 @@ class DTypeEquiv(ReportNodeFunc):
     """
     A DType which is declared equal to another using equate_dtypes 
     """
-    def __init__(self, op, arg_name):
+    def __init__(self, op, arg_name, src_arg_name):
         super().__init__(op, arg_name)
         self.arg_name = arg_name
+        self.src_arg_name = src_arg_name
         self.all_dtypes = ALL_DTYPES
 
     def __call__(self, obs_dtypes, src_dtype):
@@ -680,10 +702,10 @@ class DTypeEquiv(ReportNodeFunc):
                     if dtype != src_dtype:
                         yield dtype
         elif self.op.generation_mode == GenMode.Inference:
-            # get the observation
-            obs_dtype = obs_dtypes[self.arg_name]
-            if src_dtype == obs_dtype:
-                yield obs_dtype
+            # get the observation.  
+            eq = (obs_dtypes[self.arg_name] == obs_dtypes[self.src_arg_name])
+            if eq:
+                yield src_dtype
             else:
                 with self.new_error(1) as avail:
                     if avail:
@@ -785,7 +807,7 @@ class TestErrorClass(NodeFunc):
         self.op = op
 
     def __call__(self):
-        yield self.op.errors
+        yield list(self.op.errors)
 
 class IndexRanks(NodeFunc):
     """
