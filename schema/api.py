@@ -61,7 +61,6 @@ class SchemaApi(object):
         self.args_node = None
 
         # Graphs
-        self.gen_graph = {}
         self.pred_graph = {}
         self.inv_graph = {} # idx => node, for generating inventory
 
@@ -75,6 +74,7 @@ class SchemaApi(object):
         self.error_node = None
         self.inference_nodes = None
         self.predicate_nodes = None
+        self.data_format_gobj = None
 
         # Objects shared between graphs
         self.data_formats = None
@@ -95,10 +95,6 @@ class SchemaApi(object):
         # call time values
         self.arguments = {}
         self.returns = {}  # 'return[0]' => tensor, 'return[1]' => tensor, ...
-
-    def _gen_node(self, gen_class, name=None):
-        name = fgraph.node_name(gen_class, name)
-        return self.gen_graph.get(name, None)
 
     def _pred_node(self, pred_class, name=None):
         name = fgraph.node_name(pred_class, name)
@@ -122,7 +118,6 @@ class SchemaApi(object):
         self._init_pred_graph()
         self._init_gen_graph()
         init_schema_func(self)
-        # self._add_pred_graph()
         self._finalize()
 
         def wrapped_op(*args, **kwargs):
@@ -615,11 +610,11 @@ class SchemaApi(object):
         G.set_registry(self.inv_graph)
         self.obs_dtypes = G.add_node(ge.ObservedValue('dtypes'))
         self.obs_shapes = G.add_node(ge.ObservedValue('shapes'))
-        # self.obs_layout = G.add_node(ge.ObservedValue('layout'))
         self.obs_args = G.add_node(ge.ObservedValue('args'))
         niobj = ge.DTypesNotImplemented(self)
         self.dtypes_not_impl = G.add_node(niobj, self.obs_dtypes)
-        layout = G.add_node(ge.Layout(self, base.LAYOUT), self.obs_args)
+        layout_gobj = ge.Layout(self, base.LAYOUT)
+        layout = G.add_node(layout_gobj, self.obs_args)
         ranks = G.add_node(ge.IndexRanks())
         sigs = G.add_node(ge.SigMap(''))
         argranks = G.add_node(ge.ArgRanks(), ranks, sigs)
@@ -645,37 +640,6 @@ class SchemaApi(object):
                 test_err)
         self.error_node = test_err
 
-        G.set_registry(self.gen_graph)
-        target_tensor_size = 1e6
-
-        # NodeFuncs
-        inv_obj = ge.Inventory(self)
-        inv_node = G.add_node(inv_obj) 
-        
-    def _add_pred_graph(self):
-        # add single-index dims nodes that are not already added
-        P.set_registry(self.pred_graph)
-        idims_usage = self._pred_node(pr.IndexDimsUsage)
-
-        for node_name, parent_idxs in self.pending_index_edges.items():
-            node = self.pred_graph[node_name]
-            for idx in parent_idxs:
-                idx_node = self._pred_node(pr.ComputedDims, idx)
-                if idx_node is not None:
-                    node.append_parent_sn(idx_node)
-                    continue
-                idx_node = self._pred_node(pr.SingleIndexDims, idx)
-                if idx_node is None:
-                    si_obj = pr.SingleIndexDims(idx)
-                    idx_node = P.add_node(si_obj, idims_usage)
-                node.append_parent_sn(idx_node)
-
-        for node_name, parent_names in self.pending_pred_edges.items():
-            node = self.pred_graph[node_name]
-            for parent_name in parent_names:
-                parent_node = self.pred_graph[parent_name]
-                node.append_parent_sn(parent_node)
-
         # move pr.GetReturnTensor* and pr.ValidReturnShape* nodes 
         for i in range(self.num_returns):
             ret_name = f'return[{i}]'
@@ -699,28 +663,6 @@ class SchemaApi(object):
         pred = set(self.pred_graph.values()).difference(self.return_nodes)
         self.predicate_nodes = pred
 
-        """
-        inv_node = self.gen_graph['Inventory']
-        self.generation_mode = GenMode.Inference
-        self.max_edit_dist = 0
-        self.cur_edit_dist = 0
-        # Test the inv_graph in Inference mode using dummy inputs
-        b, i, k, f, l = [10], [15, 7], [3], [7, 4], [2] 
-        s, d = [3, 3], [1, 1]
-        test_dtypes = { 'input': tf.float32, 'filters': tf.float32}
-        test_shapes = { 'input': b + i + k, 'filters': f + k + l, 'strides': s,
-                'dilations': d } 
-        test_layout = 0
-        self.obs_dtypes.set_cached(test_dtypes)
-        self.obs_shapes.set_cached(test_shapes)
-        self.obs_layout.set_cached(test_layout)
-        obs_nodes = (self.obs_dtypes, self.obs_shapes, self.obs_layout)
-        dynamic_nodes = list(set(self.inv_graph.values()).difference(obs_nodes))
-        print('Started')
-        for cfg in fgraph.gen_graph_values(dynamic_nodes, self.inv_output_nodes):
-            print(cfg)
-        print('Finished')
-        """
     def _prep_gen_inference(self, edits, obs_dtypes, obs_shapes, obs_args):
         self.avail_edits = edits
         self.generation_mode = GenMode.Inference
@@ -751,9 +693,9 @@ class SchemaApi(object):
         gen = fgraph.gen_graph_values(live_nodes, out_nodes)
         for test in gen:
             tests.append(test)
-        good = { t[0] for t in tests if t[1] is None }
-        filtered = [ t[1:] for t in tests if t[1] is None or t[0] not in good ]
-        return filtered
+        good = { t[0] for t in tests if len(t[1]) == 0 }
+        filt = [ t[1:] for t in tests if len(t[1]) == 0 or t[0] not in good ]
+        return filt 
 
     # ============ PUBLIC API ====================
     def add_index(self, idx, description, constraint=None):
@@ -788,7 +730,8 @@ class SchemaApi(object):
                 self.equiv_index[idx] = primary_idx
 
         elif isinstance(constraint, (tuple, type(None))):
-            obj = ge.RankRange(self, idx)
+            indel_node = self._inv_node(ge.Indels)
+            obj = ge.RankRange(self, idx, indel_node)
             sigs_node = self._inv_node(ge.SigMap, '')
             idx_node = G.add_node_sn(obj, self.obs_shapes, sigs_node)
             ranks_node.append_parent_sn(idx_node)
@@ -873,23 +816,6 @@ class SchemaApi(object):
             extra_node_names.append(node.name)
             index_dims.maybe_append_parent_sn(node)
 
-        # nidx = len(input_indexes)
-        # comp_obj = pr.ComputedDims(comp_index, comp_func, nidx)
-        # comp_dims = P.add_node(comp_obj)
-        # tem_obj = pr.TemplateFunc(comp_index, tem_func, nidx, self)
-        # tem = P.add_node(tem_obj, comp_dims)
-        # self.comp_dims_templates[comp_index] = tem
-
-        # index_node_names = []
-        # for idx in input_indexes:
-            # name = fgraph.node_name(pr.SingleIndexDims, idx)
-            # index_node_names.append(name)
-            
-        # self.pending_index_edges[tem.name] = input_indexes
-        # self.pending_index_edges[comp_dims.name] = input_indexes
-        # self.pending_pred_edges[tem.name] = extra_node_names 
-        # self.pending_pred_edges[comp_dims.name] =  extra_node_names
-
         if comp_index in self.dims_graph.computed_indexes():
             raise SchemaError(
                 f'{type(self).__qualname__}: index \'{comp_index}\' has '
@@ -902,11 +828,6 @@ class SchemaApi(object):
 
         self.dims_graph.add_comp_index(comp_index, comp_func, input_indexes,
                 *extra_args)
-
-
-        # dims_node = self.gen_graph[fgraph.node_name(ge.RankStatusArgShape)]
-        # for nd in extra_nodes:
-            # dims_node.maybe_append_parent(nd)
 
         # add a predicate to ensure the computed index is >= some minimum value
         bounds_pobj = flib.PredAbove(min_val)
@@ -1220,6 +1141,7 @@ class SchemaApi(object):
         self.arg_pred_nodes[arg_name] = p_arg
         self.arg_gen_nodes[arg_name] = g_arg
         self.args_node.append_parent_sn(g_arg)
+        self.error_node.append_parent(g_arg)
 
     def arg_layout(self, arg_name, formats, rank_idx):
         """
@@ -1236,10 +1158,12 @@ class SchemaApi(object):
         ranks = self._inv_node(ge.IndexRanks)
         gen_df_obj = ge.DataFormat(self, self.data_formats, arg_name)
         g_arg = G.add_node(gen_df_obj, ranks, layout, self.obs_args) 
+        self.data_format_gobj = gen_df_obj
 
         if arg_name is not None:
             self.arg_gen_nodes[arg_name] = g_arg
             self.args_node.append_parent_sn(g_arg)
+            self.error_node.append_parent(g_arg)
 
         schema = self._pred_node(pr.Schema)
         data_format_obj = pr.DataFormat(self.data_formats, gen_df_obj, arg_name)
@@ -1298,8 +1222,6 @@ class SchemaApi(object):
         self.args_node.append_parent_sn(arg_node)
         self.arg_gen_nodes[arg_name] = arg_node
         
-        # inv_graph construction
-        # nodes created: ge.Sig
         G.set_registry(self.inv_graph)
         sigmap = self._inv_node(ge.SigMap, '')
         layout = self._inv_node(ge.Layout, base.LAYOUT)
@@ -1307,12 +1229,6 @@ class SchemaApi(object):
         sig_node = G.add_node(sig_obj, layout)
         sigmap.append_parent_sn(sig_node)
 
-        # node: pr.Sig
-        # node: one of pr.DataTensor, pr.ShapeList, pr.ShapeInt, pr.ShapeTensor  
-        # edges:
-        # pr.Shape -> pred_node
-        # pr.ShapeMap -> pr.Shape
-        # layout = self._pred_node(pr.Layout, base.LAYOUT)
         shape_map = self._pred_node(pr.ShapeMap)
         shape_map.append_parent_sn(shape_pnode)
         cons = base.ShapeRankConstraint(arg_name, shape_pnode.func.__class__)
@@ -1618,9 +1534,4 @@ class SchemaApi(object):
         rval = P.add_node(rvalid_pobj, rten, shapes)
         self.return_nodes.extend((rten, rval))
         self.num_returns += 1
-
-        # layout = self._inv_node(ge.Layout, base.LAYOUT)
-        # sig = G.add_node(g_sig_obj, layout)
-        # sig_map = self._inv_node(ge.SigMap, '')
-        # sig_map.append_parent_sn(sig)
 

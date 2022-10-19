@@ -456,22 +456,24 @@ def gen_graph_values(live_nodes, result_nodes):
             return
         node = live_nodes[i]
         values = node.values()
-        """
-        initial_edits = node.func.op.avail_edits if hasattr(node.func, 'op') else '-'
-        print(' ' * i + f'{node.name}: ')
-        """
+
+        if False:
+            initial_edits = node.func.op.avail_edits if hasattr(node.func, 'op') else '-'
+            print(' ' * i + f'{node.name}: ')
+
         for val in values:
             node.set_cached(val)
-            """
-            edits = node.func.op.avail_edits if hasattr(node.func, 'op') else '-'
-            err = node.func.op.errors if hasattr(node.func, 'op') else ''
-            msg = (
-                    # f'{node.name}: '
-                    f'cur_val: {val}, '
-                    f'init: [{initial_edits}], '
-                    f'avail: [{edits}] (errors: {len(err)})')
-            print(' ' * i + msg)
-            """
+
+            if False: 
+                edits = node.func.op.avail_edits if hasattr(node.func, 'op') else '-'
+                err = node.func.op.errors if hasattr(node.func, 'op') else ''
+                msg = (
+                        # f'{node.name}: '
+                        f'cur_val: {val}, '
+                        f'init: [{initial_edits}], '
+                        f'avail: [{edits}] (errors: {len(err)})')
+                print(' ' * i + msg)
+
             ri = imap[i]
             if ri >= 0:
                 result[ri] = val

@@ -65,7 +65,6 @@ ALL_DTYPES = (
 class Unused:
     pass
 
-
 class ReportNodeFunc(NodeFunc):
     """
     NodeFunc which further implements user-facing reporting functions
@@ -81,10 +80,12 @@ class ReportNodeFunc(NodeFunc):
         raise NotImplemented
 
     @contextmanager
-    def new_error(self, edits):
+    def new_error(self, edits, node_instance=None):
+        if node_instance is None:
+            node_instance = self
         doit = (edits <= self.op.avail_edits)
         if doit: 
-            self.op.errors.append(self)
+            self.op.errors.append(node_instance)
             self.op.avail_edits -= edits
         try:
             yield doit
@@ -108,8 +109,9 @@ class RankRange(ReportNodeFunc):
     """
     Produce a range of ranks for a given primary index.
     """
-    def __init__(self, op, name):
+    def __init__(self, op, name, indel_node):
         super().__init__(op, name)
+        self.indel_node = indel_node
         self.schema_cons = []
 
     def add_schema_constraint(self, cons):
@@ -142,39 +144,36 @@ class RankRange(ReportNodeFunc):
 
             # Narrow the schema sch_lo, sch_hi interval based on observed shapes
             test_lo, test_hi = sch_lo, sch_hi
+            cost = [0] * (sch_hi+1)
             for arg, obs_shape in obs_shapes.items():
-                sig = sigs[arg]
-                # an integer shape is rank-agnostic, so doesn't define any
-                # rank-constraint
                 if isinstance(obs_shape, int):
+                    # an integer shape is rank-agnostic, so doesn't define any
+                    # rank-constraint
                     continue
-                obs_rank = len(obs_shape)
+                sig = sigs[arg]
                 pri_sig = sorted(self.op.equiv_index[idx] for idx in sig)
                 if idx not in pri_sig:
                     continue
                 prev_rank = sum(index_ranks.get(i, 0) for i in pri_sig)
-
+                obs_rank = len(obs_shape)
                 todo_inds = tuple(k for k in pri_sig if k not in index_ranks)
                 target = obs_rank - prev_rank
                 if len(todo_inds) == 1:
                     clo, chi = target, target
                 else:
                     clo, chi = 0, target
-                test_lo = max(test_lo, clo)
-                test_hi = min(test_hi, chi)
+                for i in range(sch_lo, sch_hi+1):
+                    if i not in range(clo, chi+1):
+                        cost[i] += 1
 
-            yield from range(test_lo, test_hi+1)
-            """
-            # if the schema range [sch_lo, sch_hi] permits additional ranks
-            # yield those as well
-            with self.new_error(1) as avail:
-                if not avail:
-                    return
-                if test_lo > sch_lo:
-                    yield test_lo - 1
-                if test_hi < sch_hi:
-                    yield test_hi + 1
-            """
+            for i in range(sch_lo, sch_hi+1):
+                c = cost[i]
+                if c == 0:
+                    yield i
+                else:
+                    with self.new_error(c, self.indel_node.func) as avail:
+                        if avail:
+                            yield i
         else:
             raise RuntimeError('generation_mode not set')
 
@@ -303,8 +302,7 @@ class Indels(ReportNodeFunc):
                     definite_sig = any(idx in definite_inds for idx in sig)
                     for delta in (-1, 1):
                         z = enumerate(arg_ranks_tup)
-                        mut = tuple(r + delta if i == t else r for i, r in
-                                z)
+                        mut = tuple(r + delta if i == t else r for i, r in z)
                         # collisions with valid ranks will be filtered out
                         # later
                         if any(r < 0 for r in mut):
@@ -316,27 +314,12 @@ class Indels(ReportNodeFunc):
                         indel = IndelMutation(arg, delta)
                         yield indel
         elif self.op.generation_mode == GenMode.Inference:
-            indel = None
-            for arg, obs_shape in obs_shapes.items():
-                # integer shapes are rank-agnostic so do not provide any
-                # information about rank
-                if isinstance(obs_shape, int):
-                    continue
-                delta = arg_ranks[arg] - len(obs_shape)
-                if delta != 0:
-                    if indel is not None:
-                        # we won't make a two-indel suggestion
-                        return
-                    indel = IndelMutation(arg, delta)
-            edit = 0 if indel is None else abs(indel.delta)
-            if indel is None:
-                yield indel
-            else:
-                # The indel itself should be used for the suggestion data
-                with self.new_error(edit) as avail:
-                    if not avail:
-                        return
-                    yield None
+            """
+            All observed ranks are accounted for in RankRange nodes, which set
+            errors as Indel instances.  So, any rank discrepancies between
+            implied and observed ranks are already accounted for. 
+            """
+            yield None
         else:
             raise RuntimeError('generation_mode not set')
 
@@ -450,6 +433,11 @@ class IndexDims(ReportNodeFunc):
 
         elif self.op.generation_mode == GenMode.Inference:
             # If ranks don't all match, we won't use this suggestion anyway
+            """
+            Produce a set of suggested index_dims such that the argument shapes
+            implied by the suggestion are within  available edit distance from
+            the observed shapes.
+            """
             for arg, shape in obs_shapes.items():
                 if isinstance(shape, int):
                     continue
@@ -1270,7 +1258,7 @@ class Layout(ReportNodeFunc):
             obs_format = obs_args.get(formats.arg_name, base.DEFAULT_FORMAT)
             obs_layout = formats.layout(obs_format)
             yield obs_layout
-            with self.new_error(1) as avail:
+            with self.new_error(1, self.op.data_format_gobj) as avail:
                 if avail:
                     for alt_layout in all_layouts:
                         if alt_layout != obs_layout:
@@ -1304,7 +1292,7 @@ class DataFormat(ReportNodeFunc):
             else:
                 with self.new_error(1) as avail:
                     if avail:
-                        yield obs_format
+                        yield inferred_df
         else:
             raise RuntimeError('generation_mode not set')
 

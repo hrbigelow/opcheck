@@ -29,6 +29,11 @@ class TestResult(object):
         self.framework_error = None
         self.framework_msg = None
 
+    def __repr__(self):
+        return '\n'.join(repr(memb) for memb in
+                (self.id, self.gen_error_state, self.suggestions,
+                    self.framework_error, self.framework_msg))
+
     def add_result(self):
         self.suggestions = self.op.input_errors
         if self.op.framework_error is None:
