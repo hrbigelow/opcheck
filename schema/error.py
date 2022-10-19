@@ -64,48 +64,6 @@ class ArgValueError(SchemaStatus):
                 f'{self.arg_val}')
         return msg
 
-class DTypeNotEqual(SchemaStatus):
-    def __init__(self, src_name, src_dtype, trg_name, trg_dtype):
-        self.src_name = src_name
-        self.src_dtype = src_dtype
-        self.trg_name = trg_name
-        self.trg_dtype = trg_dtype
-
-    def message(self, op):
-        msg = (f'Tensors \'{self.trg_name}\' and \'{self.src_name}\' must have '
-                f'equal dtypes.\n'
-                f'Got {self.trg_name}.dtype = {self.trg_dtype.name} and '
-                f'{self.src_name}.dtype = {self.src_dtype.name}')
-        return msg
-
-class DTypeNotValid(SchemaStatus):
-    def __init__(self, ten_name, ten_dtype, valid_dtypes):
-        self.ten_name = ten_name
-        self.ten_dtype = ten_dtype
-        self.valid_dtypes = valid_dtypes
-
-    def message(self, op):
-        msg = (f'Tensor \'{self.ten_name}\' had dtype={self.ten_dtype.name}. '
-                f'The allowed dtypes are '
-                f'{", ".join(d.name for d in self.valid_dtypes)}')
-        return msg
-
-class DTypeComboExcluded(SchemaStatus):
-    """
-    Represents a combination of dtypes and optionally ranks and/or layout
-    which are excluded from being considered valid
-    """
-    def __init__(self, ten_names, ten_dtypes, rank_map, data_format):
-        self.names = ten_names
-        self.dtypes = ten_dtypes
-        self.rank_map = rank_map
-        self.data_format = data_format
-
-    def message(self, op):
-        msg = op._dtype_excluded_report(self.names, self.dtypes, self.rank_map,
-                self.data_format)
-        return msg
-
 class IndexUsageError(SchemaStatus):
     def __init__(self, idx_usage, ranks, arg_sigs, shapes):
         self.idx_usage = idx_usage

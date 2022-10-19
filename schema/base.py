@@ -79,56 +79,6 @@ class DataFormats(object):
                 f'\'{data_format}\'')
         return self.formats[data_format][0]
 
-class RankCandidates(object):
-    """
-    Produce all possible rank candidates, resolving min, max, and equiv
-    constraints.
-    """
-    def __init__(self, op):
-        self.op = op
-
-        # sig => max_rank
-        self.maxs = {}
-
-        # sig => min_rank
-        self.mins = {}
-
-        # index => index 
-        self.equiv = {}
-        # self.equiv = { k: k for k in self.op.index.keys() }
-
-    def equate_ranks(self, target_index, source_index):
-        self.equiv[target_index] = source_index
-
-    def add_rank_limits(self, sig, min_val, max_val):
-        if min_val is not None:
-            prev_min_val = self.mins.get(sig, -1)
-            self.mins[sig] = max(prev_min_val, min_val)
-        if max_val is not None:
-            prev_max_val = self.maxs.get(sig, 10000)
-            self.maxs[sig] = min(prev_max_val, max_val)
-
-    def index_limited(self, index):
-        return index in self.mins or index in self.maxs
-
-    def index_equated(self, index):
-        return index in self.equiv
-    
-    def all_index_ranks(self):
-        fi = [ k for k in self.op.index.keys() if k not in self.equiv ]
-        min_map = { tuple(fi.index(s) for s in sig): rank for sig, rank in
-                self.mins.items() } 
-        max_map = { tuple(fi.index(s) for s in sig): rank for sig, rank in
-                self.maxs.items() } 
-        gen = util.feasible_region(len(fi), min_map, max_map)
-        def add_equiv(gen):
-            for ranks in gen:
-                rank_map = dict(zip(fi, ranks))
-                eq_map = { t: rank_map[s] for t,s in self.equiv.items() }
-                rank_map.update(**eq_map)
-                yield rank_map
-        return add_equiv(gen)
-
 class RankConstraint(object):
     """
     Define a constraint rank(sig) == rank_func(shape), where sig and shape are
@@ -209,39 +159,6 @@ def shape_iter(shape):
 def shape_nextn(shape_iter, n):
     # return the next n elements from shape_iter
     return [ next(shape_iter) for _ in range(n) ]
-
-class SliceRankConstraint(RankConstraint):
-    def __init__(self, shape_arg, slice_index):
-        """
-        Represent the logical constraint:
-
-        rank(sig) == len(shape)
-
-        where sig and shape are the signature and shape associated with
-        {shape_arg}.{slice_index}.  These special nodes are created by the API
-        call arg_shape_tensor2d.
-        """
-        node = f'{shape_arg}.{slice_index}'
-        name = f'rank(sig({node})) == len({node})'
-        
-        super().__init__(name, node, shape_rank)
-        self.arg_name = shape_arg
-
-    def highlight_map(self, sig_map, shape_map, rank_map):
-        obs_rank = self.observed_rank(shape_map)
-        cmp_rank = self.computed_rank(sig_map, rank_map)
-        lo = min(obs_rank, cmp_rank)
-        hi = max(obs_rank, cmp_rank)
-        inds = list(range(lo, hi))
-        return { self.shape_arg: inds }
-
-    def suggestion(self, rank_error):
-        if rank_error == 0:
-            return None
-        elif rank_error < 0:
-            msg = f'Increase {self.arg_name}.shape[1] by {-rank_error}'
-        else:
-            msg = f'Decrease {self.arg_name}.shape[1] by {rank_error}'
 
 class ShapeRankConstraint(RankConstraint):
     """

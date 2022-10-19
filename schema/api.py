@@ -78,9 +78,6 @@ class SchemaApi(object):
 
         # Objects shared between graphs
         self.data_formats = None
-        self.rank_candidates = base.RankCandidates(self)
-        self.rank_cons = [] 
-        # self.dtype_cons = base.DTypeConstraints()
         
         self.dims_graph = base.CompDimsGraph()
         self.gen_indices = base.GenIndices()
@@ -834,27 +831,6 @@ class SchemaApi(object):
         self.add_index_predicate(f'{comp_index} >= {min_val}', bounds_pobj,
                 comp_index)  
 
-    def equate_ranks(self, target_index, source_index):
-        """
-        Declare that the rank of {target_index} be equal to {source_index}.
-        It is required that all indices in {source_index} appear in some
-        signature in a limit_ranks call.
-        """
-        if target_index not in self.index:
-            raise SchemaError(
-                f'{type(self).__qualname__}: target_index \'{target_index}\' '
-                f'is not a registered index')
-        if (self.rank_candidates.index_limited(target_index) or
-                self.rank_candidates.index_equated(target_index)):
-            raise SchemaError(
-                f'{type(self).__qualname__}: target index \'{target_index}\' '
-                f'is already registered as constrained')
-        if not self.rank_candidates.index_limited(source_index):
-            raise SchemaError(
-                f'{type(self).__qualname__}: source index \'{source_index}\' '
-                f'is not constrained with limit_ranks')
-        self.rank_candidates.equate_ranks(target_index, source_index)
-
     def _inv_nodes_map(self):
         # get a map of idx => primary rank node (from the inv_graph) for all
         # indexes
@@ -1231,8 +1207,6 @@ class SchemaApi(object):
 
         shape_map = self._pred_node(pr.ShapeMap)
         shape_map.append_parent_sn(shape_pnode)
-        cons = base.ShapeRankConstraint(arg_name, shape_pnode.func.__class__)
-        self.rank_cons.append(cons)
         self.mut_rank_func.add_arg_name(arg_name)
 
     def arg_tensor(self, arg_name, *sigs):
@@ -1400,9 +1374,6 @@ class SchemaApi(object):
             p_shp = P.add_node(shp_pobj, p_shape2d)
             p_shape_map.append_parent(p_shp)
 
-            cons = base.SliceRankConstraint(arg_name, i)
-            self.rank_cons.append(cons)
-
             if isinstance(sig, str):
                 sig = [sig]
             g_sig_obj = ge.Sig(prefix, sig)
@@ -1420,8 +1391,6 @@ class SchemaApi(object):
 
         P.set_registry(self.pred_graph)
         G.set_registry(self.inv_graph)
-        cons = base.IntRankConstraint(cons_name, rank_pobj.sub_name, sig)
-        self.rank_cons.append(cons)
         schema = self._pred_node(pr.Schema)
         p_rank = P.add_node(rank_pobj, schema)
         self.arg_pred_nodes[arg_name] = p_rank
@@ -1431,8 +1400,6 @@ class SchemaApi(object):
         self.arg_gen_nodes[arg_name] = g_rank
         self.args_node.append_parent_sn(g_rank)
 
-        # p_ranks_sigs_shape = self._pred_node(pr.RanksSigsShapes)
-        # p_ranks_sigs_shape.maybe_append_parent(p_rank)
         self._add_definite_rank(sig)
 
     def rank_dims_constraint(self, constraint_name, get_dims, rank_sig,
@@ -1444,10 +1411,6 @@ class SchemaApi(object):
         Creates a generated index dimension:
         DIMS(dims_index) <- RANK(rank_sig)
         """
-        cons = base.DimRankConstraint(constraint_name, rank_sig, shape_arg,
-                get_dims, dims_index)
-        self.rank_cons.append(cons)
-
         # 'sum' simply sums up the individual ranks of indices in rank_sig 
         def gen_single_index(ranks_list):
             val = sum(ranks_list)

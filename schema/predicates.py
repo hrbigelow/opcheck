@@ -235,20 +235,6 @@ class TupleElement(NodeFunc):
     def __call__(self, tup):
         return True, tup[self.index]
 
-class GetRanks(TupleElement):
-    """
-    Get the Ranks from RanksSigsShapes
-    """
-    def __init__(self):
-        super().__init__(0)
-
-class GetArgSigs(TupleElement):
-    """
-    Get the Sigs from RanksSigsShapes
-    """
-    def __init__(self):
-        super().__init__(2)
-
 class GetShapes(TupleElement):
     """
     Get the (possibly broadcast-realized) Shapes from Inventory
@@ -294,200 +280,11 @@ class Inventory(NodeFunc):
                     break
             return False, all_hits
 
-class RanksSigsShapes(NodeFunc):
-    """
-    Search the set of all valid index rank combinations, combined with all
-    signature/layout combinations.
-
-    For each combination, and for each constraint, compute rank_error,
-    highlight_map, and suggestions, and accumulate them in an array.
-
-    If exactly one index rank combination plus signature/layout is found to
-    have zero rank errors over all the constraints, succeed, and return the
-    index rank combination.
-
-    If none are found, produce a NoMatchingRanks error with a selected set of
-    'best' candidates (with minimal errors).
-
-    If the predicate succeeds, the value returned is:
-    (index_ranks, arg_sigs, arg_shapes)
-    where arg_shapes are broadcast-resolved shapes.  That is, if an original
-    arg => shape mapping had an integer shape, the resolved shape will be an
-    integer list of appropriate rank.
-
-    If fails, value is NoMatchingRanks
-    """
-    def __init__(self, op, rank_candidates, rank_cons):
-        super().__init__()
-        self.op = op
-        self.cands = rank_candidates
-        self.rcons = rank_cons
-
-    @staticmethod
-    def broadcast_shapes(ranks, shapes, sigs):
-        bcast_shapes = {}
-        for arg, shape in shapes.items():
-            if isinstance(shape, list):
-                bcast_shapes[arg] = shape
-            elif isinstance(shape, int):
-                sig = sigs[arg]
-                rank = sum(ranks[idx] for idx in sig)
-                bcast_shapes[arg] = [shape] * rank
-        return bcast_shapes
-
-    @classmethod
-    def error_key(cls, deltas):
-        num_errors = len(list(d for d in deltas if d != 0))
-        tot_error = sum(abs(d) for d in deltas)
-        return num_errors, tot_error
-
-    @classmethod
-    def qualified(cls, deltas):
-        num_errors, tot_error = cls.error_key(deltas)
-        return num_errors < 3 and tot_error < 3
-
-    def __call__(self, shapes, data_format, **kwargs):
-        """
-        shapes: arg => shape.  shape may be an integer list or an integer.
-        If an integer, it represents any shape which is a broadcasted version
-        of that integer.
-        """
-        fields = ['format', 'sigs', 'ranks', 'suggestions', 'highlight']
-        Candidate = namedtuple('Candidate', fields[:3])
-        Report = namedtuple('Report', fields)
-
-        result = None
-        error_tuples = []
-
-        it = 0
-        for ranks, arg_sigs, ret_sigs, cand_format in self.op.ranks_sigs_format_list:
-            layout_delta = (data_format == cand_format)
-            deltas = []
-            for c in self.rcons:
-                delta = c.rank_error(arg_sigs, shapes, ranks, **kwargs)
-                deltas.append(delta)
-
-            if all(d == 0 for d in deltas) and layout_delta == 0:
-                if result is None:
-                    result = (ranks, arg_sigs, ret_sigs)
-                else:
-                    raise SchemaError(
-                        f'{type(self).__qualname__}: multiple valid rank '
-                        f'combinations were found.  This means that schema'
-                        f' \'{self.op.op_path}\' lacks proper rank '
-                        f'constraints.  Current constraints are:\n'
-                        f'{", ".join(c.name for c in self.rcons)}')
-
-            cand = Candidate(cand_format, arg_sigs, ranks)
-            if self.qualified(deltas + [layout_delta]):
-                error_tuples.append((deltas, layout_delta, cand))
-
-        if result is None:
-            ordered = sorted(error_tuples, key=self.error_key)
-            bestk = ordered[:self.op.max_report_candidates]
-            reports = []
-            for deltas, layout_delta, cand in bestk:
-                report = Report(cand.format, cand.sigs, cand.ranks, [], {})
-                for c, delta in zip(self.rcons, deltas):
-                    sug = c.suggestion(delta)
-                    if sug is not None:
-                        report.suggestions.append(sug)
-                    if delta != 0:
-                        hl = c.highlight_map(arg_sigs, shapes, ranks)
-                        for arg, pos in hl.items():
-                            report.highlight_map[arg].extend(pos)
-
-                if layout_delta == 1:
-                    sug = f'Use layout {cand_format}'
-                    report.suggestions.append(sug)
-                    data_format_arg = self.op.data_formats.arg_name
-                    # highlight the argument itself
-                    report.highlight_map[data_format_arg].append(0)
-                reports.append(report)
-
-            # restore the shape map to its original form
-            orig_shapes = {}
-            for arg, shape in shapes.items():
-                if isinstance(shape, int):
-                    shape = [shape]
-                orig_shapes[arg] = shape
-            return False, NoMatchingRanks(orig_shapes, data_format, report)
-        else:
-            # resolve integer shapes
-            ranks, cand_arg_sigs, cand_ret_sigs = result
-            bcast_shapes = self.broadcast_shapes(ranks, shapes, cand_arg_sigs)
-            return True, (ranks, cand_arg_sigs, cand_ret_sigs,
-                    bcast_shapes)
-
 def calc_sig_range(rank_map, idx, sig):
     ind = sig.index(idx)
     start = sum(rank_map[l] for l in sig[:ind])
     rank = rank_map[idx] 
     return [start, start + rank]
-
-class IndexDimsUsage(NodeFunc):
-    """
-    Validates index usage.  Expands each signature using ranks, then applies
-    the expanded signatures to the shapes map.  For any indices used in more
-    than one argument, detects whether the used dimensions are the same in each
-    instance.
-
-    {shapes}: arg => shape
-    {ranks}: idx => rank
-    {sigs}: arg => sig
-
-    The values of {shapes} can be either:
-    1. integer list - specifies the shape directly
-    2. integer - true shape is a broadcasting of the integer to any rank
-
-    Returns index_dims: idx => dims
-
-    """
-    def __init__(self):
-        super().__init__()
-
-    def __call__(self, ranks, arg_sigs, shapes):
-        # expand signatures
-
-        # for each index and each component, produce a usage map 
-        idx_usage = {} 
-        for arg, sig in arg_sigs.items():
-            shape = shapes[arg]
-            it = base.shape_iter(shape)
-            for idx in sig:
-                r = ranks[idx]
-                if idx not in idx_usage:
-                    idx_usage[idx] = [defaultdict(list) for _ in range(r)]
-                dims = base.shape_nextn(it, r)
-                for c, dim in enumerate(dims):
-                    idx_usage[idx][c][dim].append(arg)
-                
-        index_dims = {}
-        for idx in list(idx_usage):
-            comp = idx_usage[idx]
-            if all(len(c) == 1 for c in comp):
-                idx_usage.pop(idx)
-                index_dims[idx] = [i for c in comp for i in c] 
-        
-        if len(idx_usage) != 0:
-            for k, v in idx_usage.items():
-                idx_usage[k] = [dict(dd) for dd in v]
-            return False, IndexUsageError(idx_usage, ranks, arg_sigs, shapes)
-        else:
-            return True, index_dims
-
-class SingleIndexDims(NodeFunc):
-    """
-    A simple node which extracts a single index dimension.  Should always
-    return true, even if the index isn't provided.  Presence or absence of
-    indices here may be a function of the layout.
-    """
-    def __init__(self, index_name):
-        super().__init__(index_name)
-        self.index_name = index_name
-
-    def __call__(self, index_dims):
-        return True, index_dims.get(self.index_name, None)
 
 class IndexDimsConstraint(NodeFunc):
     """
@@ -551,23 +348,6 @@ class IndexDimsConstraint(NodeFunc):
                     arg_sigs, shapes)
             return False, err
         return valid, status
-
-class ComputedDims(NodeFunc):
-    """
-    Apply a broadcasting function to compute dimensions
-    """
-    def __init__(self, index_name, func, num_index_args):
-        super().__init__(index_name)
-        self.index = index_name
-        self.func = func
-        self.nidx = num_index_args
-
-    def __call__(self, *args):
-        idx_args, extra_args = args[:self.nidx], args[self.nidx:]
-        idx_args = [ np.array(a) for a in idx_args ]
-        dims_ary = self.func(*idx_args, *extra_args)
-        dims = dims_ary.astype(np.int32).tolist()
-        return True, dims
 
 class TemplateFunc(NodeFunc):
     """
