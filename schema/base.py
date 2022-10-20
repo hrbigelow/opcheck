@@ -1,6 +1,8 @@
+import tensorflow as tf
 import numpy as np
 import itertools
 import enum
+import re
 from collections import namedtuple, defaultdict
 from .error import * 
 from .fgraph import FuncNode as F, NodeFunc
@@ -16,6 +18,34 @@ class GenMode(enum.Enum):
     Test = 1
     Inference = 2
 
+class ErrorInfo(object):
+    def __init__(self, obj, args, dist):
+        self.obj = obj
+        self.args = args
+        self.dist = dist
+
+    def __repr__(self):
+        return f'{self.obj.__class__.__name__}({self.args}){{{self.dist}}}'
+
+    def msg(self):
+        return f'{self.obj.__class__.__name__}({self.dist})'
+
+class EditSuggestion(object):
+    def __init__(self, *error_infos):
+        self.infos = error_infos
+
+    def __repr__(self):
+        if len(self.infos) == 0:
+            return 'Success'
+        else:
+            phr = [ i.msg() for i in self.infos ]
+            msg = ' + '.join(phr)
+            return msg
+
+    def empty(self):
+        return len(self.infos) == 0
+
+
 class ShapeKind(enum.Enum):
     """
     For describing the kind of input that defines a shape
@@ -25,6 +55,136 @@ class ShapeKind(enum.Enum):
     Int = 2
     Tensor = 3
     Tensor2D = 4
+
+def dtype_expr(type_expr):
+    # return the matching dtypes 
+    exprs = {
+            'int': [8, 16, 32, 64],
+            'uint': [8, 16, 32, 64],
+            'float': [16, 32, 64],
+            'qint': [8, 16, 32],
+            'bfloat': [16],
+            'bool': [''],
+            'complex': [64, 128]
+            }
+
+    types = [ ', '.join(f'{k}{v}' for v in exprs[k]) for k in exprs ]
+    type_str = '\n'.join(t for t in types)
+    err_msg = SchemaError(
+        f'Received invalid dtype expression \'{type_expr}\'.\n'
+        f'dtype expression must match the pattern:\n'
+        f'([a-z]+)(8|16|32|64|128)?([\+\-])?\n'
+        f'The first capture is the data type and must be one of: '
+        f'int, uint, float, qint, bfloat, bool, complex\n'
+        f'The second capture is the size.  It is optional. '
+        f'The third is an optional \'+\' or \'-\''
+        f'The list of valid constructed types are:\n'
+        f'{type_str}\n'
+        )
+
+    # expect format to be {pfx}{q}[+-]*
+    ma = re.match('([a-z]+)(8|16|32|64|128)?([\+\-])?', type_expr)
+    if ma is None:
+        raise err_msg
+    pfx, q, rng = ma.groups()
+    if q is None:
+        ids = [ f'{pfx}{sz}' for sz in exprs[pfx] ]
+    else:
+        if rng is None:
+            ids = [ type_expr ]
+        elif rng == '+':
+            ids = [ f'{pfx}{sz}' for sz in exprs[pfx] if sz >= int(q) ]
+        else:
+            ids = [ f'{pfx}{sz}' for sz in exprs[pfx] if sz <= int(q) ]
+    try:
+        dtypes = [ tf.dtypes.as_dtype(i) for i in ids ]
+    except TypeError:
+        raise err_msg
+    return dtypes
+
+class CombosNotImplemented(object):
+    """
+    Represents combinations of dtypes, ranks and layouts not implemented by the
+    framework.
+
+    """
+    def __init__(self):
+        self.initialized = False
+        self.combos = []
+
+    def init_fields(self, data_tensors, indices):
+        self.data_tensors = data_tensors
+        self.indices = indices
+        self.initialized = True
+
+    def add_combo(self, *field_val_pairs):
+        """
+        {field_val_pairs} is an even-length list of field, val, field, val, ...
+        field is one of: 
+        - data tensors registered in init_fields
+        - one-letter index names registered in init_fields
+        - the constant LAYOUT, if has_layout
+
+        val is one of:
+        - dtype string, such as 'int32' for data tensor fields
+        - integer specifying a rank of an index field
+        - the LAYOUT field has an integer in [0, num_layouts), as defined
+          by the call to arg_layout.
+        """
+        nitem = len(field_val_pairs)
+        if nitem % 2 != 0:
+            raise RuntimeError(
+                f'{type(self).__qualname__}: field_val_pairs must be '
+                f'even-length list.  Got length {len(field_val_pairs)} items')
+        combo = []
+        for i in range(0, nitem, 2):
+            field = field_val_pairs[i]
+            value = field_val_pairs[i+1]
+            if field in self.data_tensors:
+                addr = f't:{field}'
+                dtypes = dtype_expr(value)
+                for dtype in dtypes:
+                    combo.append((addr, dtype))
+            elif field in self.indices:
+                addr = f'r:{field}'
+                combo.append((addr, value))
+            elif field == LAYOUT:
+                addr = f'l:{field}'
+                combo.append((addr, value))
+            else:
+                raise RuntimeError(
+                    f'{type(self).__qualname__}: got field \'{field}\' which '
+                    f'is not a known data tensor, index or the constant '
+                    f'\'{LAYOUT}\'\n'
+                    f'Known data tensors are: {self.data_tensors}'
+                    f'Known indices are: {self.indices}')
+        self.combos.append(combo)
+
+    def excluded(self, dtypes, ranks, layout):
+        """
+        Predicate to determine whether the observed dtypes, hypothetized index
+        ranks, and layout (maybe None) are excluded
+        """
+        # combo is [(addr, value), ...].  addr is one of 't:<tensor_name>'
+        for combo in self.combos:
+            excluded = True
+            for addr, exc_value in combo:
+                tag, name = addr.split(':')
+                if tag == 't':
+                    if dtypes[name] == exc_value:
+                        break
+                elif tag == 'r':
+                    if ranks[name] == exc_value:
+                        break
+                elif tag == 'l':
+                    if layout == exc_value:
+                        break
+            else:
+                excluded = False
+            if excluded:
+                return True
+        return False
+
 
 class DataFormats(object):
     """
@@ -78,6 +238,16 @@ class DataFormats(object):
                 f'{type(self).__qualname__}: received unknown data_format '
                 f'\'{data_format}\'')
         return self.formats[data_format][0]
+
+    def rank(self, data_format):
+        """
+        Return the rank corresponding with this data format
+        """
+        if data_format not in self.formats:
+            raise RuntimeError(
+                f'{type(self).__qualname__}: received unknown data_format '
+                f'\'{data_format}\'')
+        return self.formats[data_format][1]
 
 class RankConstraint(object):
     """

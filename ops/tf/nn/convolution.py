@@ -31,14 +31,8 @@ def init_schema(op):
     op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))
     op.equate_dtypes('filters', 'input')
 
-    op.exclude_dtypes(
-            ('input', 'i', LAYOUT),
-            ('int32', None, 0),    # 3D int32 channel-first layout not implemented 
-            ('int32', None, 1),   # all int32 channel-last not implemented 
-            ('bfloat16', None, None), # any kind of bfloat16 not implemented 
-            # ('bfloat16', None, None), # 1D bfloat16, any layout
-            # ('bfloat16', 3, None)  # 3D bfloat16, any layout
-            )
+    op.exclude_combos('input', 'int32') # int32 input not implemented
+    op.exclude_combos('input', 'bfloat16')
 
     op.add_index_predicate('s-d exclusion', flib.not_both_over_one, 'sd')
     op.add_index_generator('sd', flib.gen_not_both_over_one, 'sd', 1, 3)

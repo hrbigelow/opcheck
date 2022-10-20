@@ -13,7 +13,7 @@ from . import fgraph
 from . import flib
 from .error import *
 from .fgraph import PredNode as P, GenNode as G, FuncNode as F
-from .base import GenMode, ShapeKind
+from .base import GenMode, ShapeKind, EditSuggestion
 
 """
 Every API call will mutate the Generative Graph and the Predicate Graph
@@ -79,6 +79,8 @@ class SchemaApi(object):
         # Objects shared between graphs
         self.data_formats = None
         
+        self.data_tensors = []
+        self.excluded_combos = base.CombosNotImplemented()
         self.dims_graph = base.CompDimsGraph()
         self.gen_indices = base.GenIndices()
         self.comp_dims_templates = {} # idx => PredNode with TemplateFunc
@@ -159,7 +161,7 @@ class SchemaApi(object):
         registered on the schema
         """
         ret = fgraph.pred_graph_evaluate(*self.predicate_nodes)
-        self.input_errors = [[]] if ret is None else ret
+        self.input_errors = [EditSuggestion()] if ret is None else ret
 
     def _check_return(self, op_return):
         """
@@ -596,38 +598,34 @@ class SchemaApi(object):
         inventory = P.add_node(pr.Inventory(self), dtypes, shapes, argmap)
         get_shapes = P.add_node(pr.GetShapes(), inventory)
         self.return_nodes.append(get_shapes)
-        # ranks_sigs_shapes = P.add_node(ranks_sigs_shapes_obj, shapes,
-         #        data_format)
-        # ranks = P.add_node(pr.GetRanks(), inventory)
-        # arg_sigs = P.add_node(pr.GetArgSigs(), inventory)
-        # ret_sigs = P.add_node(pr.GetReturnSigs(), inventory)
-        # P.add_node(pr.IndexDimsUsage(), ranks, arg_sigs, shapes)
 
     def _init_gen_graph(self):
         G.set_registry(self.inv_graph)
         self.obs_dtypes = G.add_node(ge.ObservedValue('dtypes'))
         self.obs_shapes = G.add_node(ge.ObservedValue('shapes'))
         self.obs_args = G.add_node(ge.ObservedValue('args'))
-        niobj = ge.DTypesNotImplemented(self)
-        self.dtypes_not_impl = G.add_node(niobj, self.obs_dtypes)
         layout_gobj = ge.Layout(self, base.LAYOUT)
-        layout = G.add_node(layout_gobj, self.obs_args)
+        layout = G.add_node(layout_gobj)
         ranks = G.add_node(ge.IndexRanks())
+        self.dtypes_not_impl = G.add_node(ge.DTypesNotImplemented(self), ranks,
+                layout)
         sigs = G.add_node(ge.SigMap(''))
-        argranks = G.add_node(ge.ArgRanks(), ranks, sigs)
+        argranks = G.add_node(ge.ArgRanks(self), ranks, sigs)
         indels = G.add_node(ge.Indels(self), argranks, sigs, self.obs_shapes)
         mut_argranks = G.add_node(ge.MutatedArgRanks(self), argranks, indels) 
 
         # must append each shape arg
-        self.mut_rank_func = ge.ArgRankHash()
+        self.mut_rank_func = ge.ArgRankHash(self)
         mut_rank_hash = G.add_node(self.mut_rank_func, mut_argranks, layout) 
 
         # must append dims_comp_args
-        index_dims = G.add_node(ge.IndexDims(self), mut_argranks, ranks, sigs,
+        index_dims_obj = ge.IndexDims(self)
+        arg_shapes_obj = ge.ArgShapes(self, index_dims_obj)
+        index_dims = G.add_node(index_dims_obj, mut_argranks, ranks, sigs,
                 self.obs_shapes)
-        index_usage = G.add_node(ge.IndexUsage(), sigs)
-        arg_shapes = G.add_node(ge.ArgShapes(self), index_dims, sigs,
-                index_usage, indels, mut_argranks)
+        index_usage = G.add_node(ge.IndexUsage(self), sigs)
+        arg_shapes = G.add_node(arg_shapes_obj, index_dims, sigs, index_usage,
+                indels, mut_argranks)
         self.args_node = G.add_node(ge.Args())
 
         test_err = G.add_node(ge.TestErrorClass(self))
@@ -690,8 +688,16 @@ class SchemaApi(object):
         gen = fgraph.gen_graph_values(live_nodes, out_nodes)
         for test in gen:
             tests.append(test)
-        good = { t[0] for t in tests if len(t[1]) == 0 }
-        filt = [ t[1:] for t in tests if len(t[1]) == 0 or t[0] not in good ]
+
+        def collision(test, good_hashes):
+            shape_hash, err, args, ranks = test
+            is_good = (shape_hash in good_hashes)
+            is_indel = not err.empty() and isinstance(err.infos[0].obj,
+                    ge.Indels)
+            return is_good and is_indel
+
+        good = { t[0] for t in tests if t[1].empty() }
+        filt = [ t[1:] for t in tests if not collision(t, good) ] 
         return filt 
 
     # ============ PUBLIC API ====================
@@ -720,7 +726,7 @@ class SchemaApi(object):
                 raise SchemaError(f'Source index \'{primary_idx}\' is not '
                         f'a primary index')
             else:
-                obj = ge.EquivRange(idx)
+                obj = ge.EquivRange(self, idx)
                 pa = self.inv_graph[primary_idx]
                 idx_node = G.add_node_sn(obj, pa) 
                 ranks_node.append_parent_sn(idx_node)
@@ -864,51 +870,6 @@ class SchemaApi(object):
         # self._inv_graph_add_sig(sig)
         # self.rank_candidates.add_rank_limits(sig, min_val, max_val)
 
-    @staticmethod
-    def _dtype_expr(type_expr):
-        exprs = {
-                'int': [8, 16, 32, 64],
-                'uint': [8, 16, 32, 64],
-                'float': [16, 32, 64],
-                'qint': [8, 16, 32],
-                'bfloat': [16],
-                'bool': [''],
-                'complex': [64, 128]
-                }
-
-        types = [ ', '.join(f'{k}{v}' for v in exprs[k]) for k in exprs ]
-        type_str = '\n'.join(t for t in types)
-        err_msg = SchemaError(
-            f'Received invalid dtype expression \'{type_expr}\'.\n'
-            f'dtype expression must match the pattern:\n'
-            f'([a-z]+)(8|16|32|64|128)?([\+\-])?\n'
-            f'The first capture is the data type and must be one of: '
-            f'int, uint, float, qint, bfloat, bool, complex\n'
-            f'The second capture is the size.  It is optional. '
-            f'The third is an optional \'+\' or \'-\''
-            f'The list of valid constructed types are:\n'
-            f'{type_str}\n'
-            )
-
-        # expect format to be {pfx}{q}[+-]*
-        ma = re.match('([a-z]+)(8|16|32|64|128)?([\+\-])?', type_expr)
-        if ma is None:
-            raise err_msg
-        pfx, q, rng = ma.groups()
-        if q is None:
-            ids = [ f'{pfx}{sz}' for sz in exprs[pfx] ]
-        else:
-            if rng is None:
-                ids = [ type_expr ]
-            elif rng == '+':
-                ids = [ f'{pfx}{sz}' for sz in exprs[pfx] if sz >= int(q) ]
-            else:
-                ids = [ f'{pfx}{sz}' for sz in exprs[pfx] if sz <= int(q) ]
-        try:
-            dtypes = [ tf.dtypes.as_dtype(i) for i in ids ]
-        except TypeError:
-            raise err_msg
-        return dtypes
 
     def _is_data_tensor(self, name):
         node = self.arg_pred_nodes.get(name, None)
@@ -944,14 +905,13 @@ class SchemaApi(object):
                 f'registered with valid dtypes')
         """
 
-        dtypes = [ t for ex in type_list for t in self._dtype_expr(ex) ]
+        dtypes = [ t for ex in type_list for t in base.dtype_expr(ex) ]
         # self.dtype_cons.add_valid(tensor_name, dtypes)
 
         G.set_registry(self.inv_graph)
         obj = ge.DTypeIndiv(self, tensor_name, dtypes)
         dtype_node = G.add_node(obj, self.obs_dtypes)
-        self.dtypes_not_impl.func.add_dtype_node(dtype_node.name, tensor_name)
-        self.dtypes_not_impl.append_parent(dtype_node)
+        self.dtypes_not_impl.append_parent_sn(dtype_node)
 
     def equate_dtypes(self, trg_tensor, src_tensor):
         """
@@ -965,125 +925,38 @@ class SchemaApi(object):
                 f'{type(self).__name__}: Can only be called on two tensors. '
                 f'Parameters \'{src_tensor}\' and \'{trg_tensor}\' are not '
                 f'both tensors.')
-        """
-        prev_equate_src = self.dtype_cons.get_equate_source(trg_tensor)
-        if prev_equate_src is not None:
-            raise SchemaError(
-                f'{type(self).__name__}: Tensor \'{trg_tensor}\' has already '
-                f'been assigned dtype equated source tensor '
-                f'\'{prev_equate_src}\' from a previous call to equate_dtypes')
-        self.dtype_cons.add_equiv(trg_tensor, src_tensor)
-        """
 
         G.set_registry(self.inv_graph)
         obj = ge.DTypeEquiv(self, trg_tensor, src_tensor)
         src_dtype = self._inv_node(ge.DTypeIndiv, src_tensor)
         trg_dtype = G.add_node(obj, self.obs_dtypes, src_dtype)
-        self.dtypes_not_impl.func.add_dtype_node(trg_dtype.name, trg_tensor)
-        self.dtypes_not_impl.append_parent(trg_dtype)
+        self.dtypes_not_impl.append_parent_sn(trg_dtype)
 
-    def exclude_dtypes(self, fields, *exclude):
+    def exclude_combos(self, *field_value_pairs):
         """
-        This API call allows to mark any combinations of tensor dtypes, index
-        ranks and layouts as excluded.  It is useful in cases where such
-        combinations are not implemented by the framework.
+        Allows to mark combinations of dtypes, ranks, and layout as excluded
+        from the valid set.  This is useful for those cases that are not
+        implemented by the framework.
 
-        Register {exclude} combinations of tensor dtypes, index ranks and
-        layout to be excluded.
+        {field_val_pairs} is an even-length list of field, val, field, val, ...
+        field is one of: 
+        - data tensors registered in init_fields
+        - one-letter index names registered in init_fields
+        - the constant LAYOUT, if has_layout
 
-        {fields} is a comma-separated list of fields, with any of:
-        - data tensor names registered with arg_tensor
-        - one-letter index names registered with add_index
-        - the constant LAYOUT 
-
-        Each member of {exclude} contains a tuple corresponding to {fields}.
-        - data tensor fields have a dtype string, such as 'int32'
-        - one-letter indexes have an integer specifying a rank of that index
+        val is one of:
+        - dtype string, such as 'int32' for data tensor fields
+        - integer specifying a rank of an index field
         - the LAYOUT field has an integer in [0, num_layouts), as defined
           by the call to arg_layout.
-
-        A value of None for any field indicates a wild-card, meaning 'exclude
-        all values'.
-
-        In the rare case a tensor is a one-letter name and conflicts with an
-        index name, the first occurrence is interpreted as a tensor name, and
-        the second as an index name.
         """
-        tensors = []
-        indexes = []
-        has_layout = False
-        
-        for f in fields:
-            if self._is_data_tensor(f) and f not in tensors:
-                tensors.append(f)
-            elif f in self.index:
-                indexes.append(f)
-            elif f == base.LAYOUT:
-                has_layout = True
-            else:
-                raise SchemaError(
-                    f'{type(self).__qualname__}: Item \'{f}\' in fields was '
-                    f'not a data tensor registered with arg_tensor or '
-                    f'one letter index name registered with add_index, or '
-                    f'the constant \'{base.LAYOUT}\'')
-
-        num_fields = len(fields)
-        num_tensors = len(tensors)
-        num_indexes = len(indexes)
-
-        for idx in indexes:
-            self.dtypes_not_impl.func.add_index(idx)
-            idx_node = self.inv_graph[idx]
-            self.dtypes_not_impl.append_parent_sn(idx_node)
-
-        if has_layout:
-            self.dtypes_not_impl.func.add_layout()
-            layout_node = self._inv_node(ge.Layout, base.LAYOUT)
-            self.dtypes_not_impl.append_parent(layout_node)
-
-        for ex in exclude:
-            if len(ex) != num_fields:
-                raise SchemaError(
-                    f'{type(self).__qualname__}: Each item in \'exclude\' '
-                    f'must have the same number of elements as \'fields\'.\n'
-                    f'Found {len(fields)} fields but exclude item '
-                    f'{ex} has {len(ex)} fields.')
-            it = iter(ex)
-            dtype_bases = []
-            ranks = []
-            for i in range(num_tensors):
-                dtype_expr = next(it)
-                dtype_list = self._dtype_expr(dtype_expr)
-                dtype_bases.append(dtype_list)
-            for p, idx in enumerate(indexes):
-                rank = next(it)
-                if rank is None:
-                    continue
-                elif isinstance(rank, int):
-                    ranks.append(rank)
-                else:
-                    raise SchemaError(
-                        f'{type(self).__qualname__}: Got invalid rank item in '
-                        f'exclusion tuple \'{ex}\'. Item {num_tensors + p - 1}'
-                        f' was \'{rank}\' but should be None or an integer.')
-            if has_layout:
-                layout = next(it)
-                if layout is None:
-                    pass
-                elif (isinstance(layout, int) and layout in
-                        range(self.data_formats.num_layouts())):
-                    pass
-                else:
-                    raise SchemaError(
-                        f'{type(self).__qualname__}: Got invalid layout '
-                        f'\'{layout}\'.  Must be None or an integer in '
-                        f'[0, {self.num_layouts})')
-            else:
-                layout = None
-
-            for dtypes in itertools.product(*dtype_bases):
-                self.dtypes_not_impl.func.add_config(dtypes, ranks, layout)
-                # self.dtype_cons.add_excluded(tensors, dtypes, ranks, layout)
+        if not self.excluded_combos.initialized:
+            self.excluded_combos.init_fields(self.data_tensors,
+                    self.index.keys())
+        try: 
+            self.excluded_combos.add_combo(*field_value_pairs)
+        except RuntimeError as ex:
+            raise SchemaError(ex)
 
     def arg_int(self, arg_name, lo=None, hi=None):
         """
@@ -1132,7 +1005,7 @@ class SchemaApi(object):
         # define the real arg 
         layout = self._inv_node(ge.Layout, base.LAYOUT)
         ranks = self._inv_node(ge.IndexRanks)
-        gen_df_obj = ge.DataFormat(self, self.data_formats, arg_name)
+        gen_df_obj = ge.DataFormat(self, self.data_formats, arg_name, rank_idx)
         g_arg = G.add_node(gen_df_obj, ranks, layout, self.obs_args) 
         self.data_format_gobj = gen_df_obj
 
@@ -1201,7 +1074,7 @@ class SchemaApi(object):
         G.set_registry(self.inv_graph)
         sigmap = self._inv_node(ge.SigMap, '')
         layout = self._inv_node(ge.Layout, base.LAYOUT)
-        sig_obj = ge.Sig(arg_name, sigs_list)
+        sig_obj = ge.Sig(self, arg_name, sigs_list)
         sig_node = G.add_node(sig_obj, layout)
         sigmap.append_parent_sn(sig_node)
 
@@ -1235,6 +1108,7 @@ class SchemaApi(object):
         dtypes.append_parent_sn(dtype)
         self._add_definite_rank(*sigs)
         self.arg_pred_nodes[arg_name] = arg_p
+        self.data_tensors.append(arg_name)
 
     def _arg_shape_list_base(self, arg_name, broadcast_mode=False, *sigs):
         """
@@ -1376,7 +1250,7 @@ class SchemaApi(object):
 
             if isinstance(sig, str):
                 sig = [sig]
-            g_sig_obj = ge.Sig(prefix, sig)
+            g_sig_obj = ge.Sig(self, prefix, sig)
             g_sig = G.add_node(g_sig_obj, g_layout)
             g_sig_map.append_parent(g_sig)
         self._add_definite_rank(*sigs)
@@ -1396,7 +1270,7 @@ class SchemaApi(object):
         self.arg_pred_nodes[arg_name] = p_rank
 
         g_ranks = self._inv_node(ge.IndexRanks)
-        g_rank = G.add_node(ge.Rank(sig), g_ranks)
+        g_rank = G.add_node(ge.Rank(self, sig), g_ranks)
         self.arg_gen_nodes[arg_name] = g_rank
         self.args_node.append_parent_sn(g_rank)
 
@@ -1480,7 +1354,7 @@ class SchemaApi(object):
         P.set_registry(self.pred_graph)
         G.set_registry(self.inv_graph)
 
-        g_sig_obj = ge.Sig(ret_name, sigs_list)
+        g_sig_obj = ge.Sig(self, ret_name, sigs_list)
         # p_sig_obj = pr.Sig(ret_name, sigs_list)
 
         rten_pobj = pr.GetReturnTensor(ret_name)

@@ -6,7 +6,7 @@ from .error import *
 from . import util, base, fgraph
 from .fgraph import NodeFunc, node_name
 from .flib import Index
-from .base import GenMode
+from .base import GenMode, ErrorInfo, EditSuggestion
 
 """
 A collection of fgraph.NodeFunc derived classes for use in fgraph.PredNodes.
@@ -34,7 +34,8 @@ class DataTensor(NodeFunc):
     def __call__(self, op):
         ten = op._get_arg(self.arg_name)
         if not isinstance(ten, tf.Tensor):
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         else:
             return True, ten
 
@@ -46,7 +47,8 @@ class GetReturnTensor(NodeFunc):
     def __call__(self, op):
         ten = op._get_return(self.ret_name)
         if not isinstance(ten, tf.Tensor):
-            return False, [[self]] 
+            sug = EditSuggestion(ErrorInfo(self, (), 1))
+            return False, [sug]
         else:
             return True, ten
 
@@ -61,7 +63,8 @@ class ValidReturnShape(NodeFunc):
         if actual_shape == predicted_shape:
             return True, None
         else:
-            return False, [[self]] 
+            sug = EditSuggestion(ErrorInfo(self, (), 1))
+            return False, [sug]
 
 class TensorDType(NodeFunc):
     def __init__(self, name):
@@ -90,11 +93,14 @@ class ShapeList(NodeFunc):
     def __call__(self, op):
         shape = op._get_arg(self.arg_name)
         if not isinstance(shape, list):
-            return False, [[self.gen_node]] 
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         if not all(isinstance(v, int) for v in shape):
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         if not all(v >= 0 for v in shape):
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         else:
             # In broadcast mode, return an integer rather than integer list.
             # see base.shape_rank
@@ -114,9 +120,11 @@ class ShapeInt(NodeFunc):
     def __call__(self, op):
         i = op._get_arg(self.arg_name)
         if not isinstance(i, int):
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         if i < 0:
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         else:
             return True, [i]
 
@@ -136,12 +144,15 @@ class ShapeTensorFunc(NodeFunc):
     def __call__(self, op, *shapes):
         ten = op._get_arg(self.arg_name)
         if not isinstance(ten, tf.Tensor):
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         if ten.dtype != tf.int32:
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         nums = ten.numpy().tolist()
         if any(n < 0 for n in nums):
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         else:
             return self.func(nums, *shapes)
 
@@ -167,11 +178,14 @@ class ShapeTensor2D(NodeFunc):
     def __call__(self, op):
         ten = op._get_arg(self.arg_name) 
         if not ten.dtype.is_integer:
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         elif ten.shape.rank != 2:
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         elif ten.shape[1] != self.num_slices:
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
         vals = tf.transpose(ten).numpy()
         tup = tuple(vals.tolist())
         return True, tup
@@ -189,7 +203,8 @@ class SliceShape(NodeFunc):
     def __call__(self, shape_tup):
         vals = shape_tup[self.index]
         if any(v < 0 for v in vals):
-            return False, [[self]]
+            sug = EditSuggestion(ErrorInfo(self, (), 1))
+            return False, [sug]
         return True, vals 
 
 class DTypes(NodeFunc):
@@ -247,38 +262,41 @@ class Inventory(NodeFunc):
         super().__init__()
         self.op = op
 
-    def get_hits(self, max_edits, dtypes, shapes, args):
+    def get_suggestions(self, max_edits, dtypes, shapes, args):
         self.op._prep_gen_inference(max_edits, dtypes, shapes, args)
 
         # ranks, dtypes, sigs, arg_shapes, error
         report_nodes = (self.op.error_node,)
         live_nodes = self.op.inference_nodes
-        hits = []
-        for hit in fgraph.gen_graph_values(live_nodes, report_nodes):
-            hits.append(hit[0]) # extract from tuple
-        return hits
+        sugs = []
+        for sug in fgraph.gen_graph_values(live_nodes, report_nodes):
+            sugs.append(sug[0]) # extract from tuple
+        return sugs
+
+    @staticmethod
+    def total_sug_dist(sug):
+        return sum(ei.dist for ei in sug.infos)
 
     def __call__(self, dtypes, shapes, args):
         # prepare the inventory graph
-        hits = self.get_hits(0, dtypes, shapes, args)
-        if len(hits) > 1:
+        sugs = self.get_suggestions(0, dtypes, shapes, args)
+        if len(sugs) > 1:
             raise SchemaError(
                 f'{type(self).__qualname__}: Got multiple matches with '
                 f'zero edits for framework op \'{self.op.op_path}\'')
 
-        elif len(hits) == 1:
-            return True, hits
+        elif len(sugs) == 1:
+            assert sugs[0].empty(), f'Error non-empty sug {sugs[0]} found during zero-edit'
+            return True, sugs
 
         else:
-            # produce up to some number of suggestions 
-            min_hits = 1
-            all_hits = []
-            for dist in range(1, 3):
-                hits = self.get_hits(dist, dtypes, shapes, args)
-                all_hits.extend(hits)
-                if len(all_hits) >= min_hits:
+            min_sugs = 2
+            for dist in range(1, 4):
+                sugs = self.get_suggestions(dist, dtypes, shapes, args)
+                if len(sugs) >= min_sugs:
                     break
-            return False, all_hits
+            sorted_sugs = sorted(sugs, key=self.total_sug_dist)
+            return False, sorted_sugs
 
 def calc_sig_range(rank_map, idx, sig):
     ind = sig.index(idx)
@@ -418,7 +436,8 @@ class DataFormat(NodeFunc):
         if valid:
             return True, data_format
         else:
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
 
 class ArgInt(NodeFunc):
     def __init__(self, arg_name, lo, hi):
@@ -436,9 +455,11 @@ class ArgInt(NodeFunc):
     def __call__(self, op):
         arg_val = op._get_arg(self.arg_name) 
         if not isinstance(arg_val, int):
-            return False, [[self]]
+            sug = EditSuggestion(ErrorInfo(self, (), 1))
+            return False, [sug]
         elif arg_val not in range(self.lo, self.hi + 1):
-            return False, [[self]] 
+            sug = EditSuggestion(ErrorInfo(self, (), 1))
+            return False, [sug]
         else:
             return True, arg_val
 
@@ -471,7 +492,8 @@ class Options(NodeFunc):
         if arg_val in self.options:
             return True, arg_val
         else:
-            return False, [[self.gen_node]]
+            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
+            return False, [sug]
 
 class ArgMap(NodeFunc):
     def __init__(self):

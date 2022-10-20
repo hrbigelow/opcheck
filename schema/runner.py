@@ -13,7 +13,7 @@ class TestResult(object):
     One schema test result.  Holds all sufficient information about the test.
     Provides convenient reporting and classification functions
     """
-    def __init__(self, op, _id, arg_map, index_ranks, gen_error_state):
+    def __init__(self, op, _id, arg_map, index_ranks, gen_edit):
         self.op = op
         self.id = _id
         self.arg_map = arg_map
@@ -21,7 +21,7 @@ class TestResult(object):
 
         # list of errors (expected to be zero or one) incurred during the
         # generation of the test example
-        self.gen_error_state = gen_error_state
+        self.gen_edit = gen_edit
 
         # list of suggested fixes.  each item in the list is an error state
         # the list could be empty if no suggested fixes could be found
@@ -30,9 +30,13 @@ class TestResult(object):
         self.framework_msg = None
 
     def __repr__(self):
-        return '\n'.join(repr(memb) for memb in
-                (self.id, self.gen_error_state, self.suggestions,
-                    self.framework_error, self.framework_msg))
+        msg = (f'id: {self.id}\n'
+                f'gen_edit: {self.gen_edit}\n'
+                f'suggestions: {self.suggestions}\n'
+                f'framework_error: {self.framework_error}\n'
+                f'framework_msg: {self.framework_msg}\n'
+                )
+        return msg
 
     def add_result(self):
         self.suggestions = self.op.input_errors
@@ -45,17 +49,20 @@ class TestResult(object):
             self.framework_msg = str(self.op.framework_error.ex)
 
         if len(self.suggestions) == 0:
-            top_hit = ['No Hit found']
-        else:
-            top_hit = self.suggestions[0]
-        if top_hit != self.gen_error_state:
             cat = 'FAIL'
         else:
-            fr_neg = (self.framework_error is None)
-            if len(self.gen_error_state) == 0:
-                cat = 'TN' if fr_neg else 'FN'
+            top_sug = self.suggestions[0]
+            z = zip(top_sug.infos, self.gen_edit.infos)
+            if len(top_sug.infos) != len(self.gen_edit.infos):
+                cat = 'FAIL'
+            elif any(t.obj != g.obj for t, g in z):
+                cat = 'FAIL'
             else:
-                cat = 'FP' if fr_neg else 'TP'
+                fr_neg = (self.framework_error is None)
+                if len(self.gen_edit.infos) == 0:
+                    cat = 'TN' if fr_neg else 'FN'
+                else:
+                    cat = 'FP' if fr_neg else 'TP'
         self.category = cat
 
     def make_args(self):
@@ -81,19 +88,13 @@ class TestResult(object):
         # summary statistics for the test
         stats = []
         keys = self.stat_keys()
-        expect_error_str = ','.join(e.__class__.__name__ for e in
-                self.gen_error_state)
 
-        if len(self.suggestions) == 0:
-            opgrind_error_str = 'Success'
+        nsug = len(self.suggestions)
+        if nsug == 0:
+            opgrind_err = 'No Hits'
         else:
-            opgrind_error_str = ','.join(e.__class__.__name__ for e in
-                self.suggestions[0])
-            if opgrind_error_str == '':
-                opgrind_error_str = 'Success'
+            opgrind_err = repr(self.suggestions[0])
 
-        if expect_error_str == '':
-            expect_error_str = 'Success'
         if self.framework_error is None:
             framework_error_str = 'Success'
         else:
@@ -102,8 +103,8 @@ class TestResult(object):
         stats = [ 
                 str(self.id), 
                 self.category, 
-                expect_error_str,
-                opgrind_error_str,
+                repr(self.gen_edit),
+                opgrind_err,
                 framework_error_str,
                 ','.join(str(r) for r in self.index_ranks.values())
                 ]

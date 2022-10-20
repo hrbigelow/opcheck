@@ -440,6 +440,8 @@ def gen_graph_values(live_nodes, result_nodes):
     live_nodes = _topo_sort(live_nodes)
     imap = [-1] * len(live_nodes)
     for ri, r in enumerate(result_nodes):
+        if hasattr(r.func, 'op'):
+            op = r.func.op
         try:
             li = live_nodes.index(r)
             imap[li] = ri
@@ -458,26 +460,28 @@ def gen_graph_values(live_nodes, result_nodes):
         values = node.values()
 
         if False:
-            initial_edits = node.func.op.avail_edits if hasattr(node.func, 'op') else '-'
-            print(' ' * i + f'{node.name}: ')
+            initial_edits = op.avail_edits 
+            if i > 0:
+                pre_node = live_nodes[i-1]
+                indented_name = ' ' * i + pre_node.name
+                msg = (
+                        f'i: {initial_edits} '
+                        f'a: {op.avail_edits} '
+                        f'e: {len(op.errors)} '
+                        f'l: {pre_node.get_cached()} '
+                        )
+                print(f'{indented_name:50s}{msg}')
 
         for val in values:
             node.set_cached(val)
-
-            if False: 
-                edits = node.func.op.avail_edits if hasattr(node.func, 'op') else '-'
-                err = node.func.op.errors if hasattr(node.func, 'op') else ''
-                msg = (
-                        # f'{node.name}: '
-                        f'cur_val: {val}, '
-                        f'init: [{initial_edits}], '
-                        f'avail: [{edits}] (errors: {len(err)})')
-                print(' ' * i + msg)
-
             ri = imap[i]
             if ri >= 0:
                 result[ri] = val
             yield from gen_rec(i+1)
+        else:
+            if False:
+                print(' ' * (i+1) + node.name)
+
     yield from gen_rec(0)
 
 def pred_graph_evaluate(*nodes):
