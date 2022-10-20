@@ -459,7 +459,7 @@ def gen_graph_values(live_nodes, result_nodes):
         node = live_nodes[i]
         values = node.values()
 
-        if False:
+        if True:
             initial_edits = op.avail_edits 
             if i > 0:
                 pre_node = live_nodes[i-1]
@@ -479,7 +479,7 @@ def gen_graph_values(live_nodes, result_nodes):
                 result[ri] = val
             yield from gen_rec(i+1)
         else:
-            if False:
+            if True:
                 print(' ' * (i+1) + node.name)
 
     yield from gen_rec(0)

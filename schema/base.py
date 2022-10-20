@@ -149,7 +149,7 @@ class CombosNotImplemented(object):
                 addr = f'r:{field}'
                 combo.append((addr, value))
             elif field == LAYOUT:
-                addr = f'l:{field}'
+                addr = f'l{field}' # (layout already has colon)
                 combo.append((addr, value))
             else:
                 raise RuntimeError(
@@ -167,24 +167,18 @@ class CombosNotImplemented(object):
         """
         # combo is [(addr, value), ...].  addr is one of 't:<tensor_name>'
         for combo in self.combos:
-            excluded = True
+            ex = True 
             for addr, exc_value in combo:
                 tag, name = addr.split(':')
                 if tag == 't':
-                    if dtypes[name] == exc_value:
-                        break
+                    ex = (dtypes[name] == exc_value) and ex
                 elif tag == 'r':
-                    if ranks[name] == exc_value:
-                        break
+                    ex = (ranks[name] == exc_value) and ex
                 elif tag == 'l':
-                    if layout == exc_value:
-                        break
-            else:
-                excluded = False
-            if excluded:
+                    ex = (layout == exc_value) and ex
+            if ex:
                 return True
         return False
-
 
 class DataFormats(object):
     """
