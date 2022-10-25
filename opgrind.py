@@ -105,7 +105,8 @@ def validate(op_path, out_dir, test_ids=None, skip_ids=None):
     appropriately, and does not flag errors where none exist.
     """
     op = _get_from_path(op_path)
-    runner.validate(op, out_dir, test_ids, skip_ids)
+    # runner.validate(op, out_dir, test_ids, skip_ids)
+    op._validate()
 
 def explain(op_path):
     """
@@ -156,14 +157,14 @@ def print_pred_graph(op_path, out_dir):
     nodes = op.pred_graph.values()
     _dot_graph(op, nodes, f'{out_dir}/{op_path}.pred')
 
-def print_inventory_graph(op_path, out_dir):
+def print_gen_graph(op_path, out_dir):
     """
     Print a pdf of {op_path} inventory graph, used for displaying the valid
     inventory (signatures, data format, dtypes) combinations
     """
     op = REGISTRY[op_path]
-    nodes = op.inv_graph.values()
-    _dot_graph(op, nodes, f'{out_dir}/{op_path}.inv')
+    nodes = op.gen_graph.values()
+    _dot_graph(op, nodes, f'{out_dir}/{op_path}.gen')
 
 def print_comp_dims_graph(op_path, out_dir):
     """

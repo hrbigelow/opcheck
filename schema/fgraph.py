@@ -439,9 +439,14 @@ def gen_graph_values(live_nodes, result_nodes):
     # map from li => ri
     live_nodes = _topo_sort(live_nodes)
     imap = [-1] * len(live_nodes)
+    op = None
+    for ln in live_nodes:
+        if hasattr(ln.func, 'op'):
+            op = ln.func.op
+            break
+    assert op is not None
+
     for ri, r in enumerate(result_nodes):
-        if hasattr(r.func, 'op'):
-            op = r.func.op
         try:
             li = live_nodes.index(r)
             imap[li] = ri
@@ -459,7 +464,7 @@ def gen_graph_values(live_nodes, result_nodes):
         node = live_nodes[i]
         values = node.values()
 
-        if True:
+        if False:
             initial_edits = op.avail_edits 
             if i > 0:
                 pre_node = live_nodes[i-1]
@@ -467,7 +472,7 @@ def gen_graph_values(live_nodes, result_nodes):
                 msg = (
                         f'i: {initial_edits} '
                         f'a: {op.avail_edits} '
-                        f'e: {len(op.errors)} '
+                        # f'e: {len(op.errors)} '
                         f'l: {pre_node.get_cached()} '
                         )
                 print(f'{indented_name:50s}{msg}')
@@ -479,7 +484,7 @@ def gen_graph_values(live_nodes, result_nodes):
                 result[ri] = val
             yield from gen_rec(i+1)
         else:
-            if True:
+            if False:
                 print(' ' * (i+1) + node.name)
 
     yield from gen_rec(0)

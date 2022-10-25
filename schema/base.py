@@ -14,9 +14,261 @@ LAYOUT = ':layout'
 DEFAULT_FORMAT = ':default'
 
 class GenMode(enum.Enum):
-    Inventory = 0
-    Test = 1
-    Inference = 2
+    Test = 0
+    Inference = 1
+
+class GenKind(enum.Enum):
+    InferLive = 0
+    InferShow = 1
+    TestLive = 2
+    TestShow = 3
+
+class Fix(object):
+    """
+    Encapsulate one set of edits, together with the imputed settings context.
+    {edit_map} is arg => edit.  Each edit is an instance of ArgEdit 
+    """
+    def __init__(self, imp_index_dims, sigs, edit_map, dtypes_filt):
+        self.imp_index_dims = imp_index_dims
+        self.sigs = sigs
+        self.edit_map = edit_map # arg => [edit, edit, ...]
+        self.dtypes_filt = dtypes_filt
+
+    def __repr__(self):
+        msg = (
+                f'imp_index_dims: {self.imp_index_dims}\n'
+                f'sigs: {self.sigs}\n'
+                f'edit_map: {self.edit_map}\n'
+                f'dtypes_filt: {self.dtypes_filt}\n'
+                )
+        return msg
+
+    def distance(self):
+        return sum(e.dist() for e in self.edit_map.values())
+
+    def apply(self, op_args):
+        fixed_op_args = {}
+        for arg, op_arg in op_args.items():
+            edits = self.edit_map.get(arg, [])
+            for edit in edits:
+                op_arg = edit.apply(op_arg, self.imp_index_dims, self.sigs)
+            fixed_op_args[arg] = op_arg
+        return fixed_op_args
+
+    def report(self, op_args):
+        """
+        Generate a human-readable report for this fix.  Consists of two
+        sections:
+
+        Top section is a table of columns of shape, dtype, or value for given
+        provided arguments.  The first row are the values given to the op.  The
+        second is the index template interpretation.  The third is a highlight
+        row with '^^^' highlights.
+
+        Bottom section is a list of instructions to the user what to change to
+        correct the input.
+        """
+        def maybe_get(edits, kind):
+            return next((e for e in edits if isinstance(e, kind)), None)
+
+        # find which args' dtypes are highlighted
+        dtypes_hl = set(self.dtypes_filt.highlight())
+        values_hl = set()
+        for arg, edit in self.edit_map.items():
+            if isinstance(edit, DTypesEdit):
+                dtypes_hl.add(edit.highlight())
+            elif isinstance(edit, ValueEdit):
+                values_hl.add(edit.highlight())
+
+        columns = {} # hdr => column
+        headers = [] # hdr order
+
+        shape_types = (DataTensorArg, ShapeTensorArg, ShapeListArg)
+        for arg, op_arg in op_args.items():
+            edits = self.edit_map.get(arg, [])
+            sig = self.sigs[arg]
+
+            if isinstance(op_arg, shape_types):
+                shape = list(op_arg.shape)
+                highl = [''] * len(shape)
+                templ = [idx for _ in self.imp_index_dims[idx] for idx in sig]
+
+                mut_edit = maybe_get(edits, MutateEdit)
+                if mut_edit is not None:
+                    mut_inds = mut_edit.highlight()
+                    for ind in mut_inds:
+                        highl[ind] = '^' * len(str(shape[ind]))
+
+                ins_edit = maybe_get(edits, InsertEdit)
+                if ins_edit is not None:
+                    beg = ins_edit.shape_pos
+                    sz = ins_edit.idx_end - ins_edit.idx_beg
+                    shape[beg:beg] = [None] * sz
+                    highl[beg:beg] = ['^^'] * sz
+
+                del_edit = maybe_get(edits, DeleteEdit)
+                if del_edit is not None:
+                    beg = del_edit.beg
+                    sz = del_edit.end - del_edit.beg
+                    templ[beg:beg] = [None] * sz
+                    highl[beg:beg] = ['^^'] * sz
+
+                rows = [ shape, templ, highl ]
+                cols = np.array(rows).transpose().tolist()
+                table, _ = tabulate(cols, ' ', True)
+
+                hdr = f'{arg}.shape'
+                columns[hdr] = table
+                headers.append(hdr)
+                
+                if isinstance(op_arg, DataTensorArg):
+                    dtype = op_arg.dtype.name
+                    templ = ''
+                    highl = '^' * len(dtype) if dtype in dtypes_hl else ''
+                    hdr = f'{arg}.dtype'
+                    columns[hdr] = [ dtype, templ, highl ]
+                    headers.append(hdr)
+
+            elif isinstance(op_arg, ValueArg):
+                val = op_arg.value()
+                edit = maybe_get(edits, ValueEdit)
+                imput = '' if edit is None else str(edit.val)
+                highl = ('^' * max(len(val), len(imput)) if arg in values_hl
+                        else '')
+                columns[arg] = [ val, imput, highl ]
+                headers.append(arg)
+
+            elif isinstance(op_arg, ShapeTensor2DArg):
+                raise NotImplementedError
+
+            elif isinstance(op_arg, ShapeIntArg):
+                raise NotImplementedError
+
+        main_cols = [ columns[hdr] for hdr in headers ]
+        main_table, _ = tabulate(main_cols, '  ', False)
+        return '\n'.join(row for row in main_table)
+
+
+class ArgsEdit(object):
+    """
+    Represent an edit applied to a valid op_args
+    """
+    def __init__(self, func, dist):
+        self.func = func
+        self._dist = dist
+
+    def dist(self):
+        return self._dist
+
+    def apply(self, op_arg, imp_index_dims, sigs):
+        """
+        Call enclosed func.edit using appropriate arguments.  Returns the
+        edited op_arg.  After applying all edits, the resulting op_args map
+        should be valid framework op input.
+        """
+        raise NotImplementedError
+
+    def highlight(self):
+        """
+        Produce a list of the highlighted elements of the input.  Highlighted
+        elements are those displayed with '^^^'.  Usually this means a subset
+        of them must be changed to correct the input.  Each subclass of
+        ArgsEdit produces a highlight in its own coordinate system.  The Fix
+        class munges all of these together.
+        """
+        raise NotImplementedError
+
+class InsertEdit(ArgsEdit):
+    def __init__(self, func, shape_pos, idx, idx_beg, idx_end):
+        """
+        Represents an insertion into a shape at position shape_pos, of {idx}
+        dims [idx_beg:idx_end]
+        """
+        super().__init__(func, 1)
+        self.shape_pos = shape_pos
+        self.idx = idx
+        self.idx_beg = idx_beg
+        self.idx_end = idx_end
+
+    def apply(self, op_arg, imp_index_dims, sigs):
+        info = (Indel.Insert, self.shape_pos, self.idx, self.idx_beg,
+                self.idx_end)
+        return self.func.edit(op_arg, imp_index_dims, *info)
+        
+    def highlight(self):
+        # range in the coordinate system of the index template
+        return (self.shape_pos, self.shape_pos + (self.idx_end - self.idx_beg))
+
+class DeleteEdit(ArgsEdit):
+    """
+    Represents deleting a given sub-range [shape_beg, shape_end) of an argument
+    shape.
+    """
+    def __init__(self, func, shape_beg, shape_end):
+        super().__init__(func, 1)
+        self.beg = shape_beg
+        self.end = shape_end
+
+    def apply(self, op_arg, imp_index_dims, sigs):
+        info = (Indel.Delete, self.beg, self.end)
+        return self.func.edit(op_arg, imp_index_dims, *info)
+
+    def highlight(self):
+        # given in the shape coordinate system
+        return (self.beg, self.end)
+
+class MutateEdit(ArgsEdit):
+    """
+    Represents changing a set of dimensions of a shape to specified values.
+    """
+    def __init__(self, func, mutation_map):
+        super().__init__(func, 1)
+        self.changes = mutation_map
+
+    def apply(self, op_arg, imp_index_dims, sigs):
+        return self.func.edit(op_arg, self.changes)
+
+    def highlight(self):
+        # these are pre-indel shape-based coordinates
+        return list(self.changes.keys())
+
+class DTypesFiltered(ArgsEdit):
+    """
+    Represents an edit due to the dtype combination being filtered.  This is
+    not a true edit.  It is only used to provide a highlight
+    """
+    def __init__(self, func):
+        super().__init__(func, 1)
+
+    def highlight(self):
+        # may be refined later
+        return self.func.exc.data_tensors
+
+class DTypesEdit(ArgsEdit):
+    """
+    The edit object yielded by DTypesIndiv and DTypesEquiv
+    """
+    def __init__(self, func, arg_name):
+        super().__init__(func, 1)
+        self.arg_name = arg_name
+
+    def highlight(self):
+        return self.arg_name
+
+class ValueEdit(ArgsEdit):
+    """
+    An edit to a ValueArg
+    """
+    def __init__(self, func, arg_name, imputed_val):
+        super().__init__(func, 1)
+        self.arg_name = arg_name
+        self.val = imputed_val
+
+    def apply(self, op_arg, _, __):
+        return self.func.edit(op_arg)
+    
+    def highlight(self):
+        return self.arg_name
 
 class ErrorInfo(object):
     def __init__(self, obj, args, dist):
@@ -24,26 +276,50 @@ class ErrorInfo(object):
         self.args = args
         self.dist = dist
 
+    def __hash__(self):
+        return hash((id(self.obj), self.args, self.dist))
+
+    def __eq__(self, other):
+        return (
+                isinstance(other, type(self)) and
+                self.obj == other.obj and
+                self.args == other.args and
+                self.dist == other.dist)
+
     def __repr__(self):
-        return f'{self.obj.__class__.__name__}({self.args}){{{self.dist}}}'
+        return f'{self.obj.__class__.__name__}{self.args}{{{self.dist}}}'
 
     def msg(self):
         return f'{self.obj.__class__.__name__}({self.dist})'
 
 class EditSuggestion(object):
     def __init__(self, *error_infos):
-        self.infos = error_infos
+        self.infos = tuple(error_infos)
 
     def __repr__(self):
-        if len(self.infos) == 0:
+        phr = [ repr(i) for i in self.infos ]
+        rep = ' + '.join(phr)
+        msg = f'{self.__class__.__name__}({rep})'
+        return msg
+
+    def msg(self):
+        if self.empty():
             return 'Success'
         else:
-            phr = [ i.msg() for i in self.infos ]
-            msg = ' + '.join(phr)
-            return msg
+            return '+'.join(ei.msg() for ei in self.infos)
+
+    def __hash__(self):
+        return hash(hash(ei) for ei in self.infos)
+
+    def __eq__(self, other):
+        return (isinstance(other, type(self)) and
+                self.infos == other.infos)
 
     def empty(self):
         return len(self.infos) == 0
+
+    def dist(self):
+        return sum(ei.dist for ei in self.infos)
 
 
 class ShapeKind(enum.Enum):
@@ -675,4 +951,43 @@ class ArgRankConstraint(Constraint):
         thi = obs_rank 
         residual = sum(index_ranks.get(idx, 0) for idx in arg_sig)
         return max(0, tlo - residual), max(0, thi - residual)
+
+# convert rows of arbitrary objects to tabular row strings
+def tabulate(rows, sep, left_align=True):
+    """
+    {rows} is a list of rows, where each row is a list of arbitrary items
+
+    Produces a tuple.  The first item is a string-representation of {rows},
+    such that each item is column-aligned, using {sep} as a field separator.
+    
+    rows may have different numbers of items.  the longest row defines the
+    number of columns, and any shorter rows are augmented with empty-string
+    items.
+
+    The second item is a list of (beg, end) column position tuples
+    corresponding to each column.
+    """
+    def get(items, i):
+        try:
+            return items[i]
+        except IndexError:
+            return ''
+    
+    ncols = max(len(row) for row in rows)
+    if isinstance(left_align, bool):
+        left_align = [left_align] * ncols
+
+    w = [max(len(str(get(row, c))) for row in rows) for c in range(ncols)]
+    t = []
+    for row in rows:
+        fields = []
+        for c in range(len(row)):
+            align = '<' if left_align[c] else '>'
+            field = f'{str(row[c]):{align}{w[c]}s}'
+            fields.append(field)
+        t.append(sep.join(fields))
+
+    begs = [sum(w[:s]) + len(sep) * s for s in range(ncols)]
+    ends = [sum(w[:s+1]) + len(sep) * s for s in range(ncols)]
+    return t, list(zip(begs, ends))
 

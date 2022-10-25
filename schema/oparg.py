@@ -2,13 +2,24 @@
 Subclasses of OpArg - a class for representing arguments to the op, which are
 returned by certain nodes of gen_graph
 """
+import enum
 import numpy as np
 import tensorflow as tf
 from .error import SchemaError
 
+class EditType(enum.Enum):
+    InsertDim = 0
+    DeleteDim = 1
+    ChangeDim = 2
+    ChangeDType = 3
+    ChangeValue = 4
+
 class OpArg(object):
     def __init__(self, *args):
         pass
+
+    def __repr__(self):
+        raise NotImplementedError
 
     def value(self):
         """
@@ -16,9 +27,10 @@ class OpArg(object):
         """
         raise NotImplementedError
 
-    def summary(self):
+    def edit(self, *args):
         """
-        Return a short string summary of the argument
+        Apply an edit to this arg.  The edit is part of a set of edits (a Fix)
+        which should restore all args to a valid set.
         """
         raise NotImplementedError
 
@@ -32,7 +44,7 @@ class DataTensorArg(OpArg):
         self.dtype = dtype
 
     def __repr__(self):
-        return f'[{self.shape}]:{self.dtype.name}'
+        return f'DTen({self.shape}:{self.dtype.name})'
 
     def value(self):
         try:
@@ -78,8 +90,9 @@ class DataTensorArg(OpArg):
                 f'Unexpected dtype when generating tensor: dtype=\'{self.dtype.name}\'')
         return ten
 
-    def summary(self):
-        return f'DTen({self.shape}:{self.dtype.name})'
+    def edit(self, action, value, index):
+        if action == EditType.InsertDim:
+            pass
 
 class ShapeTensorArg(OpArg):
     """
@@ -92,7 +105,7 @@ class ShapeTensorArg(OpArg):
     def value(self):
         return tf.constant(self.shape, dtype=tf.int32)
     
-    def summary(self):
+    def __repr__(self):
         return f'ShTen({self.shape})'
 
 class ShapeListArg(OpArg):
@@ -103,11 +116,11 @@ class ShapeListArg(OpArg):
         super().__init__()
         self.shape = shape
 
+    def __repr__(self):
+        return f'L({self.shape})'
+
     def value(self):
         return self.shape
-
-    def summary(self):
-        return f'L({self.shape})'
 
 class ShapeTensor2DArg(OpArg):
     """
@@ -116,14 +129,14 @@ class ShapeTensor2DArg(OpArg):
     def __init__(self, shape2d):
         self.content = shape2d
 
+    def __repr__(self):
+        content = ', '.join(str(r) for r in self.content)
+        return f'Sh2Ten({content})'
+
     def value(self):
         ten = tf.constant(self.content, dtype=tf.int32)
         ten = tf.transpose(ten)
         return ten
-
-    def summary(self):
-        content = ', '.join(str(r) for r in self.content)
-        return f'Sh2Ten({content})'
 
 class ShapeIntArg(OpArg):
     """
@@ -132,9 +145,22 @@ class ShapeIntArg(OpArg):
     def __init__(self, val):
         self.val = val
 
+    def __repr__(self):
+        return f'I:{self.val}' 
+
     def value(self):
         return self.val
 
-    def summary(self):
-        return f'I:{self.val}' 
+class ValueArg(OpArg):
+    """
+    An OpArg holding an arbitrary value
+    """
+    def __init__(self, val):
+        self.val = val
+
+    def __repr__(self):
+        return f'V:{self.val}'
+
+    def value(self):
+        return self.val
 

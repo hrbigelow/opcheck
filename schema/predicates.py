@@ -4,9 +4,9 @@ import tensorflow as tf
 from collections import defaultdict
 from .error import *
 from . import util, base, fgraph
-from .fgraph import NodeFunc, node_name
+from .fgraph import NodeFunc, node_name, gen_graph_values
 from .flib import Index
-from .base import GenMode, ErrorInfo, EditSuggestion
+from .base import GenMode, ErrorInfo, EditSuggestion, GenKind
 
 """
 A collection of fgraph.NodeFunc derived classes for use in fgraph.PredNodes.
@@ -262,41 +262,31 @@ class Inventory(NodeFunc):
         super().__init__()
         self.op = op
 
-    def get_suggestions(self, max_edits, dtypes, shapes, args):
-        self.op._prep_gen_inference(max_edits, dtypes, shapes, args)
-
-        # ranks, dtypes, sigs, arg_shapes, error
-        report_nodes = (self.op.error_node,)
-        live_nodes = self.op.inference_nodes
-        sugs = []
-        for sug in fgraph.gen_graph_values(live_nodes, report_nodes):
-            sugs.append(sug[0]) # extract from tuple
-        return sugs
-
-    @staticmethod
-    def total_sug_dist(sug):
-        return sum(ei.dist for ei in sug.infos)
-
     def __call__(self, dtypes, shapes, args):
-        # prepare the inventory graph
-        sugs = self.get_suggestions(0, dtypes, shapes, args)
-        if len(sugs) > 1:
-            raise SchemaError(
-                f'{type(self).__qualname__}: Got multiple matches with '
-                f'zero edits for framework op \'{self.op.op_path}\'')
+        """
+        Assume that self.op.avail_edits is set appropriately.
+        """
+        self.op._prep_gen_inference(dtypes, shapes, args)
+        fixes = []
 
-        elif len(sugs) == 1:
-            assert sugs[0].empty(), f'Error non-empty sug {sugs[0]} found during zero-edit'
-            return True, sugs
+        nodes = self.op.gen_graph.values()
+        live_nodes = [n for n in nodes if GenKind.InferLive in n.func.kinds]
+        out_nodes = [n for n in nodes if GenKind.InferShow in n.func.kinds]
+        for fix in gen_graph_values(live_nodes, out_nodes):
+            fixes.append(fix[0]) 
 
+        if self.op.avail_edits == 0:
+            if len(fixes) == 1:
+                return True, fixes
+            elif len(fixes) > 1:
+                raise SchemaError(
+                    f'{type(self).__qualname__}: Got multiple matches with '
+                    f'zero edits for framework op \'{self.op.op_path}\'')
+            else:
+                return False, fixes
         else:
-            min_sugs = 2
-            for dist in range(1, 4):
-                sugs = self.get_suggestions(dist, dtypes, shapes, args)
-                if len(sugs) >= min_sugs:
-                    break
-            sorted_sugs = sorted(sugs, key=self.total_sug_dist)
-            return False, sorted_sugs
+            sorted_fixes = sorted(fixes, key=lambda f: f.distance())
+            return False, sorted_fixes
 
 def calc_sig_range(rank_map, idx, sig):
     ind = sig.index(idx)

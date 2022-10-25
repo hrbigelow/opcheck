@@ -1,12 +1,14 @@
 import tensorflow as tf
 import numpy as np
 import io, os
+import itertools
 import inspect
 import traceback
 from .redirect import stderr_redirector
 from .error import OpGrindInternalError
 from . import fgraph, oparg, generators as ge
-from tensorflow.python.framework import ops
+from .base import EditSuggestion
+# from tensorflow.python.framework import ops
 
 class TestResult(object):
     """
@@ -19,8 +21,10 @@ class TestResult(object):
         self.arg_map = arg_map
         self.index_ranks = index_ranks
 
-        # list of errors (expected to be zero or one) incurred during the
-        # generation of the test example
+        # list of EditSuggestions which could have generated the arg_map
+        assert isinstance(gen_edit, list)
+        for s in gen_edit:
+            assert isinstance(s, EditSuggestion)
         self.gen_edit = gen_edit
 
         # list of suggested fixes.  each item in the list is an error state
@@ -51,15 +55,12 @@ class TestResult(object):
         if len(self.suggestions) == 0:
             cat = 'FAIL'
         else:
-            top_sug = self.suggestions[0]
-            z = zip(top_sug.infos, self.gen_edit.infos)
-            if len(top_sug.infos) != len(self.gen_edit.infos):
-                cat = 'FAIL'
-            elif any(t.obj != g.obj for t, g in z):
+            z = itertools.zip_longest(self.suggestions, self.gen_edit)
+            if not all(s == g for s, g in z):
                 cat = 'FAIL'
             else:
                 fr_neg = (self.framework_error is None)
-                if len(self.gen_edit.infos) == 0:
+                if len(self.gen_edit) == 1 and self.gen_edit[0].empty():
                     cat = 'TN' if fr_neg else 'FN'
                 else:
                     cat = 'FP' if fr_neg else 'TP'
@@ -93,7 +94,8 @@ class TestResult(object):
         if nsug == 0:
             opgrind_err = 'No Hits'
         else:
-            opgrind_err = repr(self.suggestions[0])
+            opgrind_err = ', '.join(repr(sug) for sug in self.suggestions)
+            # opgrind_err = repr(self.suggestions[0])
 
         if self.framework_error is None:
             framework_error_str = 'Success'
@@ -146,7 +148,6 @@ class TestResult(object):
                 pass
             else:
                 assert False, 'exception outside tf should not be possible'
-                print('exception outside of tensorflow')
                 traceback.print_stack()
                 raise e
         self.add_result()
