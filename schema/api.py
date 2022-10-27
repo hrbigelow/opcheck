@@ -1,6 +1,6 @@
 import traceback
 import inspect
-import sys
+import sys, io, os
 import re
 import tensorflow as tf
 import numpy as np
@@ -11,6 +11,7 @@ from . import generators as ge
 from . import base
 from . import fgraph
 from . import flib
+from .redirect import stderr_redirector
 from .error import *
 from .fgraph import PredNode as P, GenNode as G, FuncNode as F
 from .base import GenMode, ShapeKind, GenKind
@@ -46,6 +47,7 @@ class SchemaApi(object):
         self.generation_mode = None
 
         self.avail_edits = 0
+        self.max_yield_count = 1000
         # self.errors = []
 
         # TODO: enable setting this
@@ -124,7 +126,7 @@ class SchemaApi(object):
         def wrapped_op(*args, **kwargs):
             # executes during 'framework call phase'
             try:
-                self.input_errors = self._check_args(*args, **kwargs)
+                self.input_error = self._check_args(*args, **kwargs)
             except BaseException as ex:
                 raise OpGrindInternalError(ex)
             try:
@@ -137,8 +139,8 @@ class SchemaApi(object):
                 self.framework_error = None
                 self._check_return(ret_val)
             finally:
-                if not (self._opgrind_passed() and self._framework_passed()):
-                    self._report()
+                msg = self._report()
+                print(msg, file=sys.stderr)
                 if isinstance(self.framework_error, FrameworkError):
                     raise self.framework_error.ex
                 return ret_val
@@ -149,7 +151,11 @@ class SchemaApi(object):
     def _check_args(self, *args, **kwargs):
         """
         The main function to check all input arguments for all constraints
-        registered on the schema
+        registered on the schema.
+        Return            Meaning
+        None              success
+        pr.ErrorReport    local error
+        base.Fix list     more complex errors
         """
         input_errors = []
         bind = self.func_sig.bind(*args, **kwargs)
@@ -159,10 +165,11 @@ class SchemaApi(object):
         self.framework_error = None
         for dist in range(self.max_search_dist+1):
             self.avail_edits = dist
+            # returns the value of the first failing predicate node, or
+            # none if all succeed
             ret = fgraph.pred_graph_evaluate(*self.predicate_nodes)
-            if ret is None:
-                input_errors.append(EditSuggestion())
-                break
+            if isinstance(ret, (type(None), pr.ErrorReport)):
+                return ret
             else:
                 input_errors.extend(ret)
         return input_errors
@@ -514,66 +521,17 @@ class SchemaApi(object):
         msg = '\n'.join(main)
         return msg
 
-    def _opgrind_passed(self):
-        return len(self.input_errors) == 1 and self.input_errors[0].empty()
-
-    def _framework_passed(self):
-        return self.framework_error is None
-
-    def _passed(self):
-        return (len(self.input_errors) == 1 and 
-                self.input_errors[0].empty() and
-                self.framework_error is None)
-
-    def _shape_header(self, shape_arg):
-        # translate a plain argument name  
-        try:
-            name, idx = shape_arg.split('.')
-        except:
-            name, idx = shape_arg, None
-
-        if name not in self.arg_order:
-            raise RuntimeError(
-                f'{type(self).__qualname__}: name \'{name}\' not a named '
-                f'parameter.')
-        cls = type(self.arg_gen_nodes[name].func)
-        if cls == ge.DataTensor:
-            sfx = 'shape'
-        elif cls == ge.ShapeTensor:
-            sfx = 'numpy()'
-        elif cls == ge.ShapeTensor2D:
-            if idx is not None:
-                name = f'{name}[{idx},:]'
-            sfx = 'numpy()'
-        else:
-            sfx = ''
-        return name if sfx == '' else f'{name}.{sfx}'
-
-    def _call_string(self, arg_dict):
-        """
-        Summarize the call arguments
-        """
-        reps = {}
-        for name, arg_val in arg_dict.items():
-            hdr = self._shape_header(name)
-            cls = type(self.arg_gen_nodes[name].func)
-            if cls == ge.TensorShape:
-                val = arg_val.shape.as_list()
-            elif cls == ge.ShapeTensor:
-                val = arg_val.numpy().tolist()
-            elif cls == ge.ShapeTensor2D:
-                val = arg_val.numpy().tolist()
-            else:
-                val = arg_val
-            reps[name] = f'{hdr}={repr(val)}'
-        call_string = ', '.join(reps[n] for n in self.arg_order if n in reps) 
-        return call_string
-
     def _report(self):
-        pass
-        # print(repr(self.input_errors), file=sys.stderr)
-        # msg = self.input_errors.message(self)
-        # print(msg, file=sys.stderr)
+        if self.input_error is None:
+            msg = ''
+        elif isinstance(self.input_error, list):
+            msg = '\n\n'.join(fix.report() for fix in self.input_error) 
+        elif isinstance(self.input_error, pr.ErrorReport):
+            msg = self.input_error.report()
+        else:
+            raise RuntimeError(
+                f'Unknown type of input error: {type(self.input_error)}')
+        return msg
 
     def _get_arg(self, arg_name):
         """Retrieve the value of {arg_name} argument at call-time."""
@@ -618,7 +576,7 @@ class SchemaApi(object):
         layout_gobj = ge.Layout(self, base.LAYOUT)
         layout = G.add_node(layout_gobj)
         ranks = G.add_node(ge.IndexRanks())
-        impl_obj = ge.DTypesFilter(self)
+        impl_obj = ge.DTypesNotImpl(self)
         self.dtypes_filt = G.add_node(impl_obj, ranks, layout, self.obs_dtypes)
         sigs = G.add_node(ge.SigMap())
 
@@ -698,41 +656,85 @@ class SchemaApi(object):
         for op_args in fgraph.gen_graph_values(live_nodes, out_nodes):
             yield op_args[0] # extract tuple element
 
-    def _validate(self):
+    def _validate(self, out_dir):
+        if not os.path.exists(out_dir):
+            raise RuntimeError(
+                f'{type(self).__qualname__}: Could not open output path '
+                f'\'{out_dir}\' for report generation')
+
+        stats_fh = open(os.path.join(out_dir, f'{self.op_path}.stats.txt'), 'w')
+        report_fh = open(os.path.join(out_dir, f'{self.op_path}.txt'), 'w')
+
         cats = [ 'TP', 'TN', 'FP', 'FN', 'FAIL' ]
         stats = { k: 0 for k in cats }
-        for op_args in self._generate_args():
+        op_args_list = list(self._generate_args())
+        print(f'Generated {len(op_args_list)} test cases')
+        for test_num, op_args in enumerate(op_args_list, 1):
             arg_dict = { k: v.value() for k, v in op_args.items() }
-            self.wrapped_op(**arg_dict)
-            fr_passed = self._framework_passed()
-            if self._opgrind_passed():
-                if fr_passed:
-                    stats['TN'] += 1
-                else:
-                    stats['FN'] += 1
-                continue
+            string_err = io.BytesIO()
+            try:
+                with stderr_redirector(string_err):
+                    self.wrapped_op(**arg_dict)
+            except OpGrindInternalError as ex:
+                print(string_err.getvalue().decode('UTF-8'))
+                raise ex
+            except BaseException as ex:
+                pass
 
-            # establish validity of the checks
-            checks = self.input_errors
-
-            # validate this set of checks
             failed_checks = 0
-            for fix in checks:
-                fixed_args = fix.apply(op_args)
-                fixed_arg_dict = {k: v.value() for k, v in fixed_args.items()}
-                self.wrapped_op(**fixed_arg_dict)
-                if not (self._opgrind_passed() and self._framework_passed()):
-                    failed_checks += 1
-            if failed_checks > 0:
-                stats['FAIL'] += 1
-            else:
-                if fr_passed:
-                    stats['FP'] += 1
-                else:
-                    stats['TP'] += 1
-            print('\r', end='')
-            print('  '.join(f'{c}: {stats[cat]:-5d}' for c in cats), end='')
 
+            if self.input_error is None:
+                if self.framework_error is None:
+                    cat = 'TN'
+                else:
+                    cat = 'FN'
+
+            elif isinstance(self.input_error, list):
+                fixes = list(self.input_error)
+
+                for fix in fixes:
+                    fixed_args = fix.apply(op_args)
+                    fixed_arg_dict = {k: v.value() for k, v in fixed_args.items()}
+                    string_err = io.BytesIO()
+                    try:
+                        with stderr_redirector(string_err):
+                            self.wrapped_op(**fixed_arg_dict)
+                    except OpGrindInternalError as ex:
+                        print(string_err.getvalue().decode('UTF-8'))
+                        raise ex
+                    except BaseException as ex:
+                        pass
+
+                    if isinstance(self.input_error, pr.ErrorReport):
+                        failed_checks += 1
+                    elif isinstance(self.input_error, list):
+                        if len(self.input_error) != 1:
+                            failed_checks += 1
+                        elif not self.input_error[0].all_manual(): 
+                            failed_checks += 1
+                    else:
+                        pass
+            else:
+                pass
+
+            if failed_checks > 0:
+                cat = 'FAIL'
+            else:
+                if self.framework_error is None:
+                    cat = 'FP'
+                else:
+                    cat = 'TP'
+            stats[cat] += 1
+            progress = '  '.join(f'{c}: {stats[c]:-5d}' for c in cats)
+            print(f'\rTest: {test_num:-5d}  {progress}', end='')
+            call = f'{test_num}\t{cat}\t{op_args}'
+            print(call, file=stats_fh)
+            print(call, file=report_fh)
+            print(self._report(), file=report_fh)
+
+        print()
+        stats_fh.close()
+        report_fh.close()
 
     # ============ PUBLIC API ====================
     def add_index(self, idx, description, constraint=None):
@@ -1101,7 +1103,7 @@ class SchemaApi(object):
         # edges: ge.SigMap -> ge.Sig, [newnode] -> ge.RankStatusArgShape 
         # arg_shapes = self._gen_node(ge.ArgShapes)
         arg_shapes = self._gen_node(ge.ArgMutations)
-        dtypes = self._gen_node(ge.DTypesFilter)
+        dtypes = self._gen_node(ge.DTypesNotImpl)
         if isinstance(arg_gobj, ge.DataTensor):
             arg_node = G.add_node(arg_gobj, arg_shapes, dtypes)
         else:

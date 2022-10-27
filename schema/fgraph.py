@@ -64,6 +64,7 @@ class FuncNode(object):
         self.use_subname = use_subname
         self.func = func
         self.parents = []
+        self.use_parent_subname = []
         self.children = []
         self.cached_val = None
         self.num_named_pars = num_named_pars
@@ -71,7 +72,7 @@ class FuncNode(object):
 
     def __repr__(self):
         return (f'{type(self).__name__}({self.used_name()})'
-                f'[pa: {",".join(p.used_name() for p,_ in self.parents)}]')
+                f'[pa: {",".join(p.used_name() for p in self.parents)}]')
 
     def used_name(self):
         return self.sub_name if self.use_subname else self.name
@@ -206,7 +207,8 @@ class FuncNode(object):
 
     def _add_child(self, node, pass_subname):
         self.children.append(node)
-        node.parents.append((self, pass_subname))
+        node.parents.append(self)
+        node.use_parent_subname.append(pass_subname)
 
     def add_child(self, node):
         self._add_child(node, False)
@@ -215,7 +217,8 @@ class FuncNode(object):
         self._add_child(node, True)
 
     def _append_parent(self, node, pass_subname):
-        self.parents.append((node, pass_subname))
+        self.parents.append(node)
+        self.use_parent_subname.append(pass_subname)
         node.children.append(self)
 
     def append_parent(self, node):
@@ -233,7 +236,7 @@ class FuncNode(object):
         self._append_parent(node, True)
 
     def _maybe_append_parent(self, node, pass_subname):
-        pa = next((n for n,sn in self.parents if n.name == node.name), None)
+        pa = next((n for n in self.parents if n.name == node.name), None)
         if pa is not None:
             return
         self._append_parent(node, pass_subname)
@@ -259,8 +262,8 @@ class FuncNode(object):
         """
         Evaluate the current node based on cached values of the parents
         """
-        all_args = [(n.sub_name if sn else n.name, n.get_cached()) for n,sn in
-                self.parents]
+        z = zip(self.parents, self.use_parent_subname)
+        all_args = [(n.sub_name if s else n.name, n.get_cached()) for n,s in z]
         pos_args = [v for n,v in all_args[:self.num_named_pars]]
         if self.vararg_type == VarArgs.Positional:
             args = tuple(v for n,v in all_args[self.num_named_pars:])
@@ -270,7 +273,7 @@ class FuncNode(object):
             for pos in range(self.num_named_pars, len(all_args)):
                 name, val = all_args[pos]
                 if name is None:
-                    pa,_ = self.parents[pos]
+                    pa = self.parents[pos]
                     raise SchemaError(
                         f'{self.__class__.__name__} \'{self.name}\' has '
                         f'arguments but parent {pos+1} '
@@ -378,7 +381,7 @@ class PredNode(FuncNode):
         """
         if not all(pp.evaluate() for pp in self.pred_parents):
             return False
-        if not all(p.evaluate() for p,_ in self.parents):
+        if not all(p.evaluate() for p in self.parents):
             return False
         success, value = self.value()
         self.set_cached(value)
@@ -393,7 +396,7 @@ def get_ancestors(*nodes):
         if n.name in found:
             return
         found.add(n)
-        for pa,_ in n.parents:
+        for pa in n.parents:
             dfs(pa)
     for node in nodes:
         dfs(node)

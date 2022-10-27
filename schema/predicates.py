@@ -6,7 +6,7 @@ from .error import *
 from . import util, base, fgraph
 from .fgraph import NodeFunc, node_name, gen_graph_values
 from .flib import Index
-from .base import GenMode, ErrorInfo, EditSuggestion, GenKind
+from .base import GenMode, ErrorInfo, GenKind
 
 """
 A collection of fgraph.NodeFunc derived classes for use in fgraph.PredNodes.
@@ -22,7 +22,26 @@ The failure value for each of these NodeFuncs should be a list of suggestions
 in cost-increasing order.  An empty list signifies that the predicate could not
 find any suggestions which would fix the framework op inputs.
 """
-class DataTensor(NodeFunc):
+
+class ErrorReport(object):
+    def __init__(self, func, *info):
+        self.func = func
+        self.info = info
+
+    def report(self):
+        return self.func.user_msg(*self.info)
+
+class ReportNodeFunc(NodeFunc):
+    """
+    Same role as ge.ReportNodeFunc, this allows reporting errors
+    """
+    def user_msg(self, *info):
+        """
+        A message describing the constraint(s) defined
+        """
+        raise NotImplementedError
+
+class DataTensor(ReportNodeFunc):
     """
     Represent a tensor with data (as opposed to shape-based meta-data)
     """
@@ -31,31 +50,44 @@ class DataTensor(NodeFunc):
         self.arg_name = arg_name
         self.gen_node = gen_node
 
+    def user_msg(self, received_val):
+        msg =  f'Tensor argument \'{self.arg_name}\' must be a tensor. '
+        msg += f'Received {received_val}'
+        return msg
+
     def __call__(self, op):
         ten = op._get_arg(self.arg_name)
         if not isinstance(ten, tf.Tensor):
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
+            return False, ErrorReport(self, ten)
         else:
             return True, ten
 
-class GetReturnTensor(NodeFunc):
+class GetReturnTensor(ReportNodeFunc):
     def __init__(self, ret_name):
         super().__init__(ret_name)
         self.ret_name = ret_name
+
+    def user_msg(self, received_val):
+        msg =  f'{self.ret_name} expected to be a tensor.  Received '
+        msg += f'{received_val}'
+        return msg
 
     def __call__(self, op):
         ten = op._get_return(self.ret_name)
         if not isinstance(ten, tf.Tensor):
-            sug = EditSuggestion(ErrorInfo(self, (), 1))
-            return False, [sug]
+            return False, ErrorReport(self, ten)
         else:
             return True, ten
 
-class ValidReturnShape(NodeFunc):
+class ValidReturnShape(ReportNodeFunc):
     def __init__(self, ret_name):
         super().__init__(ret_name)
         self.ret_name = ret_name
+
+    def user_msg(self, act_shape, pred_shape):
+        msg =  f'Return tensor was expected to have shape {pred_shape} but '
+        msg += f'was {act_shape}'
+        return msg
 
     def __call__(self, tensor, shapes):
         actual_shape = tensor.shape.as_list()
@@ -63,8 +95,7 @@ class ValidReturnShape(NodeFunc):
         if actual_shape == predicted_shape:
             return True, None
         else:
-            sug = EditSuggestion(ErrorInfo(self, (), 1))
-            return False, [sug]
+            return False, ErrorReport(self, actual_shape, predicted_shape)
 
 class TensorDType(NodeFunc):
     def __init__(self, name):
@@ -80,7 +111,7 @@ class TensorShape(NodeFunc):
     def __call__(self, tensor):
         return True, tensor.shape.as_list()
 
-class ShapeList(NodeFunc):
+class ShapeList(ReportNodeFunc):
     """
     Interpret the contents as a shape.
     """
@@ -90,17 +121,20 @@ class ShapeList(NodeFunc):
         self.gen_node = gen_node
         self.broadcast_mode = broadcast_mode
 
+    def user_msg(self, received_val):
+        msg =  f'Argument \'{self.arg_name}\' must be a list of non-negative '
+        msg += f'integers.  Received \'{val}\' instead.'
+        return msg
+
     def __call__(self, op):
         shape = op._get_arg(self.arg_name)
+        err = ErrorReport(self, shape)
         if not isinstance(shape, list):
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
+            return False, err
         if not all(isinstance(v, int) for v in shape):
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
+            return False, err
         if not all(v >= 0 for v in shape):
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
+            return False, err
         else:
             # In broadcast mode, return an integer rather than integer list.
             # see base.shape_rank
@@ -108,7 +142,7 @@ class ShapeList(NodeFunc):
                 shape = shape[0]
             return True, shape
         
-class ShapeInt(NodeFunc):
+class ShapeInt(ReportNodeFunc):
     """
     Interpret the integer as a shape.
     """
@@ -117,18 +151,19 @@ class ShapeInt(NodeFunc):
         self.arg_name = arg_name
         self.gen_node = gen_node
 
+    def user_msg(self, received_val):
+        msg =  f'Argument \'{self.arg_name}\' expected to be a non-negative '
+        msg += f'integer.  Received \'{received_val}\' instead.'
+        return msg
+
     def __call__(self, op):
         i = op._get_arg(self.arg_name)
-        if not isinstance(i, int):
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
-        if i < 0:
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
+        if not isinstance(i, int) or i < 0:
+            return False, ErrorReport(self, i)
         else:
             return True, [i]
 
-class ShapeTensorFunc(NodeFunc):
+class ShapeTensorFunc(ReportNodeFunc):
     """
     Interpret the tensor contents as a shape.
     Additionally, perform the checks defined by {pred_func}.
@@ -141,20 +176,30 @@ class ShapeTensorFunc(NodeFunc):
         self.gen_node = gen_node
         self.func = pred_func 
 
+    def user_msg(self, received_val):
+        msg =  f'Argument \'{self.arg_name}\' expected to be an int32 tensor '
+        msg += f'with non-negative elements. '
+        if not isinstance(received_val, tf.Tensor):
+            msg += 'Received a {type(received_val)} instead.'
+        elif received_val.dtype != tf.int32:
+            msg += 'Received dtype = {received_val.dtype.name}.'
+        else:
+            nums = ten.numpy().tolist()
+            if any(n < 0 for n in nums):
+                msg += 'One or more elements were less than zero.'
+        return msg
+
     def __call__(self, op, *shapes):
         ten = op._get_arg(self.arg_name)
-        if not isinstance(ten, tf.Tensor):
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
-        if ten.dtype != tf.int32:
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
-        nums = ten.numpy().tolist()
-        if any(n < 0 for n in nums):
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
+        err = ErrorReport(self, ten)
+        if not isinstance(ten, tf.Tensor) or ten.dtype != tf.int32:
+            return False, err 
         else:
-            return self.func(nums, *shapes)
+            nums = ten.numpy().tolist()
+            if any(n < 0 for n in nums):
+                return False, err 
+            else:
+                return self.func(nums, *shapes)
 
 class ShapeTensor(ShapeTensorFunc):
     """
@@ -164,7 +209,7 @@ class ShapeTensor(ShapeTensorFunc):
         pred_func = lambda shape: (True, shape)
         super().__init__(arg_name, gen_node, pred_func)
 
-class ShapeTensor2D(NodeFunc):
+class ShapeTensor2D(ReportNodeFunc):
     """
     Validate a 2D shape tensor, and return its contents as a tuple of integer
     lists.
@@ -175,23 +220,45 @@ class ShapeTensor2D(NodeFunc):
         self.gen_node = gen_node
         self.num_slices = num_slices
 
+    def user_msg(self, ten):
+        msg =  f'Argument \'{self.arg_name}\' must be a rank 2 integer tensor '
+        msg += f'with shape[1] == {self.num_slices} and all non-negative '
+        msg += 'elements. '
+        if not isinstance(ten, tf.Tensor):
+            msg += f'Got type \'{type(ten)}\'. '
+        elif not ten.dtype.is_integer:
+            msg += f'Tensor dtype was \'{ten.dtype.name}\'. '
+        elif ten.shape.rank != 2:
+            msg += f'Tensor rank was \'{ten.shape.rank}\'. '
+        elif ten.shape[1] != self.num_slices:
+            msg += f'Tensor shape[1] was \'{ten.shape[1]}\'. '
+        else:
+            rows = ten.numpy()
+            for row in rows:
+                if any(el < 0 for el in row):
+                    msg += f'One or more elements were negative.'
+        return msg
+
     def __call__(self, op):
         ten = op._get_arg(self.arg_name) 
-        if not ten.dtype.is_integer:
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
+        err = ErrorReport(self, ten)
+        if not instance(ten, tf.Tensor):
+            return False, err
+        elif not ten.dtype.is_integer:
+            return False, err
         elif ten.shape.rank != 2:
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
+            return False, err
         elif ten.shape[1] != self.num_slices:
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
-        vals = tf.transpose(ten).numpy()
-        tup = tuple(vals.tolist())
-        return True, tup
+            return False, err
+        else:
+            vals = tf.transpose(ten).numpy()
+            for row in vals:
+                if any(el < 0 for el in row):
+                    return False, err
+            tup = tuple(vals.tolist())
+            return True, tup
 
-# TODO: add gen_node
-class SliceShape(NodeFunc):
+class SliceShape(ReportNodeFunc):
     """
     Get a slice from a tuple of shapes.
     """
@@ -202,9 +269,6 @@ class SliceShape(NodeFunc):
 
     def __call__(self, shape_tup):
         vals = shape_tup[self.index]
-        if any(v < 0 for v in vals):
-            sug = EditSuggestion(ErrorInfo(self, (), 1))
-            return False, [sug]
         return True, vals 
 
 class DTypes(NodeFunc):
@@ -410,12 +474,18 @@ class TemplateFunc(NodeFunc):
         ctexts.append(computation_text)
         return True, (ftexts, ctexts, indices)
 
-class DataFormat(NodeFunc):
+class DataFormat(ReportNodeFunc):
     def __init__(self, formats, gen_node, arg_name):
         super().__init__(arg_name)
         self.formats = formats
         self.arg_name = arg_name
         self.gen_node = gen_node
+
+    def user_msg(self, received_val):
+        msg =  f'Argument \'{self.arg_name}\' was expected to be one of '
+        msg += f'{", ".join(self.formats.all_formats())}. '
+        msg += f'Received \'{received_val}\''
+        return msg
 
     def __call__(self, op):
         if self.arg_name is None:
@@ -426,10 +496,9 @@ class DataFormat(NodeFunc):
         if valid:
             return True, data_format
         else:
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
+            return False, ErrorReport(self, data_format)
 
-class ArgInt(NodeFunc):
+class ArgInt(ReportNodeFunc):
     def __init__(self, arg_name, lo, hi):
         super().__init__(f'{arg_name}[{lo}-{hi}]')
         self.arg_name = arg_name
@@ -442,14 +511,19 @@ class ArgInt(NodeFunc):
         else:
             self.hi = hi
 
+    def user_msg(self, received_val):
+        msg =  f'Argument \'{self.arg_name}\' was expected to be an integer '
+        msg += f'in the range [{self.lo}, {self.hi}]. '
+        msg += f'Received \'{received_val}\''
+        return msg
+
     def __call__(self, op):
         arg_val = op._get_arg(self.arg_name) 
+        err = ErrorReport(self, arg_val)
         if not isinstance(arg_val, int):
-            sug = EditSuggestion(ErrorInfo(self, (), 1))
-            return False, [sug]
+            return False, err
         elif arg_val not in range(self.lo, self.hi + 1):
-            sug = EditSuggestion(ErrorInfo(self, (), 1))
-            return False, [sug]
+            return False, err
         else:
             return True, arg_val
 
@@ -464,7 +538,7 @@ class Sig(NodeFunc):
     def __call__(self, layout):
         return True, self.sig_list[layout]
 
-class Options(NodeFunc):
+class Options(ReportNodeFunc):
     def __init__(self, arg_name, gen_node, options):
         super().__init__(arg_name)
         self.arg_name = arg_name
@@ -477,13 +551,18 @@ class Options(NodeFunc):
                 f'iterable.  Got {type(options)}')
         self.options = options
 
+    def user_msg(self, received_val):
+        msg =  f'Argument \'{self.arg_name}\' must be one of '
+        msg += f'{", ".join(self.options)}. '
+        msg += f'Received \'{received_val}\'.'
+        return msg
+
     def __call__(self, op):
         arg_val = op._get_arg(self.arg_name)
         if arg_val in self.options:
             return True, arg_val
         else:
-            sug = EditSuggestion(ErrorInfo(self.gen_node, (), 1))
-            return False, [sug]
+            return False, ErrorReport(self, arg_val)
 
 class ArgMap(NodeFunc):
     def __init__(self):

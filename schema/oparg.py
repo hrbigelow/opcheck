@@ -34,6 +34,32 @@ class OpArg(object):
         """
         raise NotImplementedError
 
+
+class OpArgReport(object):
+    """
+    For generator functions that yield OpArg instances during Test mode, they
+    yield instances of OpArgReport in Inference mode.
+    """
+    def __init__(self, func, arg_name):
+        self.func = func
+        self.arg_name = arg_name
+
+    def report(self):
+        """
+        Produce one or more columns in the summary table.  The rows will be:
+        - submitted values
+        - interpretation
+        - highlight
+        """
+        raise NotImplementedError
+
+    def oparg(self):
+        """
+        Construct a corrected OpArg instance
+        """
+        raise NotImplementedError
+
+
 class DataTensorArg(OpArg):
     """
     An OpArg produced by ge.DataTensor 
@@ -94,6 +120,29 @@ class DataTensorArg(OpArg):
         if action == EditType.InsertDim:
             pass
 
+class DataTensorReport(OpArgReport):
+    def __init__(self, func, arg_name, shape_edit, dtype_edit): 
+        super().__init__(func, arg_name)
+        self.shape_edit = shape_edit
+        self.dtype_edit = dtype_edit
+
+    def report(self):
+        headers = [ f'{self.arg_name}.shape', f'{self.arg_name}.dtype' ]
+        left = self.shape_edit.report()
+        left.insert(0, headers[0])
+
+        if self.dtype_edit is not None:
+            highlight = '^' * len(self.obs_dtype.name)
+        else:
+            highlight = ''
+        right = [headers[1], self.dtype_edit.obs_dtype, '', highlight]
+        return left, right 
+
+    def oparg(self):
+        oparg = self.func.edit(self.shape_edit, self.dtype_edit)
+        return oparg
+
+
 class ShapeTensorArg(OpArg):
     """
     An OpArg produced by ge.ShapeTensor
@@ -107,6 +156,43 @@ class ShapeTensorArg(OpArg):
     
     def __repr__(self):
         return f'ShTen({self.shape})'
+
+class ShapeTensorReport(OpArgReport):
+    """
+    """
+    def __init__(self, func, arg_name, obs_shape, imp_index_dims, sig, *edits):
+        super().__init__(func, arg_name)
+        self.obs_shape = obs_shape
+        self.imp_index_dims = imp_index_dims
+        self.sig = sig
+        self.indel_edit = None
+        self.mutate_edit = None
+        indel_types = (base.InsertEdit, base.DeleteEdit)
+        for e in edits:
+            if isinstance(e, indel_types):
+                self.indel_edit = e
+            elif isinstance(e, base.MutateEdit):
+                self.mutate_edit = e
+            else:
+                raise RuntimeError(
+                    f'{type(self).__qualname__}: can only use Insert, Delete, '
+                    f'Mutate, or DType edits.  Got {type(e)}')
+
+    def report(self):
+        left = shape_columns(self.obs_shape, self.imp_index_dims, self.sig,
+                self.indel_edit, self.mutate_edit)
+        left.insert(0, f'{self.arg_name}.shape')
+
+        pass
+
+    def oparg(self):
+        shape = self.obs_shape
+        if self.indel_edit is not None:
+            shape = self.indel_edit(shape, self.imp_index_dims)
+        if self.mutate_edit is not None:
+            shape = self.mutate_edit(shape) 
+        return ShapeTensorArg(shape)
+
 
 class ShapeListArg(OpArg):
     """

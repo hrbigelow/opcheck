@@ -4,7 +4,7 @@ import traceback
 from schema import SchemaApi
 from schema.error import OpGrindInternalError, FrameworkError, Success
 from schema.error import NotApplicable
-from schema import fgraph, runner
+from schema import fgraph
 from pprint import pprint
 
 REGISTRY = {}
@@ -105,8 +105,7 @@ def validate(op_path, out_dir, test_ids=None, skip_ids=None):
     appropriately, and does not flag errors where none exist.
     """
     op = _get_from_path(op_path)
-    # runner.validate(op, out_dir, test_ids, skip_ids)
-    op._validate()
+    op._validate(out_dir)
 
 def explain(op_path):
     """
@@ -135,7 +134,7 @@ def _dot_graph(op, nodes, out_file):
         color = 'red' if is_arg else 'black'
         dot.node(names[node.name], node.name, color=color)
         vtype = node.vararg_type
-        for i, (pa,sn) in enumerate(node.parents):
+        for i, (pa,sn) in enumerate(zip(node.parents, node.use_parent_subname)):
             if i < node.num_named_pars:
                 color = 'black'
             elif vtype == fgraph.VarArgs.Positional:

@@ -3,6 +3,7 @@ import numpy as np
 import itertools
 import enum
 import re
+from copy import copy
 from collections import namedtuple, defaultdict
 from .error import * 
 from .fgraph import FuncNode as F, NodeFunc
@@ -43,19 +44,36 @@ class Fix(object):
                 )
         return msg
 
+    def empty(self):
+        return len(self.edit_map) == 0
+
+    def all_manual(self):
+        return all(isinstance(e, UserEdit) for elist in self.edit_map.values()
+                for e in elist)
+
     def distance(self):
-        return sum(e.dist() for e in self.edit_map.values())
+        return sum(e.dist() for elist in self.edit_map.values() for e in elist)
+
+    def user_edit(self):
+        """
+        Cannot provide any automated edits to fix the input.
+        """
+        for edits in self.edit_map.values():
+            if any(isinstance(e, UserEdit) for e in edits):
+                return True
+        return False
 
     def apply(self, op_args):
-        fixed_op_args = {}
-        for arg, op_arg in op_args.items():
+        # create a new op_args by applying all edits
+        fixed_op_args = {k: copy(v) for k, v in op_args.items()}
+        for arg, op_arg in fixed_op_args.items():
             edits = self.edit_map.get(arg, [])
             for edit in edits:
                 op_arg = edit.apply(op_arg, self.imp_index_dims, self.sigs)
             fixed_op_args[arg] = op_arg
         return fixed_op_args
 
-    def report(self, op_args):
+    def report(self):
         """
         Generate a human-readable report for this fix.  Consists of two
         sections:
@@ -178,6 +196,85 @@ class ArgsEdit(object):
         """
         raise NotImplementedError
 
+
+class ShapeEdit(object):
+    def __init__(self, obs_shape, sig, index_ranks):
+        self.cost = 0
+        self.obs_shape = obs_shape
+        self.templ = [idx for _ in range(index_ranks[idx]) for idx in sig]
+        self.ranks = ranks 
+        self.insert = None
+        self.delete = None
+        self.mutate = None
+
+    def add_insert(self, func, cost, *args):
+        self.cost += cost
+        self.insert = (func, args)
+
+    def add_delete(self, func, cost, *args):
+        self.cost += cost
+        self.delete = (func, args)
+
+    def add_point_mut(self, func, idx_muts):
+        # idx_muts: idx => (comp => dim)
+        shape_muts = {}
+        for idx, muts in idx_muts.items():
+            off = self.templ.index(idx)
+            for comp, dim in muts.items():
+                shape_muts[off + comp] = dim
+        self.mutate = (func, (shape_muts,))
+        self.cost += len(shape_muts)
+
+    def idx_dims(self):
+        shape = self.apply()
+        for idx, dim in zip(self.templ, shape):
+            if idx not in dims:
+                dims[idx] = []
+            dims[idx].append(dim)
+        return dims
+
+    def apply(self):
+        # produce the original shape with edits applied
+        shape = self.obs_shape
+        if self.insert is not None:
+            func, args = self.insert
+            shape = func.edit(shape, *args)
+        if self.delete is not None:
+            func, args = self.delete
+            shape = func.edit(shape, *args)
+        if self.mutate is not None:
+            func, args = self.mutate
+            shape = func.edit(shape, *args)
+        return shape
+
+    def report(self):
+        """
+        Render a tabulated human readable report illustrating this edit
+        """
+        shape_row = [str(dim) for dim in self.obs_shape]
+        highl_row = [False] * len(shape_row)
+        templ_row = list(self.templ)
+        if self.mutate is not None:
+            _, changes = self.mutate
+            for ind in changes.keys():
+                highl_row[ind] = True 
+        if self.delete is not None:
+            _, (beg, end) = self.delete
+            templ_row[beg:beg] = [''] * (end - beg)
+        if self.insert is not None:
+            _, (ibeg, iend) = self.insert
+            shape_row[ibeg:ibeg] = [''] * (iend - ibeg)
+            highl_row[ibeg:ibeg] = [True] * (iend - ibeg)
+    
+        for ind, (shp, tem) in enumerate(zip(shape_row, templ_row)):
+            if highl_row[ind]:
+                highl_row[ind] = '^' * max(len(shp), len(tem))
+            else:
+                highl_row[ind] = ''
+
+        rows, _ = tabulate([shape_row, templ_row, highl_row], ' ', True)
+        return rows
+
 class InsertEdit(ArgsEdit):
     def __init__(self, func, shape_pos, idx, idx_beg, idx_end):
         """
@@ -190,10 +287,10 @@ class InsertEdit(ArgsEdit):
         self.idx_beg = idx_beg
         self.idx_end = idx_end
 
-    def apply(self, op_arg, imp_index_dims, sigs):
+    def apply(self, shape, imp_index_dims):
         info = (Indel.Insert, self.shape_pos, self.idx, self.idx_beg,
                 self.idx_end)
-        return self.func.edit(op_arg, imp_index_dims, *info)
+        return self.func.edit(shape, imp_index_dims, *info)
         
     def highlight(self):
         # range in the coordinate system of the index template
@@ -209,9 +306,9 @@ class DeleteEdit(ArgsEdit):
         self.beg = shape_beg
         self.end = shape_end
 
-    def apply(self, op_arg, imp_index_dims, sigs):
+    def apply(self, obs_shape, imp_index_dims):
         info = (Indel.Delete, self.beg, self.end)
-        return self.func.edit(op_arg, imp_index_dims, *info)
+        return self.func.edit(obs_shape, imp_index_dims, *info)
 
     def highlight(self):
         # given in the shape coordinate system
@@ -225,17 +322,25 @@ class MutateEdit(ArgsEdit):
         super().__init__(func, 1)
         self.changes = mutation_map
 
-    def apply(self, op_arg, imp_index_dims, sigs):
-        return self.func.edit(op_arg, self.changes)
+    def apply(self, shape):
+        return self.func.edit(shape, self.changes)
 
     def highlight(self):
         # these are pre-indel shape-based coordinates
         return list(self.changes.keys())
 
-class DTypesFiltered(ArgsEdit):
+class DataTensorEdit(ArgsEdit):
+    def __init__(self, func, imp_index_dims, *edits):
+        self.imp_index_dims = imp_index_dims
+        self.edits = edits
+
+    def apply(self, op_arg):
+        return self.func.edit(op_arg, self.imp_index_dims, *self.edits)
+
+class NotImplEdit(ArgsEdit):
     """
-    Represents an edit due to the dtype combination being filtered.  This is
-    not a true edit.  It is only used to provide a highlight
+    Represents and edit responding to the input combination not being
+    implemented by the framework.
     """
     def __init__(self, func):
         super().__init__(func, 1)
@@ -257,7 +362,7 @@ class DTypesEdit(ArgsEdit):
 
 class ValueEdit(ArgsEdit):
     """
-    An edit to a ValueArg
+    An edit to a ValueArg or
     """
     def __init__(self, func, arg_name, imputed_val):
         super().__init__(func, 1)
@@ -265,8 +370,23 @@ class ValueEdit(ArgsEdit):
         self.val = imputed_val
 
     def apply(self, op_arg, _, __):
-        return self.func.edit(op_arg)
+        return self.func.edit(op_arg, self.val)
     
+    def highlight(self):
+        return self.arg_name
+
+class UserEdit(ArgsEdit):
+    """
+    Represents a situation that cannot provide an edit to fix the error.
+    If this occurs, Fix does not attempt to validate  
+    """
+    def __init__(self, func, arg_name):
+        super().__init__(func, 1)
+        self.arg_name = arg_name
+
+    def apply(self, op_arg, _, __):
+        return op_arg
+
     def highlight(self):
         return self.arg_name
 
