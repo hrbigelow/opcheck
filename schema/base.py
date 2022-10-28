@@ -14,26 +14,27 @@ from . import util
 LAYOUT = ':layout'
 DEFAULT_FORMAT = ':default'
 
-class GenMode(enum.Enum):
-    Test = 0
-    Inference = 1
+ALL_DTYPES = (
+        tf.int8, tf.int16, tf.int32, tf.int64,
+        tf.uint8, tf.uint16, tf.uint32, tf.uint64,
+        tf.float16, tf.float32, tf.float64,
+        tf.qint8, tf.qint16, tf.qint32,
+        tf.bfloat16, 
+        tf.bool,
+        tf.complex64, tf.complex128
+        )
 
-class GenKind(enum.Enum):
-    InferLive = 0
-    InferShow = 1
-    TestLive = 2
-    TestShow = 3
+class UserEdit(BaseException):
+    pass
 
 class Fix(object):
     """
     Encapsulate one set of edits, together with the imputed settings context.
     {edit_map} is arg => edit.  Each edit is an instance of ArgEdit 
     """
-    def __init__(self, imp_index_dims, sigs, edit_map, dtypes_filt):
-        self.imp_index_dims = imp_index_dims
-        self.sigs = sigs
-        self.edit_map = edit_map # arg => [edit, edit, ...]
-        self.dtypes_filt = dtypes_filt
+    def __init__(self, report_pairs, not_impl):
+        self.reports = report_pairs
+        self.not_impl = not_impl
 
     def __repr__(self):
         msg = (
@@ -44,34 +45,18 @@ class Fix(object):
                 )
         return msg
 
-    def empty(self):
-        return len(self.edit_map) == 0
+    def cost(self):
+        return sum(rep.cost() for _, rep in self.reports)
 
-    def all_manual(self):
-        return all(isinstance(e, UserEdit) for elist in self.edit_map.values()
-                for e in elist)
-
-    def distance(self):
-        return sum(e.dist() for elist in self.edit_map.values() for e in elist)
-
-    def user_edit(self):
-        """
-        Cannot provide any automated edits to fix the input.
-        """
-        for edits in self.edit_map.values():
-            if any(isinstance(e, UserEdit) for e in edits):
-                return True
-        return False
-
-    def apply(self, op_args):
-        # create a new op_args by applying all edits
-        fixed_op_args = {k: copy(v) for k, v in op_args.items()}
-        for arg, op_arg in fixed_op_args.items():
-            edits = self.edit_map.get(arg, [])
-            for edit in edits:
-                op_arg = edit.apply(op_arg, self.imp_index_dims, self.sigs)
-            fixed_op_args[arg] = op_arg
-        return fixed_op_args
+    def apply(self):
+        try:
+            fixed_args = {}
+            for arg, report in self.reports:
+                fixed_args[arg] = report.oparg()
+            # need to check self.not_impl
+            return fixed_args
+        except UserEdit:
+            return None
 
     def report(self):
         """
@@ -86,103 +71,31 @@ class Fix(object):
         Bottom section is a list of instructions to the user what to change to
         correct the input.
         """
-        def maybe_get(edits, kind):
-            return next((e for e in edits if isinstance(e, kind)), None)
+        main_cols = []
+        for arg, report in self.reports:
+            cols = report.report()
+            main_cols.extend(cols)
 
-        # find which args' dtypes are highlighted
-        dtypes_hl = set(self.dtypes_filt.highlight())
-        values_hl = set()
-        for arg, edit in self.edit_map.items():
-            if isinstance(edit, DTypesEdit):
-                dtypes_hl.add(edit.highlight())
-            elif isinstance(edit, ValueEdit):
-                values_hl.add(edit.highlight())
-
-        columns = {} # hdr => column
-        headers = [] # hdr order
-
-        shape_types = (DataTensorArg, ShapeTensorArg, ShapeListArg)
-        for arg, op_arg in op_args.items():
-            edits = self.edit_map.get(arg, [])
-            sig = self.sigs[arg]
-
-            if isinstance(op_arg, shape_types):
-                shape = list(op_arg.shape)
-                highl = [''] * len(shape)
-                templ = [idx for _ in self.imp_index_dims[idx] for idx in sig]
-
-                mut_edit = maybe_get(edits, MutateEdit)
-                if mut_edit is not None:
-                    mut_inds = mut_edit.highlight()
-                    for ind in mut_inds:
-                        highl[ind] = '^' * len(str(shape[ind]))
-
-                ins_edit = maybe_get(edits, InsertEdit)
-                if ins_edit is not None:
-                    beg = ins_edit.shape_pos
-                    sz = ins_edit.idx_end - ins_edit.idx_beg
-                    shape[beg:beg] = [None] * sz
-                    highl[beg:beg] = ['^^'] * sz
-
-                del_edit = maybe_get(edits, DeleteEdit)
-                if del_edit is not None:
-                    beg = del_edit.beg
-                    sz = del_edit.end - del_edit.beg
-                    templ[beg:beg] = [None] * sz
-                    highl[beg:beg] = ['^^'] * sz
-
-                rows = [ shape, templ, highl ]
-                cols = np.array(rows).transpose().tolist()
-                table, _ = tabulate(cols, ' ', True)
-
-                hdr = f'{arg}.shape'
-                columns[hdr] = table
-                headers.append(hdr)
-                
-                if isinstance(op_arg, DataTensorArg):
-                    dtype = op_arg.dtype.name
-                    templ = ''
-                    highl = '^' * len(dtype) if dtype in dtypes_hl else ''
-                    hdr = f'{arg}.dtype'
-                    columns[hdr] = [ dtype, templ, highl ]
-                    headers.append(hdr)
-
-            elif isinstance(op_arg, ValueArg):
-                val = op_arg.value()
-                edit = maybe_get(edits, ValueEdit)
-                imput = '' if edit is None else str(edit.val)
-                highl = ('^' * max(len(val), len(imput)) if arg in values_hl
-                        else '')
-                columns[arg] = [ val, imput, highl ]
-                headers.append(arg)
-
-            elif isinstance(op_arg, ShapeTensor2DArg):
-                raise NotImplementedError
-
-            elif isinstance(op_arg, ShapeIntArg):
-                raise NotImplementedError
-
-        main_cols = [ columns[hdr] for hdr in headers ]
         main_table, _ = tabulate(main_cols, '  ', False)
-        return '\n'.join(row for row in main_table)
+        table = '\n'.join(row for row in main_table)
 
+        # TODO: these messages will be each user_msg() from the edits
+        msgs = ''
+        return table
 
 class ArgsEdit(object):
     """
     Represent an edit applied to a valid op_args
     """
-    def __init__(self, func, dist):
-        self.func = func
-        self._dist = dist
+    def __init__(self, orig_value):
+        self.orig_value = orig_value
 
-    def dist(self):
-        return self._dist
+    def cost(self):
+        return self._cost
 
-    def apply(self, op_arg, imp_index_dims, sigs):
+    def apply(self):
         """
-        Call enclosed func.edit using appropriate arguments.  Returns the
-        edited op_arg.  After applying all edits, the resulting op_args map
-        should be valid framework op input.
+        Runs all edits on the original value, which is enclosed
         """
         raise NotImplementedError
 
@@ -196,23 +109,33 @@ class ArgsEdit(object):
         """
         raise NotImplementedError
 
-
-class ShapeEdit(object):
+class ShapeEdit(ArgsEdit):
     def __init__(self, obs_shape, sig, index_ranks):
-        self.cost = 0
-        self.obs_shape = obs_shape
-        self.templ = [idx for _ in range(index_ranks[idx]) for idx in sig]
-        self.ranks = ranks 
+        super().__init__(obs_shape)
+        self._cost = 0
+        self.templ = [idx for idx in sig for _ in range(index_ranks[idx])]
         self.insert = None
         self.delete = None
         self.mutate = None
 
+    def __repr__(self):
+        edits = []
+        if self.insert is not None:
+            edits.append('Ins')
+        if self.delete is not None:
+            edits.append('Del')
+        if self.mutate is not None:
+            edits.append('Mut')
+        desc = ','.join(edits)
+        r = f'{type(self).__name__}({self.orig_value})({desc})'
+        return r
+
     def add_insert(self, func, cost, *args):
-        self.cost += cost
+        self._cost += cost
         self.insert = (func, args)
 
     def add_delete(self, func, cost, *args):
-        self.cost += cost
+        self._cost += cost
         self.delete = (func, args)
 
     def add_point_mut(self, func, idx_muts):
@@ -223,10 +146,11 @@ class ShapeEdit(object):
             for comp, dim in muts.items():
                 shape_muts[off + comp] = dim
         self.mutate = (func, (shape_muts,))
-        self.cost += len(shape_muts)
+        self._cost += len(shape_muts)
 
     def idx_dims(self):
         shape = self.apply()
+        dims = {}
         for idx, dim in zip(self.templ, shape):
             if idx not in dims:
                 dims[idx] = []
@@ -235,7 +159,7 @@ class ShapeEdit(object):
 
     def apply(self):
         # produce the original shape with edits applied
-        shape = self.obs_shape
+        shape = self.orig_value
         if self.insert is not None:
             func, args = self.insert
             shape = func.edit(shape, *args)
@@ -249,9 +173,10 @@ class ShapeEdit(object):
 
     def report(self):
         """
-        Render a tabulated human readable report illustrating this edit
+        Render a tabulated human readable report illustrating this edit with
+        rows:  original shape, index template, highlight
         """
-        shape_row = [str(dim) for dim in self.obs_shape]
+        shape_row = [str(dim) for dim in self.orig_value]
         highl_row = [False] * len(shape_row)
         templ_row = list(self.templ)
         if self.mutate is not None:
@@ -275,60 +200,6 @@ class ShapeEdit(object):
         rows, _ = tabulate([shape_row, templ_row, highl_row], ' ', True)
         return rows
 
-class InsertEdit(ArgsEdit):
-    def __init__(self, func, shape_pos, idx, idx_beg, idx_end):
-        """
-        Represents an insertion into a shape at position shape_pos, of {idx}
-        dims [idx_beg:idx_end]
-        """
-        super().__init__(func, 1)
-        self.shape_pos = shape_pos
-        self.idx = idx
-        self.idx_beg = idx_beg
-        self.idx_end = idx_end
-
-    def apply(self, shape, imp_index_dims):
-        info = (Indel.Insert, self.shape_pos, self.idx, self.idx_beg,
-                self.idx_end)
-        return self.func.edit(shape, imp_index_dims, *info)
-        
-    def highlight(self):
-        # range in the coordinate system of the index template
-        return (self.shape_pos, self.shape_pos + (self.idx_end - self.idx_beg))
-
-class DeleteEdit(ArgsEdit):
-    """
-    Represents deleting a given sub-range [shape_beg, shape_end) of an argument
-    shape.
-    """
-    def __init__(self, func, shape_beg, shape_end):
-        super().__init__(func, 1)
-        self.beg = shape_beg
-        self.end = shape_end
-
-    def apply(self, obs_shape, imp_index_dims):
-        info = (Indel.Delete, self.beg, self.end)
-        return self.func.edit(obs_shape, imp_index_dims, *info)
-
-    def highlight(self):
-        # given in the shape coordinate system
-        return (self.beg, self.end)
-
-class MutateEdit(ArgsEdit):
-    """
-    Represents changing a set of dimensions of a shape to specified values.
-    """
-    def __init__(self, func, mutation_map):
-        super().__init__(func, 1)
-        self.changes = mutation_map
-
-    def apply(self, shape):
-        return self.func.edit(shape, self.changes)
-
-    def highlight(self):
-        # these are pre-indel shape-based coordinates
-        return list(self.changes.keys())
-
 class DataTensorEdit(ArgsEdit):
     def __init__(self, func, imp_index_dims, *edits):
         self.imp_index_dims = imp_index_dims
@@ -342,105 +213,48 @@ class NotImplEdit(ArgsEdit):
     Represents and edit responding to the input combination not being
     implemented by the framework.
     """
-    def __init__(self, func):
-        super().__init__(func, 1)
+    def __init__(self, func, cost):
+        super().__init__(func)
+        self._cost = cost
 
-    def highlight(self):
-        # may be refined later
-        return self.func.exc.data_tensors
 
 class DTypesEdit(ArgsEdit):
     """
     The edit object yielded by DTypesIndiv and DTypesEquiv
     """
-    def __init__(self, func, arg_name):
-        super().__init__(func, 1)
-        self.arg_name = arg_name
+    def __init__(self, obs_dtype, cost):
+        super().__init__(obs_dtype)
+        self._cost = cost 
 
     def highlight(self):
         return self.arg_name
+
+    def apply(self):
+        raise UserEdit
+
+    def report(self):
+        if self._cost == 0:
+            highlight = ''
+        else:
+            highlight = '^' * len(self.orig_value.name)
+        rows = [ self.orig_value.name, '', highlight ]
+        return rows
 
 class ValueEdit(ArgsEdit):
     """
     An edit to a ValueArg or
     """
-    def __init__(self, func, arg_name, imputed_val):
-        super().__init__(func, 1)
+    def __init__(self, arg_name, obs_value, target_val):
+        super().__init__(obs_value)
         self.arg_name = arg_name
-        self.val = imputed_val
+        self.target_val = target_val
+        self._cost = 0 if obs_value == target_val else 1
 
-    def apply(self, op_arg, _, __):
-        return self.func.edit(op_arg, self.val)
+    def apply(self):
+        pass
     
-    def highlight(self):
-        return self.arg_name
-
-class UserEdit(ArgsEdit):
-    """
-    Represents a situation that cannot provide an edit to fix the error.
-    If this occurs, Fix does not attempt to validate  
-    """
-    def __init__(self, func, arg_name):
-        super().__init__(func, 1)
-        self.arg_name = arg_name
-
-    def apply(self, op_arg, _, __):
-        return op_arg
-
-    def highlight(self):
-        return self.arg_name
-
-class ErrorInfo(object):
-    def __init__(self, obj, args, dist):
-        self.obj = obj
-        self.args = args
-        self.dist = dist
-
-    def __hash__(self):
-        return hash((id(self.obj), self.args, self.dist))
-
-    def __eq__(self, other):
-        return (
-                isinstance(other, type(self)) and
-                self.obj == other.obj and
-                self.args == other.args and
-                self.dist == other.dist)
-
-    def __repr__(self):
-        return f'{self.obj.__class__.__name__}{self.args}{{{self.dist}}}'
-
-    def msg(self):
-        return f'{self.obj.__class__.__name__}({self.dist})'
-
-class EditSuggestion(object):
-    def __init__(self, *error_infos):
-        self.infos = tuple(error_infos)
-
-    def __repr__(self):
-        phr = [ repr(i) for i in self.infos ]
-        rep = ' + '.join(phr)
-        msg = f'{self.__class__.__name__}({rep})'
-        return msg
-
-    def msg(self):
-        if self.empty():
-            return 'Success'
-        else:
-            return '+'.join(ei.msg() for ei in self.infos)
-
-    def __hash__(self):
-        return hash(hash(ei) for ei in self.infos)
-
-    def __eq__(self, other):
-        return (isinstance(other, type(self)) and
-                self.infos == other.infos)
-
-    def empty(self):
-        return len(self.infos) == 0
-
-    def dist(self):
-        return sum(ei.dist for ei in self.infos)
-
+    def report(self):
+        pass
 
 class ShapeKind(enum.Enum):
     """

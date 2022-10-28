@@ -12,37 +12,23 @@ from random import randint, choice, sample
 from functools import partial
 from collections import defaultdict
 from .fgraph import FuncNode as F, func_graph_evaluate, NodeFunc
-from .base import GenMode, ErrorInfo, GenKind
+from .base import ALL_DTYPES
 from .oparg import *
 from .error import *
 from . import oparg, util, base, fgraph
 
 """
 The generation graph (gen_graph) is constructed using NodeFuncs in this file.
-Each node in the graph is run in Test or Inference mode, as controlled by
-op.generation_mode.
+Its job is to generate test examples for the op.  Will generate a set of
+examples within a certain maximum edit distance of a valid example.  While all
+nodes in the gen_graph produce the full set of valid values for their inputs,
+certain nodes generate additional values which violate a schema constraint.
+While yielding these invalid values, the node deducts from op.avail_test_edits.
+and then resets it after the yield.
 
-GenMode.Test: produces arg sets that are within a threshold of edit distance
-set by op.avail_edits, from correct arg sets.
-
-GenMode.Inference: produce a set of configurations which satisfy all schema
-constraints, and come within op.max_edit_dist edit distance of satisfying all
-'observed' quantities.  The observed quantities are supplied by the node type
-ObservedValue. 
-
-GenMode.Inference will be run starting with 0, 1, etc setting for
-op.max_edit_dist.  If exactly one configuration is found with zero edit
-distance from the observations, it means the operation succeeded.  Otherwise,
-the graph produces a set of suggestions for inputs.  Each suggested edit will
-fix the problem, but may require more than one 'edit'.
-
-In Inference mode, the yielded values are either suggested fixes, or None, if
-there is nothing to fix.  The fix can either be a specific instruction on how
-to fix the input, or a symbolic entity.  The set of fixes is used to generate
-instructions to the user.
-
-In Generation mode, the yielded values are used to construct op arguments.
-
+At the beginning of example generation, op.avail_test_edits is set by the user.
+and determines the maximum edit distance that an emitted example can be from a
+valid example.
 """
 def get_max_dimsize(target_nelem, arg_ranks):
     ranks = dict(arg_ranks)
@@ -131,22 +117,6 @@ def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, **comp):
         # check_sizes(arg_sigs, index_dims, op.target_nelem * 10)
         return index_dims
 
-ALL_DTYPES = (
-        tf.int8, tf.int16, tf.int32, tf.int64,
-        tf.uint8, tf.uint16, tf.uint32, tf.uint64,
-        tf.float16, tf.float32, tf.float64,
-        tf.qint8, tf.qint16, tf.qint32,
-        tf.bfloat16, 
-        tf.bool,
-        tf.complex64, tf.complex128
-        )
-
-class Symbolic(enum.Enum):
-    ValidDType = 0
-    InvalidDType = 1
-    ValidIndexDims = 2
-    ValidArgShapes = 3
-
 class Unused:
     pass
 
@@ -154,20 +124,13 @@ class Indel(enum.Enum):
     Insert = 0
     Delete = 1
 
-
-ALL_KINDS = (GenKind.InferLive, GenKind.InferShow, GenKind.TestLive,
-        GenKind.TestShow)
-LIVE_KINDS = (GenKind.InferLive, GenKind.TestLive)
-TEST_KINDS = (GenKind.TestLive, GenKind.TestShow)
-
-
 class GenFunc(NodeFunc):
     """
     A NodeFunc outfitted with 'kinds' to signal which of four roles it plays
     """
-    def __init__(self, kinds, name):
+    def __init__(self, op, name=None):
         super().__init__(name)
-        self.kinds = kinds
+        self.op = op
 
     @contextmanager
     def max_yield(self, max_val):
@@ -178,9 +141,20 @@ class GenFunc(NodeFunc):
         finally:
             self.op.max_yield_count = old_val
 
+    @contextmanager
+    def reserve_edit(self, dist):
+        doit = (dist <= self.op.avail_test_edits)
+        if doit:
+            self.op.avail_test_edits -= dist
+        try:
+            yield doit
+        finally:
+            if doit:
+                self.op.avail_test_edits += dist
+
 class Layout(GenFunc):
     def __init__(self, op, name):
-        super().__init__(op, LIVE_KINDS, name)
+        super().__init__(op, name)
 
     def __call__(self):
         num_layouts = self.op.data_formats.num_layouts()
@@ -195,7 +169,7 @@ class Sig(GenFunc):
     available layouts. 
     """
     def __init__(self, op, name, options):
-        super().__init__(op, LIVE_KINDS, name)
+        super().__init__(op, name)
         self.options = options
 
     def __call__(self, layout):
@@ -206,7 +180,7 @@ class SigMap(GenFunc):
     Aggregate all of the :sig nodes into a map of arg_name => sig
     """
     def __init__(self):
-        super().__init__(LIVE_KINDS, None)
+        super().__init__(None)
 
     def __call__(self, **kwargs):
         sig_map = kwargs
@@ -236,7 +210,7 @@ class RankRange(GenFunc):
                 break
             yield rank
 
-class EquivRange(GenFunc):
+class RankEquiv(GenFunc):
     """
     Produce a range identical to the primary index
     """
@@ -246,13 +220,13 @@ class EquivRange(GenFunc):
     def __call__(self, rank):
         yield rank
 
-class IndexRanks(GenFunc):
+class IndexRanks(NodeFunc):
     """
     Gather ranks together index ranks into one map
-    Parents:  RankRange and EquivRange nodes
+    Parents:  RankRange and RankEquiv nodes
     """
     def __init__(self):
-        super().__init__(None)
+        super().__init__()
 
     def __call__(self, **ranks):
         yield ranks
@@ -275,7 +249,6 @@ class ArgRanks(GenFunc):
 class ArgIndels(GenFunc):
     """
     In Test mode:
-    In Inference mode: arg => InsertEdit or DeleteEdit
     """
     def __init__(self, op):
         super().__init__(op)
@@ -302,7 +275,6 @@ class ArgIndels(GenFunc):
 class ArgMutations(GenFunc):
     """
     Test: arg => shape  (shapes are mutated or not)
-    Inference: index_dims, arg => MutateEdit
     """
     def __init__(self, op):
         super().__init__(op)
@@ -324,8 +296,7 @@ class ArgMutations(GenFunc):
                     arg_ranks[arg] -= size
         # compute max_dimsize from arg_ranks
         max_dimsize = get_max_dimsize(self.op.target_nelem, arg_ranks)
-        index_dims = compute_dims(self.op, arg_ranks, index_ranks, sigs,
-                **comp)
+        index_dims = compute_dims(self.op, arg_ranks, index_ranks, sigs, **comp)
 
         num_yielded = 0
         arg_shapes = {}
@@ -372,12 +343,12 @@ class DataFormat(GenFunc):
     Inference: yields None or ValueEdit
     """
     def __init__(self, op, formats, arg_name, rank_idx):
-        super().__init__(op, LIVE_KINDS, arg_name)
+        super().__init__(op, arg_name)
         self.formats = formats
         self.arg_name = arg_name
         self.rank_idx = rank_idx
 
-    def __call__(self, ranks, layout, obs_args):
+    def __call__(self, ranks, layout):
         inferred_fmt = self.formats.data_format(layout, ranks)
         num_yielded = 0
         rank = ranks[self.rank_idx]
@@ -454,70 +425,6 @@ class MutatedArgRanks(GenFunc):
         if indel is not None:
             mut_ranks[indel.arg] += indel.delta
         yield mut_ranks
-
-class IndexDims(GenFunc):
-    """
-    Generate dims for indexes of ranks defined by index_ranks.  
-    close to a target value.
-    Parents: MutatedArgRanks, Ranks, Sigs
-    """
-    def __init__(self, op):
-        super().__init__(op)
-
-    def __call__(self, mut_arg_ranks, index_ranks, sigs, obs_shapes, **comp):
-
-        if self.op.generation_mode == GenMode.Test:
-            dims = self.compute_dims(mut_arg_ranks, index_ranks, sigs, **comp)
-            yield dims
-
-        elif self.op.generation_mode == GenMode.Inference:
-            # If ranks don't all match, we won't use this suggestion anyway
-            for arg, shape in obs_shapes.items():
-                if isinstance(shape, int):
-                    continue
-                if len(shape) != mut_arg_ranks[arg]:
-                    yield Symbolic.ValidIndexDims
-                    return
-
-            # usage_dims[idx][arg] = dims
-            usage_dims = get_usage_dims(index_ranks, obs_shapes, sigs)
-            error_inds = []
-            for idx, use in usage_dims.items():
-                used_dims = { tuple(d) for d in use.values() }
-                if len(used_dims) > 1:
-                    error_inds.append(idx)
-
-            dist = len(error_inds)
-            if dist == 0:
-                index_dims = { idx: next(iter(use.values())) for idx, use in
-                        usage_dims.items() }
-                yield index_dims
-            else:
-                args = tuple(error_inds)
-                with self.new_error(self, args, dist) as avail:
-                    if avail:
-                        yield Symbolic.ValidIndexDims
-        else:
-            raise RuntimeError(f'generation mode not set')
-
-class IndexUsage(GenFunc):
-    """
-    Computes Index usage - needed for determining where index usages can be
-    mutated non-synonymously.
-    Parents: Sigs
-    """
-    def __init__(self, op):
-        super().__init__(op)
-
-    def __call__(self, sigs):
-        idx_usage = defaultdict(list)
-        indexes = { idx for sig in sigs.values() for idx in sig }
-        for arg, sig in sigs.items():
-            for idx in sig:
-                if idx not in indexes:
-                    continue
-                idx_usage[idx].append(arg) 
-        yield dict(idx_usage)
 
 class ArgShapes(GenFunc):
     """
@@ -624,7 +531,7 @@ class DTypeIndiv(GenFunc):
     Inference:  yields None or a DTypesEdit
     """
     def __init__(self, op, arg_name, valid_dtypes):
-        super().__init__(op, LIVE_KINDS, arg_name)
+        super().__init__(op, arg_name)
         self.arg_name = arg_name
         self.valid_dtypes = valid_dtypes
         self.invalid_dtypes = tuple(t for t in ALL_DTYPES if t not in
@@ -641,7 +548,8 @@ class DTypeIndiv(GenFunc):
             if avail:
                 if num_yielded == self.op.max_yield_count:
                     return 
-                yield Symbolic.InvalidDType
+                y = choice(self.invalid_dtypes)
+                yield y
                 num_yielded += 1
 
 class DTypeEquiv(GenFunc):
@@ -650,7 +558,7 @@ class DTypeEquiv(GenFunc):
     Inference: yields None or a DTypesEdit
     """
     def __init__(self, op, arg_name, src_arg_name):
-        super().__init__(op, LIVE_KINDS, arg_name)
+        super().__init__(op, arg_name)
         self.arg_name = arg_name
         self.src_arg_name = src_arg_name
         self.all_dtypes = ALL_DTYPES
@@ -667,6 +575,7 @@ class DTypeEquiv(GenFunc):
                         yield dtype
                         num_yielded += 1
             if num_yielded == self.op.max_yield_count:
+                break
 
 class DTypesNotImpl(GenFunc):
     """
@@ -675,7 +584,7 @@ class DTypesNotImpl(GenFunc):
     Inference: yields None or DTypesNotImpl
     """
     def __init__(self, op):
-        super().__init__(op, LIVE_KINDS)
+        super().__init__(op)
         self.exc = self.op.excluded_combos
 
     def __call__(self, ranks, layout, **dtypes):
@@ -685,27 +594,6 @@ class DTypesNotImpl(GenFunc):
         with self.reserve_edit(edit) as avail:
             if avail:
                 yield dtypes
-
-class Rank(GenFunc):
-    """
-    Generate the rank of a given signature
-    """
-    def __init__(self, op, sig):
-        super().__init__(op, sig)
-        self.sig = sig
-
-    def __call__(self, ranks_map):
-        rank = sum(ranks_map[s] for s in self.sig)
-        yield rank
-
-def make_usage_dims(index_dims, arg_sigs):
-    usage_dims = {}
-    for idx, dims in index_dims.items():
-        usage_dims[idx] = {}
-        for arg, sig in arg_sigs.items():
-            if idx in sig:
-                usage_dims[idx][arg] = list(dims)
-    return usage_dims
 
 # produces usage_dims[idx][arg] = dims
 def get_usage_dims(index_ranks, arg_shapes, arg_sigs):
@@ -736,21 +624,6 @@ def check_sizes(arg_sigs, index_dims, max_nelem):
             f'Generated shape for argument \'{arg}\' was {shape} with '
             f'{nelem} elements, exceeding the maximum allowed {max_nelem}')
 
-class TupleElement(NodeFunc):
-    """
-    Expect a tuple and return a particular element
-    """
-    def __init__(self, index):
-        super().__init__()
-        self.index = index
-
-    def __call__(self, tup):
-        yield tup[self.index]
-
-class GetArgShapes(TupleElement):
-    def __init__(self):
-        super().__init__(1)
-
 class DataTensor(GenFunc):
     """
     Produce the (shape, dtype) combo needed to produce a tensor
@@ -772,8 +645,7 @@ class ShapeInt(GenFunc):
     empty list if the shape is inconsistent with a non-broadcasted integer.
     """
     def __init__(self, arg_name):
-        kinds = (GenKind.TestLive,)
-        super().__init__(kinds, arg_name)
+        super().__init__(arg_name)
         self.arg_name = arg_name
 
     def __call__(self, arg_shapes):
@@ -789,12 +661,8 @@ class ShapeList(GenFunc):
     Generate the current shape of the input signature
     """
     def __init__(self, op, arg_name):
-        kinds = (GenKind.TestLive,)
-        super().__init__(op, kinds, arg_name)
+        super().__init__(op, arg_name)
         self.arg_name = arg_name
-
-    def edit(self, *edits):
-        pass
 
     def __call__(self, arg_shapes):
         if not isinstance(arg_shapes, dict):
@@ -804,32 +672,18 @@ class ShapeList(GenFunc):
         yield arg
 
 
-class ShapeReport(ReportNodeFunc):
-    pass
-
-class ShapeTensor(ReportNodeFunc):
+class ShapeTensor(GenFunc):
     """
     Generate the current shape of the input signature as a tensor
     """
     def __init__(self, op, arg_name):
-        kinds = (GenKind.TestLive,)
-        super().__init__(op, kinds, arg_name)
+        super().__init__(op, arg_name)
         self.arg_name = arg_name
 
     def __call__(self, arg_muts, arg_indels, sigs, obs_shapes):
-        if self.op.generation_mode == GenMode.Test:
-            shape = arg_shapes[self.arg_name]
-            arg = oparg.ShapeTensorArg(shape)
-            yield arg
-
-        elif self.op.generation_mode == GenMode.Inference:
-            obs_shape = obs_shapes[self.arg_name]
-            imp_index_dims, mutations = arg_muts
-            mutate_edit = arg_muts.get(self.arg_name, None)
-            indel_edit = arg_indels.get(self.arg_name, None)
-            rep = oparg.ShapeTensorReport(self, self.arg_name, obs_shape,
-                    imp_index_dims, sig, mutate_edit, indel_edit)
-            yield rep
+        shape = arg_shapes[self.arg_name]
+        arg = oparg.ShapeTensorArg(shape)
+        yield arg
 
 class ShapeTensor2D(GenFunc):
     """
@@ -838,8 +692,7 @@ class ShapeTensor2D(GenFunc):
     no output if shape is non-rectangular.
     """
     def __init__(self, arg_name, num_rows):
-        kinds = (GenKind.TestLive,)
-        super().__init__(kinds, arg_name)
+        super().__init__(arg_name)
         self.arg_name = arg_name
         self.num_rows = num_rows
 
@@ -852,11 +705,9 @@ class ShapeTensor2D(GenFunc):
         arg = oparg.ShapeTensor2DArg(rows)
         yield arg
 
-
 class Int(GenFunc):
     def __init__(self, lo, hi):
-        kinds = (GenKind.TestLive,)
-        super().__init__(kinds, f'{lo}-{hi}')
+        super().__init__(f'{lo}-{hi}')
         if lo is None:
             self.lo = -sys.maxsize - 1
         else:
@@ -869,7 +720,7 @@ class Int(GenFunc):
     def __call__(self):
         return [randint(self.lo, self.hi)]
 
-class Options(ReportNodeFunc):
+class Options(GenFunc):
     """
     Represent a specific set of options known at construction time
     """
@@ -884,7 +735,7 @@ class Options(ReportNodeFunc):
                 f'iterable.  Got {type(options)}')
         self.options = options
 
-    def __call__(self, obs_args):
+    def __call__(self):
         for val in self.options:
             yield oparg.ValueArg(val)
         with self.reserve_edit(1) as avail:

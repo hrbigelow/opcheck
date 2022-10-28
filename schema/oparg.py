@@ -44,6 +44,12 @@ class OpArgReport(object):
         self.func = func
         self.arg_name = arg_name
 
+    def cost(self):
+        """
+        Returns the total cost of all enclosed edits
+        """
+        raise NotImplementedError
+
     def report(self):
         """
         Produce one or more columns in the summary table.  The rows will be:
@@ -121,10 +127,13 @@ class DataTensorArg(OpArg):
             pass
 
 class DataTensorReport(OpArgReport):
-    def __init__(self, func, arg_name, shape_edit, dtype_edit): 
-        super().__init__(func, arg_name)
+    def __init__(self, func, shape_edit, dtype_edit): 
+        super().__init__(func, func.arg_name)
         self.shape_edit = shape_edit
         self.dtype_edit = dtype_edit
+
+    def cost(self):
+        return self.shape_edit.cost() + self.dtype_edit.cost()
 
     def report(self):
         headers = [ f'{self.arg_name}.shape', f'{self.arg_name}.dtype' ]
@@ -158,41 +167,22 @@ class ShapeTensorArg(OpArg):
         return f'ShTen({self.shape})'
 
 class ShapeTensorReport(OpArgReport):
-    """
-    """
-    def __init__(self, func, arg_name, obs_shape, imp_index_dims, sig, *edits):
+    def __init__(self, func, arg_name, shape_edit): 
         super().__init__(func, arg_name)
-        self.obs_shape = obs_shape
-        self.imp_index_dims = imp_index_dims
-        self.sig = sig
-        self.indel_edit = None
-        self.mutate_edit = None
-        indel_types = (base.InsertEdit, base.DeleteEdit)
-        for e in edits:
-            if isinstance(e, indel_types):
-                self.indel_edit = e
-            elif isinstance(e, base.MutateEdit):
-                self.mutate_edit = e
-            else:
-                raise RuntimeError(
-                    f'{type(self).__qualname__}: can only use Insert, Delete, '
-                    f'Mutate, or DType edits.  Got {type(e)}')
+        self.shape_edit = shape_edit
+
+    def cost(self):
+        return self.shape_edit.cost()
 
     def report(self):
-        left = shape_columns(self.obs_shape, self.imp_index_dims, self.sig,
-                self.indel_edit, self.mutate_edit)
-        left.insert(0, f'{self.arg_name}.shape')
-
-        pass
+        header = f'{self.arg_name}'
+        rep = self.shape_edit.report()
+        rep.insert(0, header)
+        return rep 
 
     def oparg(self):
-        shape = self.obs_shape
-        if self.indel_edit is not None:
-            shape = self.indel_edit(shape, self.imp_index_dims)
-        if self.mutate_edit is not None:
-            shape = self.mutate_edit(shape) 
-        return ShapeTensorArg(shape)
-
+        oparg = self.func.edit(self.shape_edit)
+        return oparg
 
 class ShapeListArg(OpArg):
     """
@@ -207,6 +197,24 @@ class ShapeListArg(OpArg):
 
     def value(self):
         return self.shape
+
+class ShapeListReport(OpArgReport):
+    def __init__(self, func, shape_edit): 
+        super().__init__(func, func.arg_name)
+        self.shape_edit = shape_edit
+
+    def cost(self):
+        return self.shape_edit.cost()
+
+    def report(self):
+        header = f'{self.arg_name}'
+        rep = self.shape_edit.report()
+        rep.insert(0, header)
+        return rep 
+
+    def oparg(self):
+        oparg = self.func.edit(self.shape_edit)
+        return oparg
 
 class ShapeTensor2DArg(OpArg):
     """

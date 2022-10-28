@@ -6,7 +6,6 @@ from .error import *
 from . import util, base, fgraph
 from .fgraph import NodeFunc, node_name, gen_graph_values
 from .flib import Index
-from .base import GenMode, ErrorInfo, GenKind
 
 """
 A collection of fgraph.NodeFunc derived classes for use in fgraph.PredNodes.
@@ -330,13 +329,13 @@ class Inventory(NodeFunc):
         """
         Assume that self.op.avail_edits is set appropriately.
         """
-        self.op._prep_gen_inference(dtypes, shapes, args)
+        self.op._prep_inference(dtypes, shapes, args)
         fixes = []
 
-        nodes = self.op.gen_graph.values()
-        live_nodes = [n for n in nodes if GenKind.InferLive in n.func.kinds]
-        out_nodes = [n for n in nodes if GenKind.InferShow in n.func.kinds]
-        for fix in gen_graph_values(live_nodes, out_nodes):
+        all_nodes = set(self.op.inf_graph.values())
+        exc_nodes = (self.op.obs_shapes, self.op.obs_dtypes, self.op.obs_args)
+        live_nodes = all_nodes.difference(exc_nodes)
+        for fix in gen_graph_values(live_nodes, (self.op.args_inode,)):
             fixes.append(fix[0]) 
 
         if self.op.avail_edits == 0:
@@ -349,7 +348,7 @@ class Inventory(NodeFunc):
             else:
                 return False, fixes
         else:
-            sorted_fixes = sorted(fixes, key=lambda f: f.distance())
+            sorted_fixes = sorted(fixes, key=lambda f: f.cost())
             return False, sorted_fixes
 
 def calc_sig_range(rank_map, idx, sig):

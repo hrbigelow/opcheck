@@ -148,28 +148,26 @@ def _dot_graph(op, nodes, out_file):
     print(f'Wrote {out_file}.pdf')
 
 def print_pred_graph(op_path, out_dir):
-    """
-    Print a pdf of {op_path} predicate graph, used for validating inputs to
-    the op.
-    """
     op = REGISTRY[op_path]
     nodes = op.pred_graph.values()
-    _dot_graph(op, nodes, f'{out_dir}/{op_path}.pred')
+    fname = f'{out_dir}/{op_path}.pred'
+    _dot_graph(op, nodes, fname)
 
 def print_gen_graph(op_path, out_dir):
-    """
-    Print a pdf of {op_path} inventory graph, used for displaying the valid
-    inventory (signatures, data format, dtypes) combinations
-    """
     op = REGISTRY[op_path]
     nodes = op.gen_graph.values()
-    _dot_graph(op, nodes, f'{out_dir}/{op_path}.gen')
+    fname = f'{out_dir}/{op_path}.gen'
+    _dot_graph(op, nodes, fname)
+
+def print_inf_graph(op_path, out_dir):
+    op = REGISTRY[op_path]
+    nodes = op.inf_graph.values()
+    fname = f'{out_dir}/{op_path}.inf'
+    _dot_graph(op, nodes, fname)
 
 def print_comp_dims_graph(op_path, out_dir):
-    """
-    Print a pdf of {op_path} index dimension computation graph.
-    """
     op = REGISTRY[op_path]
     nodes = op.dims_graph.nodes.values()
-    _dot_graph(op, nodes, f'{out_dir}/{op_path}.comp_dims')
+    fname = f'{out_dir}/{op_path}.comp_dims'
+    _dot_graph(op, nodes, fname)
 

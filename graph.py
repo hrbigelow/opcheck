@@ -18,6 +18,7 @@ if __name__ == '__main__':
         op_path = sys.argv[2]
         opgrind.register(op_path)
         opgrind.print_gen_graph(op_path, out_dir)
+        opgrind.print_inf_graph(op_path, out_dir)
         opgrind.print_pred_graph(op_path, out_dir)
         opgrind.print_comp_dims_graph(op_path, out_dir)
 

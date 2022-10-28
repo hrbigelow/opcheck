@@ -1,32 +1,15 @@
+import itertools
+from copy import copy
+from contextlib import contextmanager
+from .fgraph import NodeFunc
+from .base import ALL_DTYPES
+from . import base
+from . import oparg
+
 """
-RankRange(idx):
-inputs:  ObservedValue(shapes), Sigmap, RankRange, EquivRange
-outputs: integer (rank for idx)
-
-EquivRange(idx):
-inputs:  integer (rank of parent index)
-outputs: same rank
-
-IndexRanks:
-inputs:  all RankRange and EquivRange nodes
-outputs: idx => rank map
-
-ArgIndels:
-inputs:  SigMap, IndexRanks, ObservedValue(shapes)
-outputs: arg => InsertEdit or DeleteEdit 
-
-ArgMutations:
-inputs:  SigMap, IndexRanks, ObservedValue(shapes), ArgIndels, Options
-outputs: tuple of (idx => dims, arg => MutateEdit)
-
-DataTensor:
-inputs:  ArgMutations, ArgIndels, DTypesFilter, SigMap, 
-         ObservedValue(shapes), ObservedValue(dtypes)
-outputs: DataTensorReport
-
-ShapeList:
-inputs:  
-
+The inference graph (inf_graph) is constructed using nodes in this file.  Its
+job is to ingest the arguments provided by the op, which are delivered via the
+ObservedValue nodes.
 
 """
 
@@ -71,6 +54,16 @@ class ObservedValue(NodeFunc):
 
     def __call__(self):
         return [{}]
+
+class Layout(NodeFunc):
+    def __init__(self, op):
+        super().__init__(None)
+        self.op = op
+
+    def __call__(self):
+        num_layouts = self.op.data_formats.num_layouts()
+        for i, layout in enumerate(range(num_layouts)):
+            yield layout
 
 class RankRange(ReportNodeFunc):
     """
@@ -130,6 +123,27 @@ class RankRange(ReportNodeFunc):
                         if avail:
                             yield i
 
+class RankEquiv(NodeFunc):
+    """
+    Produce a range identical to the primary index
+    """
+    def __init__(self, name):
+        super().__init__(name)
+
+    def __call__(self, rank):
+        yield rank
+
+class IndexRanks(NodeFunc):
+    """
+    Gather ranks together index ranks into one map
+    Parents:  RankRange and RankEquiv nodes
+    """
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, **ranks):
+        yield ranks
+
 class ArgIndels(ReportNodeFunc):
     """
     In Test mode:
@@ -161,9 +175,10 @@ class ArgIndels(ReportNodeFunc):
         Produces instructions to insert part of an index's dimensions, or
         delete a subrange from a shape.  
         """
-        indels = {} # 
+        indels = {} # arg => [edit, ...]
         total_edit = 0
         for arg, rank in arg_ranks.items():
+            edits = indels.setdefault(arg, [])
             obs_shape = obs_shapes[arg]
             sig = sigs[arg]
             if isinstance(obs_shape, int):
@@ -175,7 +190,6 @@ class ArgIndels(ReportNodeFunc):
                 edits.append(edit)
 
             elif delta > 0:
-                edits = indels.setdefault(arg, [])
                 spos = 0 # shape position coordinate
                 for idx in sig:
                     idx_rank = index_ranks[idx]
@@ -187,7 +201,6 @@ class ArgIndels(ReportNodeFunc):
                     spos += idx_rank
 
             else:
-                edits = indels.setdefault(arg, [])
                 for b in range(obs_rank + delta):
                     edit = base.ShapeEdit(obs_shape, sig, index_ranks)
                     args = (Indel.Delete, b, b-delta)
@@ -200,7 +213,7 @@ class ArgIndels(ReportNodeFunc):
                 return
             indel_args = list(indels.keys())
             for indel_combo in itertools.product(*indels.values()):
-                arg_edits = dict(zip(*indel_args, *indel_combo))
+                arg_edits = dict(zip(indel_args, indel_combo))
                 yield arg_edits # arg => ShapeEdit
 
 class ArgMutations(ReportNodeFunc):
@@ -229,15 +242,17 @@ class ArgMutations(ReportNodeFunc):
         for arg, edit in arg_edits.items():
             usage = edit.idx_dims()
             for idx, dims in usage.items():
-                idx_verisons[idx].add(tuple(dims))
+                ver = idx_versions.setdefault(idx, set())
+                ver.add(tuple(dims))
 
         idxs = list(idx_versions.keys())
         for dims_combo in itertools.product(*idx_versions.values()):
             imp_index_dims = dict(zip(idxs, dims_combo))
-            mut_arg_edits = copy(arg_edits):
+            mut_arg_edits = copy(arg_edits)
             total_edit = 0
             for arg, edit in mut_arg_edits.items():
                 usage = edit.idx_dims()
+                mutations = {}
                 for idx, obs_dims in usage.items():
                     imp_dims = imp_index_dims[idx]
                     muts = {}
@@ -280,11 +295,12 @@ class DataFormat(ReportNodeFunc):
 
         obs_format = obs_args.get(self.arg_name, base.DEFAULT_FORMAT)
         if inferred_fmt == obs_format:
-            yield None
+            yield base.ValueEdit(self.arg_name, obs_format, obs_format)
         else:
             with self.reserve_edit(1) as avail:
                 if avail:
-                    yield base.ValueEdit(self, self.arg_name, inferred_fmt)
+                    yield base.ValueEdit(self.arg_name, obs_format,
+                            inferred_fmt)
 
 class Options(ReportNodeFunc):
     """
@@ -308,13 +324,12 @@ class Options(ReportNodeFunc):
     def __call__(self, obs_args):
         option = obs_args[self.arg_name]
         if option in self.options: 
-            yield None
+            yield base.ValueEdit(self.arg_name, option, option)
         else:
             with self.reserve_edit(1) as avail:
                 if avail:
                     for val in self.options:
-                        # TODO: check this
-                        yield base.ValueEdit(self, val)
+                        yield base.ValueEdit(self.arg_name, option, val)
 
 class DTypeIndiv(ReportNodeFunc):
     """
@@ -338,11 +353,11 @@ class DTypeIndiv(ReportNodeFunc):
     def __call__(self, obs_dtypes):
         obs_dtype = obs_dtypes[self.arg_name]
         if obs_dtype in self.valid_dtypes:
-            yield None
+            yield base.DTypesEdit(obs_dtype, 0)
         else:
             with self.reserve_edit(1) as avail:
                 if avail:
-                    yield base.DTypesEdit(self, arg_name)
+                    yield base.DTypesEdit(obs_dtype, 1)
 
 class DTypeEquiv(ReportNodeFunc):
     """
@@ -362,15 +377,15 @@ class DTypeEquiv(ReportNodeFunc):
         msg += f'must be equal.'
         return msg
 
-    def __call__(self, obs_dtypes, src_dtype):
+    def __call__(self, obs_dtypes, src_edit):
         obs_dtype = obs_dtypes[self.arg_name]
         obs_src_dtype = obs_dtypes[self.src_arg_name]
         if obs_dtype == obs_src_dtype:
-            yield None
+            yield base.DTypesEdit(obs_dtype, 0)
         else:
             with self.reserve_edit(1) as avail:
                 if avail:
-                    yield base.DTypesEdit(self, self.arg_name)
+                    yield base.DTypesEdit(obs_dtype, 1)
 
 class DTypesNotImpl(ReportNodeFunc):
     """
@@ -379,21 +394,29 @@ class DTypesNotImpl(ReportNodeFunc):
     Inference: yields None or DTypesNotImpl
     """
     def __init__(self, op):
-        super().__init__(op, LIVE_KINDS)
+        super().__init__(op)
         self.exc = self.op.excluded_combos
 
     def user_msg(self):
         # highlight all dtypes, the rank-bearing index, and data_format
         pass
 
-    def __call__(self, ranks, layout, obs_dtypes):
-        excluded = self.exc.excluded(obs_dtypes, ranks, layout)
-        if not excluded:
-            yield None  
+    def __call__(self, ranks, layout, **edits):
+        total_edit = sum(e.cost() for e in edits.values())
+        if total_edit == 0:
+            dtypes = { arg: e.orig_value for arg, e in edits.items() }
+            excluded = self.exc.excluded(dtypes, ranks, layout)
         else:
+            excluded = True
+
+        if not excluded:
+            yield base.NotImplEdit(self, 0)
+        else:
+            # use a cost of 1, because there is no notion of a set of dtypes
+            # being "more wrong" than another.  they are either right or wrong
             with self.reserve_edit(1) as avail:
                 if avail:
-                    yield base.NotImplEdit(self)
+                    yield base.NotImplEdit(self, 1)
 
 class DataTensor(ReportNodeFunc):
     """
@@ -408,10 +431,42 @@ class DataTensor(ReportNodeFunc):
         dtype = dtype_edit.apply()
         return oparg.DataTensorArg(shape, dtype)
 
-    def __call__(self, shape_edits, dtype_edits):
-        imp_index_dims, mutations = arg_muts
+    def __call__(self, shape_edits, *dtype_parent):
         shape_edit = shape_edits.get(self.arg_name, None)
-        dtype_edit = dtype_edits.get(self.arg_name, None)
+        dtype_edit = dtype_parent[0] # hack due to awkward graph construction
         rep = oparg.DataTensorReport(self, shape_edit, dtype_edit) 
-        return rep
+        yield rep
+
+class ShapeList(ReportNodeFunc):
+    """
+    Generate the current shape of the input signature
+    """
+    def __init__(self, op, arg_name):
+        super().__init__(op, arg_name)
+        self.arg_name = arg_name
+
+    def edit(self, shape_edit):
+        shape = shape_edit.apply()
+        return oparg.ShapeListArg(shape)
+
+    def __call__(self, shape_edits):
+        shape_edit = shape_edits.get(self.arg_name, None)
+        rep = oparg.ShapeListReport(self, shape_edit)
+        yield rep
+
+class Args(NodeFunc):
+    """
+    Collects all arguments
+    """
+    def __init__(self, arg_order):
+        super().__init__(None)
+        self.arg_order = arg_order
+
+    def __call__(self, not_impl, **kwargs):
+        tups = []
+        for arg in self.arg_order:
+            if arg in kwargs:
+                tups.append((arg, kwargs[arg]))
+        fix = base.Fix(tups, not_impl)
+        yield fix
 
