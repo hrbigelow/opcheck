@@ -99,13 +99,9 @@ class ArgsEdit(object):
         """
         raise NotImplementedError
 
-    def highlight(self):
+    def report(self):
         """
-        Produce a list of the highlighted elements of the input.  Highlighted
-        elements are those displayed with '^^^'.  Usually this means a subset
-        of them must be changed to correct the input.  Each subclass of
-        ArgsEdit produces a highlight in its own coordinate system.  The Fix
-        class munges all of these together.
+
         """
         raise NotImplementedError
 
@@ -180,7 +176,7 @@ class ShapeEdit(ArgsEdit):
         highl_row = [False] * len(shape_row)
         templ_row = list(self.templ)
         if self.mutate is not None:
-            _, changes = self.mutate
+            _, (changes,) = self.mutate
             for ind in changes.keys():
                 highl_row[ind] = True 
         if self.delete is not None:
@@ -251,10 +247,13 @@ class ValueEdit(ArgsEdit):
         self._cost = 0 if obs_value == target_val else 1
 
     def apply(self):
-        pass
+        return self.target_val
     
     def report(self):
-        pass
+        l = max(len(str(self.orig_value)), len(str(self.target_val)))
+        highlight = '' if self._cost == 0 else '^' * l
+        cols = [ self.orig_value, self.target_val, highlight ] 
+        return cols
 
 class ShapeKind(enum.Enum):
     """

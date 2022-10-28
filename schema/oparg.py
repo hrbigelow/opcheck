@@ -35,36 +35,6 @@ class OpArg(object):
         raise NotImplementedError
 
 
-class OpArgReport(object):
-    """
-    For generator functions that yield OpArg instances during Test mode, they
-    yield instances of OpArgReport in Inference mode.
-    """
-    def __init__(self, func, arg_name):
-        self.func = func
-        self.arg_name = arg_name
-
-    def cost(self):
-        """
-        Returns the total cost of all enclosed edits
-        """
-        raise NotImplementedError
-
-    def report(self):
-        """
-        Produce one or more columns in the summary table.  The rows will be:
-        - submitted values
-        - interpretation
-        - highlight
-        """
-        raise NotImplementedError
-
-    def oparg(self):
-        """
-        Construct a corrected OpArg instance
-        """
-        raise NotImplementedError
-
 
 class DataTensorArg(OpArg):
     """
@@ -126,32 +96,6 @@ class DataTensorArg(OpArg):
         if action == EditType.InsertDim:
             pass
 
-class DataTensorReport(OpArgReport):
-    def __init__(self, func, shape_edit, dtype_edit): 
-        super().__init__(func, func.arg_name)
-        self.shape_edit = shape_edit
-        self.dtype_edit = dtype_edit
-
-    def cost(self):
-        return self.shape_edit.cost() + self.dtype_edit.cost()
-
-    def report(self):
-        headers = [ f'{self.arg_name}.shape', f'{self.arg_name}.dtype' ]
-        left = self.shape_edit.report()
-        left.insert(0, headers[0])
-
-        if self.dtype_edit is not None:
-            highlight = '^' * len(self.obs_dtype.name)
-        else:
-            highlight = ''
-        right = [headers[1], self.dtype_edit.obs_dtype, '', highlight]
-        return left, right 
-
-    def oparg(self):
-        oparg = self.func.edit(self.shape_edit, self.dtype_edit)
-        return oparg
-
-
 class ShapeTensorArg(OpArg):
     """
     An OpArg produced by ge.ShapeTensor
@@ -165,24 +109,6 @@ class ShapeTensorArg(OpArg):
     
     def __repr__(self):
         return f'ShTen({self.shape})'
-
-class ShapeTensorReport(OpArgReport):
-    def __init__(self, func, arg_name, shape_edit): 
-        super().__init__(func, arg_name)
-        self.shape_edit = shape_edit
-
-    def cost(self):
-        return self.shape_edit.cost()
-
-    def report(self):
-        header = f'{self.arg_name}'
-        rep = self.shape_edit.report()
-        rep.insert(0, header)
-        return rep 
-
-    def oparg(self):
-        oparg = self.func.edit(self.shape_edit)
-        return oparg
 
 class ShapeListArg(OpArg):
     """
@@ -198,23 +124,10 @@ class ShapeListArg(OpArg):
     def value(self):
         return self.shape
 
-class ShapeListReport(OpArgReport):
-    def __init__(self, func, shape_edit): 
-        super().__init__(func, func.arg_name)
-        self.shape_edit = shape_edit
 
-    def cost(self):
-        return self.shape_edit.cost()
-
-    def report(self):
-        header = f'{self.arg_name}'
-        rep = self.shape_edit.report()
-        rep.insert(0, header)
-        return rep 
-
-    def oparg(self):
-        oparg = self.func.edit(self.shape_edit)
-        return oparg
+"""
+OpArgReport classes corresponding to the above OpArg classes
+"""
 
 class ShapeTensor2DArg(OpArg):
     """
@@ -257,4 +170,113 @@ class ValueArg(OpArg):
 
     def value(self):
         return self.val
+
+class OpArgReport(object):
+    """
+    For generator functions that yield OpArg instances during Test mode, they
+    yield instances of OpArgReport in Inference mode.
+    """
+    def __init__(self, arg_name):
+        self.arg_name = arg_name
+
+    def cost(self):
+        """
+        Returns the total cost of all enclosed edits
+        """
+        raise NotImplementedError
+
+    def report(self):
+        """
+        Produce a list of columns in the summary table.  Each column will be a
+        list of the following fields: 
+        - submitted values
+        - interpretation
+        - highlight
+        """
+        raise NotImplementedError
+
+    def oparg(self):
+        """
+        Construct a corrected OpArg instance
+        """
+        raise NotImplementedError
+
+class DataTensorReport(OpArgReport):
+    def __init__(self, arg_name, shape_edit, dtype_edit): 
+        super().__init__(arg_name)
+        self.shape_edit = shape_edit
+        self.dtype_edit = dtype_edit
+
+    def cost(self):
+        return self.shape_edit.cost() + self.dtype_edit.cost()
+
+    def report(self):
+        headers = [ f'{self.arg_name}.shape', f'{self.arg_name}.dtype' ]
+        shape = self.shape_edit.report()
+        shape.insert(0, headers[0])
+
+        if self.dtype_edit is not None:
+            highlight = '^' * len(self.dtype_edit.orig_value.name)
+        else:
+            highlight = ''
+        dtype = [headers[1], self.dtype_edit.orig_value.name, '', highlight]
+        return [shape, dtype]
+
+    def oparg(self):
+        shape = self.shape_edit.apply()
+        dtype = self.dtype_edit.apply()
+        return DataTensorArg(shape, dtype)
+
+class ShapeTensorReport(OpArgReport):
+    def __init__(self, arg_name, shape_edit): 
+        super().__init__(arg_name)
+        self.shape_edit = shape_edit
+
+    def cost(self):
+        return self.shape_edit.cost()
+
+    def report(self):
+        header = f'{self.arg_name}'
+        rep = self.shape_edit.report()
+        rep.insert(0, header)
+        return [rep]
+
+    def oparg(self):
+        shape = self.shape_edit.apply()
+        return ShapeTensorArg(shape)
+
+class ShapeListReport(OpArgReport):
+    def __init__(self, arg_name, shape_edit): 
+        super().__init__(arg_name)
+        self.shape_edit = shape_edit
+
+    def cost(self):
+        return self.shape_edit.cost()
+
+    def report(self):
+        header = f'{self.arg_name}'
+        rep = self.shape_edit.report()
+        rep.insert(0, header)
+        return [rep]
+
+    def oparg(self):
+        shape = self.shape_edit.apply()
+        return ShapeListArg(shape)
+
+class ValueReport(OpArgReport):
+    def __init__(self, value_edit):
+        super().__init__(value_edit.arg_name)
+        self.value_edit = value_edit
+
+    def cost(self):
+        return self.value_edit.cost()
+
+    def report(self):
+        header = f'{self.arg_name}'
+        rep = self.value_edit.report()
+        return [rep]
+
+    def oparg(self):
+        value = self.value_edit.apply()
+        return ValueArg(value)
 

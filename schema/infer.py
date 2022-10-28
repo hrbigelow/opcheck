@@ -291,16 +291,17 @@ class DataFormat(ReportNodeFunc):
         return op_arg
 
     def __call__(self, ranks, layout, obs_args):
-        inferred_fmt = self.formats.data_format(layout, ranks)
+        inf_format = self.formats.data_format(layout, ranks)
 
         obs_format = obs_args.get(self.arg_name, base.DEFAULT_FORMAT)
-        if inferred_fmt == obs_format:
-            yield base.ValueEdit(self.arg_name, obs_format, obs_format)
+        if inf_format == obs_format:
+            edit = base.ValueEdit(self.arg_name, obs_format, obs_format) 
+            yield oparg.ValueReport(edit)
         else:
             with self.reserve_edit(1) as avail:
                 if avail:
-                    yield base.ValueEdit(self.arg_name, obs_format,
-                            inferred_fmt)
+                    edit = base.ValueEdit(self.arg_name, obs_format, inf_format) 
+                    yield oparg.ValueReport(edit)
 
 class Options(ReportNodeFunc):
     """
@@ -324,12 +325,14 @@ class Options(ReportNodeFunc):
     def __call__(self, obs_args):
         option = obs_args[self.arg_name]
         if option in self.options: 
-            yield base.ValueEdit(self.arg_name, option, option)
+            edit = base.ValueEdit(self.arg_name, option, option)
+            yield oparg.ValueReport(edit)
         else:
             with self.reserve_edit(1) as avail:
                 if avail:
                     for val in self.options:
-                        yield base.ValueEdit(self.arg_name, option, val)
+                        edit = base.ValueEdit(self.arg_name, option, val)
+                        yield oparg.ValueReport(edit)
 
 class DTypeIndiv(ReportNodeFunc):
     """
@@ -426,15 +429,10 @@ class DataTensor(ReportNodeFunc):
         super().__init__(op, arg_name)
         self.arg_name = arg_name
 
-    def edit(self, shape_edit, dtype_edit):
-        shape = shape_edit.apply()
-        dtype = dtype_edit.apply()
-        return oparg.DataTensorArg(shape, dtype)
-
     def __call__(self, shape_edits, *dtype_parent):
         shape_edit = shape_edits.get(self.arg_name, None)
         dtype_edit = dtype_parent[0] # hack due to awkward graph construction
-        rep = oparg.DataTensorReport(self, shape_edit, dtype_edit) 
+        rep = oparg.DataTensorReport(self.arg_name, shape_edit, dtype_edit) 
         yield rep
 
 class ShapeList(ReportNodeFunc):
@@ -445,13 +443,9 @@ class ShapeList(ReportNodeFunc):
         super().__init__(op, arg_name)
         self.arg_name = arg_name
 
-    def edit(self, shape_edit):
-        shape = shape_edit.apply()
-        return oparg.ShapeListArg(shape)
-
     def __call__(self, shape_edits):
         shape_edit = shape_edits.get(self.arg_name, None)
-        rep = oparg.ShapeListReport(self, shape_edit)
+        rep = oparg.ShapeListReport(self.arg_name, shape_edit)
         yield rep
 
 class Args(NodeFunc):
