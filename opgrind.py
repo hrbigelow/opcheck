@@ -3,7 +3,6 @@ import inspect
 import traceback
 from schema import SchemaApi
 from schema.error import OpGrindInternalError, FrameworkError, Success
-from schema.error import NotApplicable
 from schema import fgraph
 from pprint import pprint
 
@@ -105,7 +104,7 @@ def validate(op_path, out_dir, test_ids=None, skip_ids=None):
     appropriately, and does not flag errors where none exist.
     """
     op = _get_from_path(op_path)
-    op._validate(out_dir)
+    op._validate(out_dir, test_ids)
 
 def explain(op_path):
     """

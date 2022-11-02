@@ -8,252 +8,23 @@ from collections import namedtuple, defaultdict
 from .error import * 
 from .fgraph import FuncNode as F, NodeFunc
 from . import fgraph
-from . import util
 
 
 LAYOUT = ':layout'
 DEFAULT_FORMAT = ':default'
 
 ALL_DTYPES = (
-        tf.int8, tf.int16, tf.int32, tf.int64,
-        tf.uint8, tf.uint16, tf.uint32, tf.uint64,
-        tf.float16, tf.float32, tf.float64,
-        tf.qint8, tf.qint16, tf.qint32,
-        tf.bfloat16, 
-        tf.bool,
-        tf.complex64, tf.complex128
+        'int8', 'int16', 'int32', 'int64',
+        'uint8', 'uint16', 'uint32', 'uint64',
+        'float16', 'float32', 'float64',
+        'qint8', 'qint16', 'qint32',
+        'bfloat16',
+        'bool',
+        'complex64', 'complex128',
         )
 
-class UserEdit(BaseException):
+class UserEditError(BaseException):
     pass
-
-class Fix(object):
-    """
-    Encapsulate one set of edits, together with the imputed settings context.
-    {edit_map} is arg => edit.  Each edit is an instance of ArgEdit 
-    """
-    def __init__(self, report_pairs, not_impl):
-        self.reports = report_pairs
-        self.not_impl = not_impl
-
-    def __repr__(self):
-        msg = (
-                f'imp_index_dims: {self.imp_index_dims}\n'
-                f'sigs: {self.sigs}\n'
-                f'edit_map: {self.edit_map}\n'
-                f'dtypes_filt: {self.dtypes_filt}\n'
-                )
-        return msg
-
-    def cost(self):
-        return sum(rep.cost() for _, rep in self.reports)
-
-    def apply(self):
-        try:
-            fixed_args = {}
-            for arg, report in self.reports:
-                fixed_args[arg] = report.oparg()
-            # need to check self.not_impl
-            return fixed_args
-        except UserEdit:
-            return None
-
-    def report(self):
-        """
-        Generate a human-readable report for this fix.  Consists of two
-        sections:
-
-        Top section is a table of columns of shape, dtype, or value for given
-        provided arguments.  The first row are the values given to the op.  The
-        second is the index template interpretation.  The third is a highlight
-        row with '^^^' highlights.
-
-        Bottom section is a list of instructions to the user what to change to
-        correct the input.
-        """
-        main_cols = []
-        for arg, report in self.reports:
-            cols = report.report()
-            main_cols.extend(cols)
-
-        main_table, _ = tabulate(main_cols, '  ', False)
-        table = '\n'.join(row for row in main_table)
-
-        # TODO: these messages will be each user_msg() from the edits
-        msgs = ''
-        return table
-
-class ArgsEdit(object):
-    """
-    Represent an edit applied to a valid op_args
-    """
-    def __init__(self, orig_value):
-        self.orig_value = orig_value
-
-    def cost(self):
-        return self._cost
-
-    def apply(self):
-        """
-        Runs all edits on the original value, which is enclosed
-        """
-        raise NotImplementedError
-
-    def report(self):
-        """
-
-        """
-        raise NotImplementedError
-
-class ShapeEdit(ArgsEdit):
-    def __init__(self, obs_shape, sig, index_ranks):
-        super().__init__(obs_shape)
-        self._cost = 0
-        self.templ = [idx for idx in sig for _ in range(index_ranks[idx])]
-        self.insert = None
-        self.delete = None
-        self.mutate = None
-
-    def __repr__(self):
-        edits = []
-        if self.insert is not None:
-            edits.append('Ins')
-        if self.delete is not None:
-            edits.append('Del')
-        if self.mutate is not None:
-            edits.append('Mut')
-        desc = ','.join(edits)
-        r = f'{type(self).__name__}({self.orig_value})({desc})'
-        return r
-
-    def add_insert(self, func, cost, *args):
-        self._cost += cost
-        self.insert = (func, args)
-
-    def add_delete(self, func, cost, *args):
-        self._cost += cost
-        self.delete = (func, args)
-
-    def add_point_mut(self, func, idx_muts):
-        # idx_muts: idx => (comp => dim)
-        shape_muts = {}
-        for idx, muts in idx_muts.items():
-            off = self.templ.index(idx)
-            for comp, dim in muts.items():
-                shape_muts[off + comp] = dim
-        self.mutate = (func, (shape_muts,))
-        self._cost += len(shape_muts)
-
-    def idx_dims(self):
-        shape = self.apply()
-        dims = {}
-        for idx, dim in zip(self.templ, shape):
-            if idx not in dims:
-                dims[idx] = []
-            dims[idx].append(dim)
-        return dims
-
-    def apply(self):
-        # produce the original shape with edits applied
-        shape = self.orig_value
-        if self.insert is not None:
-            func, args = self.insert
-            shape = func.edit(shape, *args)
-        if self.delete is not None:
-            func, args = self.delete
-            shape = func.edit(shape, *args)
-        if self.mutate is not None:
-            func, args = self.mutate
-            shape = func.edit(shape, *args)
-        return shape
-
-    def report(self):
-        """
-        Render a tabulated human readable report illustrating this edit with
-        rows:  original shape, index template, highlight
-        """
-        shape_row = [str(dim) for dim in self.orig_value]
-        highl_row = [False] * len(shape_row)
-        templ_row = list(self.templ)
-        if self.mutate is not None:
-            _, (changes,) = self.mutate
-            for ind in changes.keys():
-                highl_row[ind] = True 
-        if self.delete is not None:
-            _, (beg, end) = self.delete
-            templ_row[beg:beg] = [''] * (end - beg)
-        if self.insert is not None:
-            _, (ibeg, iend) = self.insert
-            shape_row[ibeg:ibeg] = [''] * (iend - ibeg)
-            highl_row[ibeg:ibeg] = [True] * (iend - ibeg)
-    
-        for ind, (shp, tem) in enumerate(zip(shape_row, templ_row)):
-            if highl_row[ind]:
-                highl_row[ind] = '^' * max(len(shp), len(tem))
-            else:
-                highl_row[ind] = ''
-
-        rows, _ = tabulate([shape_row, templ_row, highl_row], ' ', True)
-        return rows
-
-class DataTensorEdit(ArgsEdit):
-    def __init__(self, func, imp_index_dims, *edits):
-        self.imp_index_dims = imp_index_dims
-        self.edits = edits
-
-    def apply(self, op_arg):
-        return self.func.edit(op_arg, self.imp_index_dims, *self.edits)
-
-class NotImplEdit(ArgsEdit):
-    """
-    Represents and edit responding to the input combination not being
-    implemented by the framework.
-    """
-    def __init__(self, func, cost):
-        super().__init__(func)
-        self._cost = cost
-
-
-class DTypesEdit(ArgsEdit):
-    """
-    The edit object yielded by DTypesIndiv and DTypesEquiv
-    """
-    def __init__(self, obs_dtype, cost):
-        super().__init__(obs_dtype)
-        self._cost = cost 
-
-    def highlight(self):
-        return self.arg_name
-
-    def apply(self):
-        raise UserEdit
-
-    def report(self):
-        if self._cost == 0:
-            highlight = ''
-        else:
-            highlight = '^' * len(self.orig_value.name)
-        rows = [ self.orig_value.name, '', highlight ]
-        return rows
-
-class ValueEdit(ArgsEdit):
-    """
-    An edit to a ValueArg or
-    """
-    def __init__(self, arg_name, obs_value, target_val):
-        super().__init__(obs_value)
-        self.arg_name = arg_name
-        self.target_val = target_val
-        self._cost = 0 if obs_value == target_val else 1
-
-    def apply(self):
-        return self.target_val
-    
-    def report(self):
-        l = max(len(str(self.orig_value)), len(str(self.target_val)))
-        highlight = '' if self._cost == 0 else '^' * l
-        cols = [ self.orig_value, self.target_val, highlight ] 
-        return cols
 
 class ShapeKind(enum.Enum):
     """
@@ -265,7 +36,78 @@ class ShapeKind(enum.Enum):
     Tensor = 3
     Tensor2D = 4
 
-def dtype_expr(type_expr):
+class ShapeEdit(object):
+    def __init__(self, op, index_ranks, arg_sigs, layout):
+        self.arg_sigs = arg_sigs  # arg => sig (the index signature for arg
+        self.index_ranks = index_ranks  # idx => rank
+        self.arg_delta = {}
+        self.usage_map = {}       # idx => (dims => [arg1, arg2, ...]) 
+        self.layout = layout
+
+    def __repr__(self):
+        r  = f'arg_sigs: {self.arg_sigs}\n'
+        r += f'arg_delta: {self.arg_delta}\n'
+        r += f'usage_map: {self.usage_map}\n'
+        return r
+
+    def add_indels(self, arg_delta):
+        self.arg_delta = arg_delta
+
+    def add_idx_usage(self, usage_map):
+        self.usage_map = usage_map
+
+    def indel_cost(self):
+        return sum(abs(d) for d in self.arg_delta.values())
+
+    def idx_usage_cost(self):
+        # cost of 1 for every additional usage of an index (regardless of 
+        # multiplicity of that usage)
+        ucost = sum(len(u) - 1 for u in self.usage_map.values())
+        return ucost
+
+    def cost(self):
+        return self.indel_cost() + self.idx_usage_cost()
+
+    def arg_templates(self):
+        # create arg => template map
+        arg_templ = {}
+        for arg, sig in self.arg_sigs.items():
+            templ = tuple(idx for idx in sig for _ in
+                    range(self.index_ranks[idx]))
+            arg_templ[arg] = templ
+        return arg_templ
+
+    def arg_index_slice(self, arg, idx):
+        # return the slice that idx takes up in the arg shape 
+        sig = self.arg_sigs[arg]
+        off = 0
+        for tmp_idx in sig:
+            rank = self.index_ranks[tmp_idx]
+            if tmp_idx == idx:
+                return off, off + rank 
+            off += rank
+
+class ValueEdit(object):
+    def __init__(self, obs_val, imputed_val):
+        self.obs_val = obs_val
+        self.imp_val = imputed_val
+
+    def __repr__(self):
+        return f'{type(self).__qualname__}({self.obs_val}, {self.imp_val})'
+
+    def cost(self):
+        return 0 if self.obs_val == self.imp_val else 1
+
+class DTypesEdit(object):
+    def __init__(self, rule_kind, info):
+        # one of 'indiv', 'equate', 'combo', or None
+        self.kind = rule_kind
+        self.info = info
+
+    def cost(self):
+        return 0 if self.kind is None else 1
+
+def parse_dtype_expr(type_expr):
     # return the matching dtypes 
     exprs = {
             'int': [8, 16, 32, 64],
@@ -309,22 +151,67 @@ def dtype_expr(type_expr):
         dtypes = [ tf.dtypes.as_dtype(i) for i in ids ]
     except TypeError:
         raise err_msg
-    return dtypes
+    return ids
 
-class CombosNotImplemented(object):
+class ComboRule(object):
+    def __init__(self):
+        # tensor => [excluded_dtype, ...]
+        self.dtypes = {}
+
+        # idx => excluded_rank
+        self.ranks = {}
+
+        self.excluded_layouts = set()
+
+    def exclude_dtypes(self, arg, dtype_expr):
+        dtypes = parse_dtype_expr(dtype_expr)
+        excluded = self.dtypes.setdefault(arg, [])
+        excluded.extend(dtypes)
+
+    def exclude_rank(self, idx, rank):
+        self.ranks[idx] = rank
+
+    def exclude_layout(self, layout):
+        self.excluded_layouts.add(layout)
+
+    def match(self, obs_dtypes, index_ranks, layout):
+        for arg, dtypes in self.dtypes.items():
+            obs_dtype = obs_dtypes[arg]
+            if obs_dtype not in dtypes:
+                return False
+        for idx, rank in self.ranks.items():
+            obs_rank = index_ranks[idx]
+            if obs_rank != rank:
+                return False
+        if layout not in self.excluded_layouts:
+            return False 
+        return True
+
+class DTypeRules(object):
     """
     Represents combinations of dtypes, ranks and layouts not implemented by the
     framework.
-
     """
     def __init__(self):
         self.initialized = False
         self.combos = []
 
+        # arg => [valid_dtype, ...].  initialized from API call valid_dtypes 
+        self.indiv_rules = {}
+
+        # target_tensor => source_tensor
+        self.equate_rules = {}
+
     def init_fields(self, data_tensors, indices):
         self.data_tensors = data_tensors
         self.indices = indices
         self.initialized = True
+
+    def add_indiv_rule(self, tensor, valid_types):
+        self.indiv_rules[tensor] = valid_types
+
+    def add_equate_rule(self, target_tensor, source_tensor):
+        self.equate_rules[target_tensor] = source_tensor
 
     def add_combo(self, *field_val_pairs):
         """
@@ -345,21 +232,17 @@ class CombosNotImplemented(object):
             raise RuntimeError(
                 f'{type(self).__qualname__}: field_val_pairs must be '
                 f'even-length list.  Got length {len(field_val_pairs)} items')
-        combo = []
+        combo_rule = ComboRule()
         for i in range(0, nitem, 2):
             field = field_val_pairs[i]
             value = field_val_pairs[i+1]
             if field in self.data_tensors:
                 addr = f't:{field}'
-                dtypes = dtype_expr(value)
-                for dtype in dtypes:
-                    combo.append((addr, dtype))
+                combo_rule.exclude_dtypes(field, value)
             elif field in self.indices:
-                addr = f'r:{field}'
-                combo.append((addr, value))
+                combo_rule.exclude_rank(field, value)
             elif field == LAYOUT:
-                addr = f'l{field}' # (layout already has colon)
-                combo.append((addr, value))
+                combo_rule.exclude_layout(value)
             else:
                 raise RuntimeError(
                     f'{type(self).__qualname__}: got field \'{field}\' which '
@@ -367,27 +250,37 @@ class CombosNotImplemented(object):
                     f'\'{LAYOUT}\'\n'
                     f'Known data tensors are: {self.data_tensors}'
                     f'Known indices are: {self.indices}')
-        self.combos.append(combo)
+        self.combos.append(combo_rule)
 
-    def excluded(self, dtypes, ranks, layout):
+    def edit(self, obs_dtypes, index_ranks, layout):
+        # check each indiv rule
+        for arg, valid_dtypes in self.indiv_rules.items():
+            obs_dtype = obs_dtypes[arg]
+            if obs_dtype not in valid_dtypes:
+                return DTypesEdit('indiv', arg)
+
+        # check each equate rule
+        for arg, source_arg in self.equate_rules.items():
+            obs_dtype = obs_dtypes[arg]
+            obs_src_dtype = obs_dtypes[source_arg]
+            if obs_dtype != obs_src_dtype:
+                return DTypesEdit('equate', arg)
+
+        matched = self.matched_rule(obs_dtypes, index_ranks, layout)
+        if matched is None:
+            return DTypesEdit(None, None)
+        else:
+            return DTypesEdit('combo', matched)
+
+    def matched_rule(self, obs_dtypes, index_ranks, layout):
         """
-        Predicate to determine whether the observed dtypes, hypothetized index
-        ranks, and layout (maybe None) are excluded
+        Returns a matching exclusion rule for the set of observed dtypes,
+        index_ranks and layout.  If no rule matches, return None
         """
-        # combo is [(addr, value), ...].  addr is one of 't:<tensor_name>'
         for combo in self.combos:
-            ex = True 
-            for addr, exc_value in combo:
-                tag, name = addr.split(':')
-                if tag == 't':
-                    ex = (dtypes[name] == exc_value) and ex
-                elif tag == 'r':
-                    ex = (ranks[name] == exc_value) and ex
-                elif tag == 'l':
-                    ex = (layout == exc_value) and ex
-            if ex:
-                return True
-        return False
+            if combo.match(obs_dtypes, index_ranks, layout):
+                return combo
+        return None
 
 class DataFormats(object):
     """
@@ -484,7 +377,7 @@ class RankConstraint(object):
 
         The observed rank can be None, which means the observation doesn't
         determine the rank.  Since it is unknown, this doesn't represent any
-        evidence of error.  (See function shape_rank)
+        evidence of error.  
         """
         obs_rank = self.observed_rank(shape_map, **kwargs) 
         cmp_rank = self.computed_rank(sig_map, rank_map)
@@ -506,32 +399,6 @@ class RankConstraint(object):
         input needs to be changed.
         """
         raise NotImplementedError
-
-def shape_rank(shape):
-    # returns the rank of shape
-    if isinstance(shape, list):
-        return len(shape)
-    elif isinstance(shape, int):
-        return None
-    else:
-        raise SchemaError(
-            f'shape_rank: invalid shape type.  expected list or int, got '
-            f'{type(shape)}: {shape}')
-
-def shape_iter(shape):
-    # returns an iterator for shape's components, interpreting an integer as
-    # broadcastable
-    def loop():
-        while True:
-            yield shape
-    if isinstance(shape, list):
-        return iter(shape)
-    elif isinstance(shape, int):
-        return loop()
-
-def shape_nextn(shape_iter, n):
-    # return the next n elements from shape_iter
-    return [ next(shape_iter) for _ in range(n) ]
 
 class ShapeRankConstraint(RankConstraint):
     """

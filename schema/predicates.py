@@ -3,7 +3,7 @@ import numpy as np
 import tensorflow as tf
 from collections import defaultdict
 from .error import *
-from . import util, base, fgraph
+from . import base, fgraph
 from .fgraph import NodeFunc, node_name, gen_graph_values
 from .flib import Index
 
@@ -101,7 +101,7 @@ class TensorDType(NodeFunc):
         super().__init__(name)
 
     def __call__(self, tensor):
-        return True, tensor.dtype
+        return True, tensor.dtype.name
 
 class TensorShape(NodeFunc):
     def __init__(self, name):
@@ -121,13 +121,25 @@ class ShapeList(ReportNodeFunc):
         self.broadcast_mode = broadcast_mode
 
     def user_msg(self, received_val):
-        msg =  f'Argument \'{self.arg_name}\' must be a list of non-negative '
-        msg += f'integers.  Received \'{val}\' instead.'
+        if self.broadcast_mode:
+            msg =  f'Argument \'{self.arg_name}\' must be a list of '
+            msg += f'non-negative integers or a single non-negative integer. '
+            msg += f'Received \'{received_val}\'.'
+        else:
+            msg =  f'Argument \'{self.arg_name}\' must be a list of '
+            msg += f'non-negative integers.  Received \'{received_val}\'.'
         return msg
 
     def __call__(self, op):
         shape = op._get_arg(self.arg_name)
         err = ErrorReport(self, shape)
+
+        if isinstance(shape, int) and self.broadcast_mode:
+            if shape >= 0:
+                return True, shape
+            else:
+                return False, err
+
         if not isinstance(shape, list):
             return False, err
         if not all(isinstance(v, int) for v in shape):
@@ -136,7 +148,6 @@ class ShapeList(ReportNodeFunc):
             return False, err
         else:
             # In broadcast mode, return an integer rather than integer list.
-            # see base.shape_rank
             if self.broadcast_mode and len(shape) == 1:
                 shape = shape[0]
             return True, shape
@@ -325,37 +336,41 @@ class Inventory(NodeFunc):
         super().__init__()
         self.op = op
 
-    def __call__(self, dtypes, shapes, args):
+    def __call__(self, dtypes, obs_shapes, args):
         """
+        Operates in two modes.
+        In the first mode, avail_edits is zero:
+            If successful, returns [Fix], which is a zero-cost "fix".
+            If failed, returns the empty list
         Assume that self.op.avail_edits is set appropriately.
         """
-        self.op._prep_inference(dtypes, shapes, args)
+        self.op._prep_inference(dtypes, obs_shapes, args)
         fixes = []
 
         all_nodes = set(self.op.inf_graph.values())
         exc_nodes = (self.op.obs_shapes, self.op.obs_dtypes, self.op.obs_args)
         live_nodes = all_nodes.difference(exc_nodes)
-        for fix in gen_graph_values(live_nodes, (self.op.args_inode,)):
+        for fix in gen_graph_values(live_nodes, (self.op.report_inode,)):
             fixes.append(fix[0]) 
 
         if self.op.avail_edits == 0:
+            # If zero edits are possible, the single fix should be the
+            # unique, zero-edit fix
             if len(fixes) == 1:
                 return True, fixes
             elif len(fixes) > 1:
+                fix_str = '\n\n'.join(repr(f) for f in fixes)
                 raise SchemaError(
                     f'{type(self).__qualname__}: Got multiple matches with '
-                    f'zero edits for framework op \'{self.op.op_path}\'')
+                    f'zero edits for framework op \'{self.op.op_path}\'\n'
+                    f'Fixes:\n{fix_str}\n'
+                    f'Observed shapes:\n{obs_shapes}\n'
+                    )
             else:
-                return False, fixes
+                # no fixes found 
+                return False, []
         else:
-            sorted_fixes = sorted(fixes, key=lambda f: f.cost())
-            return False, sorted_fixes
-
-def calc_sig_range(rank_map, idx, sig):
-    ind = sig.index(idx)
-    start = sum(rank_map[l] for l in sig[:ind])
-    rank = rank_map[idx] 
-    return [start, start + rank]
+            return False, fixes
 
 class IndexDimsConstraint(NodeFunc):
     """

@@ -15,7 +15,7 @@ from .fgraph import FuncNode as F, func_graph_evaluate, NodeFunc
 from .base import ALL_DTYPES
 from .oparg import *
 from .error import *
-from . import oparg, util, base, fgraph
+from . import oparg, base, fgraph
 
 """
 The generation graph (gen_graph) is constructed using NodeFuncs in this file.
@@ -332,7 +332,6 @@ class ArgMutations(GenFunc):
                 val = new_val if new_val != shape[i] else alt_val
                 shape[i] = val
                 copy = { k: list(v) for k, v in arg_shapes.items() }
-
                 yield copy
                 num_yielded += 1
                 shape[i] = old_val
@@ -414,128 +413,18 @@ class Indels(GenFunc):
         else:
             raise RuntimeError('generation_mode not set')
 
-class MutatedArgRanks(GenFunc):
-    def __init__(self, op):
-        super().__init__(op)
-
-    def __call__(self, arg_ranks, indel):
-        if self.op.generation_mode == GenMode.Inference:
-            assert indel is None, 'Invariant 1 violated'
-        mut_ranks = dict(arg_ranks)
-        if indel is not None:
-            mut_ranks[indel.arg] += indel.delta
-        yield mut_ranks
-
-class ArgShapes(GenFunc):
-    """
-    Create argument shapes from sigs, index_dims, and indels
-    Parents: IndexDims, Sigs, IndexUsage, Indels, MutatedArgRanks
-    """
-    def __init__(self, op, index_dims_obj):
-        super().__init__(op)
-        self.index_dims_obj = index_dims_obj
-
-    def constraint_msg(self, *error_inds):
-        phr = []
-        for idx in error_inds:
-            idx_desc = self.op.index[idx]
-            msg = f'Index {idx} ({idx_desc}) has unequal dimensions.'
-            phr.append(msg)
-        msg = '\n'.join(phr)
-        return msg
-
-    @staticmethod
-    def shape_indels(arg_shapes, indel, max_dimsize):
-        """
-        Create one set of data tensor shapes according to the {indel}.
-        The indel specifies index_ranks, a changed data tensor, and a delta.
-        """
-        if indel is None:
-            return arg_shapes
-
-        # create the augmented shapes  
-        shape = arg_shapes[indel.arg]
-        if indel.delta < 0:
-            # delete dimensions from the shape
-            for _ in range(abs(indel.delta)):
-                p = choice(range(len(shape)))
-                shape.pop(p)
-        else:
-            for _ in range(indel.delta):
-                p = choice(range(len(shape) + 1))
-                new_dim = randint(1, max_dimsize)
-                shape.insert(p, new_dim) 
-        return arg_shapes
-
-    def shape_mutations(self, usage_dims, max_dimsize):
-        """
-        Yield non-synonymous mutations of the form idx, arg, comp, new_val.
-        That is, index idx component comp used in arg is mutated to new_val
-        """
-        for idx, usage in usage_dims.items():
-            if len(usage) == 1:
-                # only used in one location so a mutation would not lead to
-                # inconsistent usage
-                continue
-            for arg, dims in usage.items():
-                if len(dims) == 0:
-                    continue
-                c = randint(0, len(dims)-1)
-                new_val, alt_val = sample(range(1, max_dimsize), 2)
-                val = new_val if new_val != dims[c] else alt_val
-                yield idx, arg, c, new_val
-        
-    def __call__(self, index_dims, sigs, idx_usage, indel, mut_arg_ranks):
-        max_dimsize = get_max_dimsize(self.op.target_nelem, mut_arg_ranks)
-        if index_dims == Symbolic.ValidIndexDims:
-            arg_shapes = Symbolic.ValidArgShapes
-        else:
-            arg_shapes = {}
-            for arg, sig in sigs.items():
-                shape = [d for idx in sig for d in index_dims[idx]]
-                arg_shapes[arg] = shape
-
-        if self.op.generation_mode == GenMode.Test:
-            assert arg_shapes != Unused
-            indel_shapes = self.shape_indels(arg_shapes, indel, max_dimsize)
-            yield indel_shapes 
-
-            usage_dims = make_usage_dims(index_dims, sigs)
-            pmuts = self.shape_mutations(usage_dims, max_dimsize)
-            for idx, arg, comp, val in pmuts:
-                # construct mutation
-                old_val = usage_dims[idx][arg][comp]
-                usage_dims[idx][arg][comp] = val
-                # args represents the piece of information which would correct
-                # this error
-                # TODO: update IndexDims to match this argument info
-                # args = (idx, arg, comp, old_val)
-                args = (idx,)
-                with self.new_error(self.index_dims_obj, args, 1) as avail:
-                    if not avail:
-                        continue
-                    mut_shapes = make_arg_shapes(usage_dims, sigs)
-                    yield mut_shapes
-                usage_dims[idx][arg][comp] = old_val
-
-        elif self.op.generation_mode == GenMode.Inference:
-            assert indel is None, 'Indel should be None in Inference mode'
-            yield arg_shapes
-        else:
-            raise RuntimeError('generation_mode not set')
-
 class DTypeIndiv(GenFunc):
     """
     A Dtype with an individual valid set.
     Test mode yields a dtype or symbolic
     Inference:  yields None or a DTypesEdit
     """
-    def __init__(self, op, arg_name, valid_dtypes):
+    def __init__(self, op, arg_name):
         super().__init__(op, arg_name)
         self.arg_name = arg_name
-        self.valid_dtypes = valid_dtypes
+        self.valid_dtypes = op.dtype_rules.indiv_rules[arg_name]
         self.invalid_dtypes = tuple(t for t in ALL_DTYPES if t not in
-                valid_dtypes)
+                self.valid_dtypes)
 
     def __call__(self):
         num_yielded = 0
@@ -557,10 +446,10 @@ class DTypeEquiv(GenFunc):
     A DType which is declared equal to another using equate_dtypes 
     Inference: yields None or a DTypesEdit
     """
-    def __init__(self, op, arg_name, src_arg_name):
+    def __init__(self, op, arg_name):
         super().__init__(op, arg_name)
         self.arg_name = arg_name
-        self.src_arg_name = src_arg_name
+        self.src_arg_name = op.dtype_rules.equate_rules[arg_name]
         self.all_dtypes = ALL_DTYPES
 
     def __call__(self, src_dtype):
@@ -585,44 +474,15 @@ class DTypesNotImpl(GenFunc):
     """
     def __init__(self, op):
         super().__init__(op)
-        self.exc = self.op.excluded_combos
+        self.rules = self.op.dtype_rules
 
     def __call__(self, ranks, layout, **dtypes):
-        excluded = self.exc.excluded(dtypes, ranks, layout)
+        matched_rule = self.rules.matched_rule(dtypes, ranks, layout)
         # filter dtypes generated from above
-        edit = 1 if excluded else 0
+        edit = 0 if matched_rule is None else 1
         with self.reserve_edit(edit) as avail:
             if avail:
                 yield dtypes
-
-# produces usage_dims[idx][arg] = dims
-def get_usage_dims(index_ranks, arg_shapes, arg_sigs):
-    usage_dims = {}
-    for arg, shape in arg_shapes.items():
-        sig = arg_sigs[arg]
-        it = base.shape_iter(shape)
-        for idx in sig:
-            r = index_ranks[idx]
-            dims = base.shape_nextn(it, r)
-            usage = usage_dims.setdefault(idx, {})
-            usage[arg] = dims
-    return usage_dims
-
-def make_arg_shapes(usage_dims, arg_sigs):
-    arg_shapes = {}
-    for arg, sig in arg_sigs.items():
-        arg_shapes[arg] = [dim for idx in sig for dim in usage_dims[idx][arg]]
-    return arg_shapes
-
-def check_sizes(arg_sigs, index_dims, max_nelem):
-    for arg, sig in arg_sigs.items():
-        shape = [dim for idx in sig for dim in index_dims[idx]]
-        nelem = np.prod(shape)
-        if nelem < max_nelem:
-            continue
-        raise SchemaError(
-            f'Generated shape for argument \'{arg}\' was {shape} with '
-            f'{nelem} elements, exceeding the maximum allowed {max_nelem}')
 
 class DataTensor(GenFunc):
     """
@@ -670,7 +530,6 @@ class ShapeList(GenFunc):
         shape = arg_shapes[self.arg_name]
         arg = oparg.ShapeListArg(shape)
         yield arg
-
 
 class ShapeTensor(GenFunc):
     """

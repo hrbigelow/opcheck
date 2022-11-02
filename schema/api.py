@@ -9,6 +9,7 @@ from collections import defaultdict
 from . import predicates as pr
 from . import generators as ge
 from . import infer as nf
+from . import report
 from . import base
 from . import fgraph
 from . import flib
@@ -49,7 +50,8 @@ class SchemaApi(object):
         # self.errors = []
 
         # TODO: enable setting this
-        self.max_search_dist = 1
+        self.max_search_dist = 4
+        self.show_graph_calls = False
 
         # used by IndexDims and ArgShapes to compute index dimensions 
         self.target_nelem = 1e6
@@ -64,7 +66,8 @@ class SchemaApi(object):
         self.arg_inf_nodes = {} # arg_name => GenNode
         self.arg_pred_nodes = {} # arg_name => PredNode
         self.args_gnode = None
-        self.args_inode = None
+        self.index_usage_inode = None
+        # self.args_inode = None
 
         # Graphs
         self.pred_graph = {}
@@ -76,7 +79,7 @@ class SchemaApi(object):
         self.obs_shapes = None
         self.obs_args = None
         self.dtypes_gfilt = None 
-        self.dtypes_ifilt = None 
+        self.dtypes = None 
         self.predicate_nodes = None
         self.data_format_gobj = None
 
@@ -85,7 +88,7 @@ class SchemaApi(object):
         
         self.data_tensors = []
         self.shape_args = []
-        self.excluded_combos = base.CombosNotImplemented()
+        self.dtype_rules = base.DTypeRules()
         self.dims_graph = base.CompDimsGraph()
         self.gen_indices = base.GenIndices()
         self.comp_dims_templates = {} # idx => PredNode with TemplateFunc
@@ -93,7 +96,8 @@ class SchemaApi(object):
         self.return_nodes = []
 
         # error status
-        self.input_errors = None
+        # None: success.  pr.ErrorReport or list of Fix objects is failure
+        self.input_error = None  # None means success.
         self.framework_error = None
 
         # call time values
@@ -162,24 +166,39 @@ class SchemaApi(object):
         None              success
         pr.ErrorReport    local error
         base.Fix list     more complex errors
+
+        How many fixes do we want?
+        
         """
-        input_errors = []
+        fixes = []
         bind = self.func_sig.bind(*args, **kwargs)
         bind.apply_defaults()
         self.arguments = bind.arguments
         self.returns.clear()
         self.framework_error = None
+
         for dist in range(self.max_search_dist+1):
             self.avail_edits = dist
             # returns the value of the first failing predicate node, or
             # none if all succeed
             ret = fgraph.pred_graph_evaluate(*self.predicate_nodes)
-            if isinstance(ret, (type(None), pr.ErrorReport)):
+            if isinstance(ret, pr.ErrorReport):
+                # error occurred in one of the single-argument handling nodes
                 return ret
+            elif ret == []:
+                # no fixes found at this edit distance
+                continue
+            elif ret is None:
+                # success
+                return None
             else:
                 # ret is a list of Fix objects
-                input_errors.extend(ret)
-        return input_errors
+                if not isinstance(ret, list):
+                    raise RuntimeError(f'Got pred graph type {type(ret)}')
+                return ret
+                # fixes.extend(ret)
+
+        # return fixes
 
     def _check_return(self, op_return):
         """
@@ -266,121 +285,6 @@ class SchemaApi(object):
         tab, _ = tabulate(rows, '  ', left_align=True)
         return tab
 
-    def _rank_error_report(self, shape_map, data_format, report):
-        """
-        This report is generated when the framework op arguments are such that
-        no consistent set of index ranks could be inferred.  The report
-        consists of a set of possible ways to fix the inputs.
-
-        Each item is a table, followed by one or more text suggestions on how
-        to fix the inputs.  The table has the following rows:
-
-        arguments
-        shapes
-        interpretation
-        errors
-
-        'arguments' shows formatted argument names highlighting the relevant
-        aspect of the argument.  (see api.py:_shape_header)
-
-        DATA_TENSOR:  {arg_name}.shape
-        SHAPE_TENSOR: {arg_name}.numpy()
-        SHAPE_LIST: {arg_name}
-        SHAPE_INT: {arg_name}
-
-        'shapes' shows the actual submitted values of the argument aspect.
-        All of these represent shapes to be applied to OpGrind indices.
-
-        'interpretation' shows, for each component of a shape, the one-letter
-        OpGrind index name which is inferred in this item.
-
-        'errors' is an ASCII representation highlighting where the error
-        occurred.
-        
-        The list of plain-text suggestions provides one way to fix the errors.
-        It is necessarily a guess about what the user might have intended.
-        ...
-
-        """
-        # need to augment this with another map of other argument values
-        args = [ *shape_map ]
-        if self.data_formats.configured:
-            args.append(self.data_formats.arg_name)
-        arg_order = self._shape_key_order(args)
-        cand_reports = []
-
-        leader_col = [ 'arguments', 'shapes', 'interpretation', 'errors' ]
-
-        for cand in report:
-            # the sub_table is a map of arg_name => rows
-            # the rows are: actual shape, signature instantiation, highlight
-            # carats
-            sub_table = {} 
-            for n, shape in shape_map.items():
-                assert isinstance(shape, list), 'Shape is not a list'
-                shape_rank = len(shape)
-                shape_row = [str(sz) for sz in shape]
-                sub_table[n] = [shape_row]
-
-                # populate the signature instantiation row
-                sig = cand.sigs[n]
-                inst_row = []
-                for s in sig:
-                    r = cand.ranks[s]
-                    if r == 1:
-                        inst_row.append(s)
-                    else:
-                        inst_row.extend(f'{s}{i+1}' for i in range(r))
-                inst_rank = len(inst_row)
-                sub_table[n].append(inst_row)
-
-                # populate the highlight carat row
-                pos = cand.highlight[n]
-                num_components = max(shape_rank, inst_rank)
-                highlight_row = []
-                for c in range(num_components):
-                    if c in pos:
-                        w1 = len(shape_row[c]) if c < shape_rank else 0
-                        w2 = len(inst_row[c]) if c < inst_rank else 0
-                        carat = '^' * max(w1, w2)
-                    else:
-                        carat = ''
-                    highlight_row.append(carat)
-                sub_table[n].append(highlight_row)
-
-            # format the sub-tables
-            columns = {} 
-            for name, tab in sub_table.items():
-                tab = sub_table[name]
-                shape_rows, _ = tabulate(tab, ' ', left_align=True)
-                hdr = self._shape_header(name)
-                col = [hdr, *shape_rows]
-                columns[name] = col
-
-            if self.data_formats.configured:
-                if (
-                        (data_format == cand.format) or
-                        (data_format is None and cand.format is None)
-                        ):
-                    hl = ''
-                else:
-                    hl = '^' * max(len(data_format), len(cand.format))
-                columns[self.data_formats.arg_name] = [
-                        self.data_formats.arg_name, 
-                        data_format, 
-                        cand.format,
-                        hl
-                        ]
-
-            col_array = [leader_col] + [ columns[name] for name in arg_order ]
-            main_table = np.array(col_array).transpose().tolist()
-            main_rows, _ = tabulate(main_table, '   ', True)
-            table = '\n'.join(main_rows)
-            suggs = '\n'.join(cand.suggestions)
-            cand_reports.append(f'{table}\n{suggs}\n')
-
-        full_report = '\n'.join(cand_reports)
-        return full_report
 
     def _index_usage_phrase(self, idx, component_usages, ranks):
         def phrase_join(names):
@@ -455,39 +359,6 @@ class SchemaApi(object):
         fmt, _ = tabulate(table, '   ', left_align=True)
         return '\n'.join(fmt)
 
-    def _index_usage_error(self, idx_usage, ranks, arg_sigs, shapes):
-        """
-        Generate the message for an IndexUsageError.
-        {idx_usage} is: idx => [ (dim => [arg1, ...]),
-                                 (dim => [arg1, ...]),
-                                 ...
-                               ]
-        {sigs} is: arg => sig
-        {shapes} is: arg => shape
-        """
-        highlight_map = self._highlight_mask(ranks, arg_sigs, shapes, idx_usage)
-        diagram = self._index_diagram(highlight_map, ranks, arg_sigs, shapes)
-
-        index_msgs = []
-        for idx, comp in idx_usage.items():
-            phrase = self._index_usage_phrase(idx, comp, ranks)
-            index_msgs.append(phrase)
-
-        text = '\n'.join(index_msgs)
-        return diagram + '\n' + text
-
-    def _index_constraint_error(self, text, index_highlight, ranks, arg_sigs,
-            shapes):
-        # compute the arg => mask from idx => mask
-        arg_highlight = defaultdict(list)
-        for arg, sig in arg_sigs.items():
-            for s in sig:
-                mask = index_highlight.get(s, [False] * ranks[s])
-                arg_highlight[arg].extend(mask)
-
-        diagram = self._index_diagram(arg_highlight, ranks, arg_sigs, shapes)
-        return diagram + '\n' + text
-
     def _dtype_excluded_report(self, ten_names, ten_dtypes, rank_map, layout):
         """
         Generates an error report to the user indicating that The combination
@@ -527,7 +398,11 @@ class SchemaApi(object):
         if self.input_error is None:
             msg = ''
         elif isinstance(self.input_error, list):
-            msg = '\n\n'.join(fix.report() for fix in self.input_error) 
+            fixes = self.input_error
+            obs_dtypes = self.obs_dtypes.get_cached()
+            obs_shapes = self.obs_shapes.get_cached()
+            obs_args = self.obs_args.get_cached()
+            msg = report.report(self, fixes, obs_dtypes, obs_shapes, obs_args)
         elif isinstance(self.input_error, pr.ErrorReport):
             msg = self.input_error.report()
         else:
@@ -578,17 +453,27 @@ class SchemaApi(object):
         layout_iobj = nf.Layout(self)
         layout = G.add_node(layout_iobj)
         index_ranks = G.add_node(nf.IndexRanks())
-        impl_obj = nf.DTypesNotImpl(self)
-        self.dtypes_ifilt = G.add_node(impl_obj, index_ranks, layout)
+        dtypes_obj = nf.DTypes(self)
+        self.dtypes = G.add_node(dtypes_obj, self.obs_dtypes, index_ranks,
+                layout)
         sigs = G.add_node(ge.SigMap())
 
         indels_obj = nf.ArgIndels(self)
-        arg_indels = G.add_node(indels_obj, index_ranks, sigs, self.obs_shapes)
+        arg_indels = G.add_node(indels_obj, index_ranks, sigs, self.obs_shapes,
+                layout)
 
-        arg_muts_iobj = nf.ArgMutations(self)
-        arg_muts = G.add_node(arg_muts_iobj, arg_indels)
-        args_iobj = nf.Args(self.arg_order)
-        self.args_inode = G.add_node(args_iobj, self.dtypes_ifilt)
+        usage_obj = nf.IndexUsage(self)
+        idx_usage_inode = G.add_node(usage_obj, index_ranks, arg_indels,
+                self.obs_shapes) 
+
+        report_obj = nf.Report()
+        self.report_inode = G.add_node(report_obj, self.dtypes,
+                idx_usage_inode)
+
+        # arg_muts_iobj = nf.ArgMutations(self)
+        # arg_muts = G.add_node(arg_muts_iobj, arg_indels)
+        # args_iobj = nf.Args(self.arg_order)
+        # self.args_inode = G.add_node(args_iobj, self.dtypes_ifilt)
 
     def _init_gen_graph(self):
         G.set_registry(self.gen_graph)
@@ -663,7 +548,7 @@ class SchemaApi(object):
             # print(op_args)
             yield op_args[0] # extract tuple element
 
-    def _validate(self, out_dir):
+    def _validate(self, out_dir, test_ids):
         if not os.path.exists(out_dir):
             raise RuntimeError(
                 f'{type(self).__qualname__}: Could not open output path '
@@ -671,12 +556,17 @@ class SchemaApi(object):
 
         stats_fh = open(os.path.join(out_dir, f'{self.op_path}.stats.txt'), 'w')
         report_fh = open(os.path.join(out_dir, f'{self.op_path}.txt'), 'w')
-
-        cats = [ 'TP', 'TN', 'FP', 'FN', 'FAIL' ]
+        cats = [ 'TP', 'TN', 'FP', 'FN' ]
         stats = { k: 0 for k in cats }
+
         op_args_list = list(self._generate_args())
         print(f'Generated {len(op_args_list)} test cases')
+
         for test_num, op_args in enumerate(op_args_list, 1):
+            if test_ids is not None and test_num not in test_ids:
+                continue
+            # print(op_args)
+            # self.show_graph_calls = True
             arg_dict = { k: v.value() for k, v in op_args.items() }
             string_err = io.BytesIO()
             try:
@@ -688,47 +578,19 @@ class SchemaApi(object):
             except BaseException as ex:
                 pass
 
-            failed_checks = 0
-
             if self.input_error is None:
                 if self.framework_error is None:
                     cat = 'TN'
                 else:
                     cat = 'FN'
 
-            elif isinstance(self.input_error, list):
-                fixes = list(self.input_error)
-
-                for fix in fixes:
-                    fixed_args = fix.apply()
-                    if fixed_args is None:
-                        continue
-                    fixed_arg_dict = {k: v.value() for k, v in fixed_args.items()}
-                    string_err = io.BytesIO()
-                    try:
-                        with stderr_redirector(string_err):
-                            self.wrapped_op(**fixed_arg_dict)
-                    except OpGrindInternalError as ex:
-                        print(string_err.getvalue().decode('UTF-8'))
-                        raise ex
-                    except BaseException as ex:
-                        pass
-
-                    if isinstance(self.input_error, pr.ErrorReport):
-                        failed_checks += 1
-                    elif isinstance(self.input_error, list):
-                        if len(self.input_error) != 1:
-                            failed_checks += 1
-                        elif not self.input_error[0].all_manual(): 
-                            failed_checks += 1
-                    else:
-                        pass
-            else:
+            elif isinstance(self.input_error, pr.ErrorReport):
                 pass
 
-            if failed_checks > 0:
-                cat = 'FAIL'
             else:
+                assert isinstance(self.input_error, list)
+                failed_checks = 0
+                fixes = list(self.input_error)
                 if self.framework_error is None:
                     cat = 'FP'
                 else:
@@ -738,7 +600,8 @@ class SchemaApi(object):
             print(f'\rTest: {test_num:-5d}  {progress}', end='')
             call = f'{test_num}\t{cat}\t{op_args}'
             print(call, file=stats_fh)
-            print(call, file=report_fh)
+            print('\n\n', call, file=report_fh)
+            print(f'Framework Error\n{self.framework_error}\n', file=report_fh)
             print(self._report(), file=report_fh)
 
         print()
@@ -931,13 +794,6 @@ class SchemaApi(object):
             node = node_map[idx]
             node.func.add_schema_constraint(cons)
 
-        # self.rank_candidates.add_rank_limits(sig, min_val, max_val)
-
-
-    def _is_data_tensor(self, name):
-        node = self.arg_pred_nodes.get(name, None)
-        return node is not None and isinstance(node.func, pr.DataTensor)
-
     def valid_dtypes(self, tensor_name, type_list):
         """
         Declare that {tensor_name} can have any of the dtype strings in
@@ -957,25 +813,31 @@ class SchemaApi(object):
 
         Can only be called once for a given {tensor_name}
         """
-        if not self._is_data_tensor(tensor_name):
+        if tensor_name not in self.data_tensors:
             raise SchemaError(
                 f'{type(self).__qualname__}: Parameter \'{tensor_name}\' is '
                 f'not registered as a tensor')
 
-        dtypes = [ t for ex in type_list for t in base.dtype_expr(ex) ]
+        dtype_names = [ t for ex in type_list for t in
+                base.parse_dtype_expr(ex) ]
         # self.dtype_cons.add_valid(tensor_name, dtypes)
 
+        # must be called before gobj creation
+        self.dtype_rules.add_indiv_rule(tensor_name, dtype_names)
+
         G.set_registry(self.gen_graph)
-        gobj = ge.DTypeIndiv(self, tensor_name, dtypes)
+        gobj = ge.DTypeIndiv(self, tensor_name)
         dtype_gnode = G.add_node(gobj)
         self.dtypes_gfilt.append_parent_sn(dtype_gnode)
 
+        """
         G.set_registry(self.inf_graph)
         iobj = nf.DTypeIndiv(self, tensor_name, dtypes)
         dtype_inode = G.add_node(iobj, self.obs_dtypes)
         self.dtypes_ifilt.append_parent_sn(dtype_inode)
-        ten_inode = self._inf_node(nf.DataTensor, tensor_name)
-        ten_inode.append_parent(dtype_inode)
+        """
+        # ten_inode = self._inf_node(nf.DataTensor, tensor_name)
+        # ten_inode.append_parent(dtype_inode)
 
     def equate_dtypes(self, trg_tensor, src_tensor):
         """
@@ -983,27 +845,32 @@ class SchemaApi(object):
         Both must be tensors declared with arg_tensor.
         Can only be called once for a given {trg_tensor}
         """
-        if not (self._is_data_tensor(src_tensor) and
-                self._is_data_tensor(trg_tensor)):
+        if (src_tensor not in self.data_tensors or
+            trg_tensor not in self.data_tensors):
             raise SchemaError(
                 f'{type(self).__name__}: Can only be called on two tensors. '
                 f'Parameters \'{src_tensor}\' and \'{trg_tensor}\' are not '
                 f'both tensors.')
 
+        # must be called before gobj creation
+        self.dtype_rules.add_equate_rule(trg_tensor, src_tensor)
+
         G.set_registry(self.gen_graph)
-        gobj = ge.DTypeEquiv(self, trg_tensor, src_tensor)
+        gobj = ge.DTypeEquiv(self, trg_tensor)
         src_dtype = self._gen_node(ge.DTypeIndiv, src_tensor)
         trg_dtype = G.add_node(gobj, src_dtype)
         self.dtypes_gfilt.append_parent_sn(trg_dtype)
 
+        """
         G.set_registry(self.inf_graph)
         iobj = nf.DTypeEquiv(self, trg_tensor, src_tensor)
         src_dtype = self._inf_node(nf.DTypeIndiv, src_tensor)
         trg_dtype = G.add_node(iobj, self.obs_dtypes, src_dtype)
         self.dtypes_ifilt.append_parent_sn(trg_dtype)
+        """
 
-        ten_inode = self._inf_node(nf.DataTensor, trg_tensor)
-        ten_inode.append_parent(trg_dtype)
+        # ten_inode = self._inf_node(nf.DataTensor, trg_tensor)
+        # ten_inode.append_parent(trg_dtype)
 
     def exclude_combos(self, *field_value_pairs):
         """
@@ -1023,11 +890,10 @@ class SchemaApi(object):
         - the LAYOUT field has an integer in [0, num_layouts), as defined
           by the call to arg_layout.
         """
-        if not self.excluded_combos.initialized:
-            self.excluded_combos.init_fields(self.data_tensors,
-                    self.index.keys())
+        if not self.dtype_rules.initialized:
+            self.dtype_rules.init_fields(self.data_tensors, self.index.keys())
         try: 
-            self.excluded_combos.add_combo(*field_value_pairs)
+            self.dtype_rules.add_combo(*field_value_pairs)
         except RuntimeError as ex:
             raise SchemaError(ex)
 
@@ -1061,7 +927,7 @@ class SchemaApi(object):
         options_iobj = nf.Options(self, arg_name, options)
         i_arg = G.add_node(options_iobj, self.obs_args)
         self.arg_inf_nodes[arg_name] = i_arg
-        self.args_inode.append_parent_sn(i_arg)
+        self.report_inode.append_parent_sn(i_arg)
 
         P.set_registry(self.pred_graph)
         options_pobj = pr.Options(arg_name, options_gobj, options)
@@ -1096,7 +962,7 @@ class SchemaApi(object):
         if arg_name is not None:
             self.arg_gen_nodes[arg_name] = df_gnode
             self.args_gnode.append_parent_sn(df_gnode)
-            self.args_inode.append_parent_sn(df_inode)
+            self.report_inode.append_parent_sn(df_inode)
 
         P.set_registry(self.pred_graph)
         schema = self._pred_node(pr.Schema)
@@ -1135,8 +1001,7 @@ class SchemaApi(object):
         """
         self.definite_rank_indices.update(idx for sig in sigs for idx in sig)
 
-    def _arg_shape_func(self, arg_name, sigs_list, shape_pnode, arg_gobj,
-            arg_iobj, kind): 
+    def _arg_shape_func(self, arg_name, sigs_list, shape_pnode, arg_gobj, kind): 
         """
         Backend function for arg_shape_* API functions.
         sigs_list must be a list of either 1 or num_layout elements.  If 1, it
@@ -1146,7 +1011,8 @@ class SchemaApi(object):
         P.set_registry(self.pred_graph)
 
         arg_gshapes = self._gen_node(ge.ArgMutations)
-        arg_ishapes = self._inf_node(nf.ArgMutations)
+        # arg_ishapes = self._inf_node(nf.ArgMutations)
+        arg_ishapes = self._inf_node(nf.IndexUsage)
 
         dtypes_gnode = self._gen_node(ge.DTypesNotImpl)
         # dtypes_inode = self._inf_node(nf.DTypesNotImpl)
@@ -1161,13 +1027,13 @@ class SchemaApi(object):
         # if isinstance(arg_iobj, nf.DataTensor):
             # arg_inode = G.add_node(arg_iobj, arg_ishapes, dtypes_inode)
         # else:
-        arg_inode = G.add_node(arg_iobj, arg_ishapes)
+        # arg_inode = G.add_node(arg_iobj, arg_ishapes)
 
         self.args_gnode.append_parent_sn(arg_gnode)
-        self.args_inode.append_parent_sn(arg_inode)
+        # self.args_inode.append_parent_sn(arg_inode)
 
         self.arg_gen_nodes[arg_name] = arg_gnode
-        self.arg_inf_nodes[arg_name] = arg_inode
+        # self.arg_inf_nodes[arg_name] = arg_inode
         
         G.set_registry(self.gen_graph)
         sigmap_gnode = self._gen_node(ge.SigMap)
@@ -1199,13 +1065,12 @@ class SchemaApi(object):
         schema = self._pred_node(pr.Schema)
         shp_pobj = pr.TensorShape(arg_name)
         arg_gobj = ge.DataTensor(self, arg_name)
-        arg_iobj = nf.DataTensor(self, arg_name)
         arg_pobj = pr.DataTensor(arg_name, arg_gobj)
         arg_p = P.add_node(arg_pobj, schema)
         shp_pobj = pr.TensorShape(arg_name)
         shp_p = P.add_node(shp_pobj, arg_p)
         kind = ShapeKind.DataTensor
-        self._arg_shape_func(arg_name, sigs, shp_p, arg_gobj, arg_iobj, kind)
+        self._arg_shape_func(arg_name, sigs, shp_p, arg_gobj, kind)
 
         P.set_registry(self.pred_graph)
         dtypes = self._pred_node(pr.DTypes)
@@ -1223,11 +1088,10 @@ class SchemaApi(object):
         P.set_registry(self.pred_graph)
         schema = self._pred_node(pr.Schema)
         arg_gobj = ge.ShapeList(self, arg_name)
-        arg_iobj = nf.ShapeList(self, arg_name)
         arg_pobj = pr.ShapeList(arg_name, arg_gobj, broadcast_mode)
         arg_p = P.add_node(arg_pobj, schema) 
         kind = ShapeKind.List
-        self._arg_shape_func(arg_name, sigs, arg_p, arg_gobj, arg_iobj, kind)
+        self._arg_shape_func(arg_name, sigs, arg_p, arg_gobj, kind)
         self.arg_pred_nodes[arg_name] = arg_p
 
     def arg_shape_bcast_list(self, arg_name, *sigs):
