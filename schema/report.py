@@ -65,13 +65,14 @@ df   rank   idx   dtype
  1      1     1       0  excluded by graph
  1      1     1       1  excluded by graph
 
-          df   rank   idx   dtype
-rank       0      1     0       ?  (single layout, multiple index_ranks)
-fmt_idx    1      0     1       ?  (multiple layouts)
-idx        0      0     1       ?  (single layout, single index_ranks)
-fmt        1      0     0       ?  (one alternate layout) 
-dtype      0      0     0       1
-           1      1     0       ?  (ignored)
+          df   rank   idx  pred   dtype
+rank       0      1     0     0       ?  (single layout, multiple index_ranks)
+fmt_idx    1      0     1     0       ?  (multiple layouts)
+idx        0      0     1     0       ?  (single layout, single index_ranks)
+pred       0      0     0     1       ?
+fmt        1      0     0     ?       ?  (one alternate layout) 
+dtype      0      0     0             1
+           1      1     0             ?  (ignored)
 """
 
 def report(op, fixes, obs_dtypes, obs_shapes, obs_args):
@@ -84,23 +85,29 @@ def report(op, fixes, obs_dtypes, obs_shapes, obs_args):
     fmt_idx_err = []
     dtype_err = []
     dtype_fix = None
+    pred_fix = None
 
     for fix in fixes:
+        shape_edit = fix['shape']
         df = fix['data_format'].cost()
-        rank = fix['shape'].indel_cost()
-        idx = fix['shape'].idx_usage_cost()
+        rank = shape_edit.indel_cost()
+        idx = shape_edit.idx_usage_cost()
+        pred = shape_edit.pred_cost()
         dtype = fix['dtypes'].cost()
-        tup = (df, rank, idx)
+        tup = (df, rank, idx, pred)
         # print(tup)
 
-        if tup == (0,1,0):
+        if tup == (0,1,0,0):
             rank_err.append(fix)
-        elif tup == (1,0,1):
+        elif tup == (1,0,1,0):
             fmt_idx_err.append(fix)
-        elif tup == (0,0,1):
+        elif tup == (0,0,1,0):
             idx_err.append(fix)
-        elif tup == (1,0,0):
+        elif tup[:3] == (1,0,0):
             fmt_err.append(fix)
+        elif tup == (0,0,0,1):
+            assert pred_fix is None
+            pred_fix = fix['shape']
         elif tup == (0,0,0) and dtype == 1:
             assert dtype_fix is None
             dtype_fix = fix['dtypes']
@@ -112,6 +119,9 @@ def report(op, fixes, obs_dtypes, obs_shapes, obs_args):
 
     if dtype_fix is not None:
         return fix_dtype(op, dtype_fix, obs_dtypes)
+
+    if pred_fix is not None:
+        return fix_constraint_error(op, pred_fix)
 
     if len(idx_err) > 0:
         if len(fmt_err) != 0:
@@ -430,7 +440,6 @@ def fix_data_format(op, fmt_fixes, obs_shapes, obs_args):
     final += _fix_config(op, fmt_fixes, obs_shapes, obs_args)
     return final
 
-
 def fix_rank(op, rank_fixes, obs_shapes, obs_args):
     """
     Called when rank fixes are present but fmt_idx and fmt fixes are both
@@ -453,4 +462,37 @@ def fix_df_or_rank(op, rank_fixes, fmt_fixes, fmt_idx_fixes, obs_shapes,
     final = 'Fix Data Format or Ranks\n'
     final += _fix_config(op, all_fixes, obs_shapes, obs_args)
     return final
+
+def fix_constraint_error(op, cons_fix):
+    """
+    Called when  
+    """
+    index_dims = cons_fix.get_index_dims()
+    pred_name = cons_fixes.index_pred_error
+    findexes = cons_fixes.findexes
+
+    pred = op.index_preds[pred_name]
+    templ_args = [ f'"{op.index[idx]}"' for idx in pred.indices ]
+    constraint_msg = pred.templ_func(*templ_args)
+
+    # show the compute path of all dimensions so the user can trace it back.
+    # there will be one-letter-code, description, and dimensions. 
+    paths = []
+    for findex in findexes:
+        desc_msg = '\n'.join(p for p in findex.desc_path)
+        dims_msg = '\n'.join(p for p in findex.dims_path)
+        path = f'{desc_msg}\n{dims_msg}\n'
+        paths.append(path)
+
+    path_msg = '\n\n'.join(paths)
+
+    # inform the actual values for offending dimensions
+    items = []
+    for idx in pred.indices:
+        item = f'"{op.index[idx]}" dimensions = {index_dims[idx]}'
+        items.append(item)
+    values_msg = grammar_list(items)
+    final = f'{constraint_msg}\n\n{path_msg}\n\n{values_msg}'
+    return final
+
 

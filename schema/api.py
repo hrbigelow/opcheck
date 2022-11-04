@@ -44,10 +44,11 @@ class SchemaApi(object):
         # indices in which sidx == tidx are called 'primary'
         self.equiv_index = {} 
 
+        # flags
         self.avail_edits = 0
         self.avail_test_edits = 0
         self.max_yield_count = 1000
-        # self.errors = []
+        self.comp_dims_mode = True
 
         # TODO: enable setting this
         self.max_search_dist = 4
@@ -63,16 +64,13 @@ class SchemaApi(object):
         # params is used to retrieve values during testing
         self.arg_order = None
         self.arg_gen_nodes = {} # arg_name => GenNode
-        self.arg_inf_nodes = {} # arg_name => GenNode
-        self.arg_pred_nodes = {} # arg_name => PredNode
         self.args_gnode = None
-        self.index_usage_inode = None
-        # self.args_inode = None
 
         # Graphs
         self.pred_graph = {}
         self.gen_graph = {} # idx => node, for generating inventory
         self.inf_graph = {}
+        self.dims_graph = base.CompDimsGraph(self)
 
         # These will be set to ge.ObservedValue nodes
         self.obs_dtypes = None
@@ -89,11 +87,13 @@ class SchemaApi(object):
         self.data_tensors = []
         self.shape_args = []
         self.dtype_rules = base.DTypeRules()
-        self.dims_graph = base.CompDimsGraph()
         self.gen_indices = base.GenIndices()
         self.comp_dims_templates = {} # idx => PredNode with TemplateFunc
+        self.index_preds = base.IndexPredicates()
         self.num_returns = 0
         self.return_nodes = []
+
+        # 
 
         # error status
         # None: success.  pr.ErrorReport or list of Fix objects is failure
@@ -309,91 +309,6 @@ class SchemaApi(object):
             phrases.append(msg)
         return '\n'.join(phrases)
 
-    # compute the highlight mask from the component usage maps
-    @staticmethod
-    def _highlight_mask(ranks, sigs, shapes, idx_usage):
-        highlight = defaultdict(list)
-        for arg, sig in sigs.items():
-            shape = shapes[arg]
-            for idx in sig:
-                comp = idx_usage.get(idx, None)
-                if comp is None:
-                    mask = [False] * ranks[idx]
-                else:
-                    mask = [ (len(c) != 1) for c in comp ]
-                highlight[arg].extend(mask)
-        return dict(highlight)
-
-    def _index_diagram(self, highlight_map, ranks, arg_sigs, shapes):
-        arg_order = [ n for n in self.arg_order if n in arg_sigs.keys() ]
-        dims = { n: [shp] for n, shp in shapes.items() }
-        table_data = {} # arg => [shape, inst, highlight]
-                        # shape is e.g.:     [15, 3, 10, 5]
-                        # inst is e.g.       ['b', 'i1', 'i2', 'k']
-                        # highlight is e.g.: ['', '', '^^', '']
-
-        for arg, sig in arg_sigs.items():
-            shape = shapes[arg]
-            mask = highlight_map[arg]
-            table_data[arg] = [shape]
-            inst = []
-            highlight = []
-            for idx in sig:
-                if ranks[idx] == 1:
-                    inst.append(idx)
-                else:
-                    inst.extend(f'{idx}{i+1}' for i in range(ranks[idx]))
-
-            z = zip(mask, inst)
-            hl = ['^' * len(i) if m else '' for m, i in z]
-            highlight.extend(hl)
-            table_data[arg].append(inst)
-            table_data[arg].append(highlight)
-        
-        columns = []
-        for arg, rows in table_data.items():
-            fmt, _ = tabulate(rows, ' ', left_align=True)
-            col = [arg, *fmt]
-            columns.append(col)
-        table = np.array(columns).transpose().tolist()
-        fmt, _ = tabulate(table, '   ', left_align=True)
-        return '\n'.join(fmt)
-
-    def _dtype_excluded_report(self, ten_names, ten_dtypes, rank_map, layout):
-        """
-        Generates an error report to the user indicating that The combination
-        of {ten_names} having {ten_dtypes}, with the particular setting of
-        index ranks given in {rank_map} and for the given layout is disallowed.
-
-        If rank_map is empty, the dtype combination is disallowed for every
-        rank combination, and ranks will not be mentioned in the report.
-
-        If layout is None, the dtype combination is disallowed for every
-        layout, and layout will not be mentioned in the report
-        """
-        header = ['configuration', 'value']
-        table = [ header ]
-        for n, d in zip(ten_names, ten_dtypes):
-            row = [ f'tensor \'{n}\' dtype', d.name ]
-            table.append(row)
-        for idx, rank in rank_map.items():
-            row = [ f'\'{self.index[idx]}\' # dims', rank ]
-            table.append(row)
-        if self.data_formats.configured:
-            data_format = self._get_arg(self.data_formats.arg_name)
-            row = [ f'\'{self.data_formats.arg_name}\'', data_format ]
-            table.append(row)
-
-        rows, _ = tabulate(table, '  ', left_align=[False, True])
-        main = ['Received unavailable configuration:']
-        main.extend(rows)
-        main.append('')
-        inst = (f'Use opgrind.list_configs(\'{self.op_path}\') to see all '
-                f'available configurations')
-        main.append(inst)
-        msg = '\n'.join(main)
-        return msg
-
     def _report(self):
         if self.input_error is None:
             msg = ''
@@ -466,14 +381,11 @@ class SchemaApi(object):
         idx_usage_inode = G.add_node(usage_obj, index_ranks, arg_indels,
                 self.obs_shapes) 
 
-        report_obj = nf.Report()
-        self.report_inode = G.add_node(report_obj, self.dtypes,
-                idx_usage_inode)
+        cons_obj = nf.IndexConstraints(self)
+        cons_inode = G.add_node(cons_obj, idx_usage_inode)
 
-        # arg_muts_iobj = nf.ArgMutations(self)
-        # arg_muts = G.add_node(arg_muts_iobj, arg_indels)
-        # args_iobj = nf.Args(self.arg_order)
-        # self.args_inode = G.add_node(args_iobj, self.dtypes_ifilt)
+        report_obj = nf.Report()
+        self.report_inode = G.add_node(report_obj, self.dtypes, cons_inode)
 
     def _init_gen_graph(self):
         G.set_registry(self.gen_graph)
@@ -737,7 +649,8 @@ class SchemaApi(object):
 
         extra_node_names = []
         arg_muts = self._gen_node(ge.ArgMutations)
-        # index_dims = self._gen_node(ge.IndexDims)
+        cons_inode = self._inf_node(nf.IndexConstraints)
+
         for arg in extra_args:
             if arg == base.LAYOUT:
                 node = self._gen_node(ge.Layout, base.LAYOUT)
@@ -745,6 +658,7 @@ class SchemaApi(object):
                 node = self.arg_gen_nodes[arg]
             extra_node_names.append(node.name)
             arg_muts.maybe_append_parent_sn(node)
+            cons_inode.maybe_append_parent_sn(node)
 
         if comp_index in self.dims_graph.computed_indexes():
             raise SchemaError(
@@ -756,13 +670,14 @@ class SchemaApi(object):
                 f'already been used as an input index for some computed '
                 f'index.  Calls to computed_index must be in dependency order')
 
-        self.dims_graph.add_comp_index(comp_index, comp_func, input_indexes,
-                *extra_args)
+        self.dims_graph.add_comp_index(comp_index, comp_func, tem_func,
+                input_indexes)
 
         # add a predicate to ensure the computed index is >= some minimum value
-        bounds_pobj = flib.PredAbove(min_val)
-        self.add_index_predicate(f'{comp_index} >= {min_val}', bounds_pobj,
-                comp_index)  
+        min_val_pred = flib.PredAbove(min_val)
+        min_val_templ = flib.PredAboveTempl(min_val)
+        name = f'{comp_index} >= {min_val}'
+        self.add_index_predicate(name, min_val_pred, min_val_templ, comp_index)  
 
     def _gen_nodes_map(self):
         # get a map of idx => primary rank node (from the gen_graph) for all
@@ -830,15 +745,6 @@ class SchemaApi(object):
         dtype_gnode = G.add_node(gobj)
         self.dtypes_gfilt.append_parent_sn(dtype_gnode)
 
-        """
-        G.set_registry(self.inf_graph)
-        iobj = nf.DTypeIndiv(self, tensor_name, dtypes)
-        dtype_inode = G.add_node(iobj, self.obs_dtypes)
-        self.dtypes_ifilt.append_parent_sn(dtype_inode)
-        """
-        # ten_inode = self._inf_node(nf.DataTensor, tensor_name)
-        # ten_inode.append_parent(dtype_inode)
-
     def equate_dtypes(self, trg_tensor, src_tensor):
         """
         Declare that {trg_tensor} have the same dtype as {src_tensor}.
@@ -860,17 +766,6 @@ class SchemaApi(object):
         src_dtype = self._gen_node(ge.DTypeIndiv, src_tensor)
         trg_dtype = G.add_node(gobj, src_dtype)
         self.dtypes_gfilt.append_parent_sn(trg_dtype)
-
-        """
-        G.set_registry(self.inf_graph)
-        iobj = nf.DTypeEquiv(self, trg_tensor, src_tensor)
-        src_dtype = self._inf_node(nf.DTypeIndiv, src_tensor)
-        trg_dtype = G.add_node(iobj, self.obs_dtypes, src_dtype)
-        self.dtypes_ifilt.append_parent_sn(trg_dtype)
-        """
-
-        # ten_inode = self._inf_node(nf.DataTensor, trg_tensor)
-        # ten_inode.append_parent(trg_dtype)
 
     def exclude_combos(self, *field_value_pairs):
         """
@@ -910,7 +805,6 @@ class SchemaApi(object):
         p_arg = P.add_node(pred_obj, schema)
         g_arg = G.add_node(gen_obj)
         self.arg_gen_nodes[arg_name] = g_arg
-        self.arg_pred_nodes[arg_name] = p_arg
         self.args_gnode.append_parent_sn(g_arg)
 
     def arg_option(self, arg_name, options):
@@ -926,7 +820,6 @@ class SchemaApi(object):
         G.set_registry(self.inf_graph)
         options_iobj = nf.Options(self, arg_name, options)
         i_arg = G.add_node(options_iobj, self.obs_args)
-        self.arg_inf_nodes[arg_name] = i_arg
         self.report_inode.append_parent_sn(i_arg)
 
         P.set_registry(self.pred_graph)
@@ -935,7 +828,6 @@ class SchemaApi(object):
         p_arg = P.add_node(options_pobj, schema)
         arg_node = self._pred_node(pr.ArgMap)
         arg_node.append_parent_sn(p_arg)
-        self.arg_pred_nodes[arg_name] = p_arg
 
     def arg_layout(self, arg_name, formats, rank_idx):
         """
@@ -968,7 +860,6 @@ class SchemaApi(object):
         schema = self._pred_node(pr.Schema)
         data_format_obj = pr.DataFormat(self.data_formats, df_gobj, arg_name)
         p_arg = P.add_node(data_format_obj, schema) 
-        self.arg_pred_nodes[arg_name] = p_arg
 
         arg_node = self._pred_node(pr.ArgMap)
         arg_node.append_parent_sn(p_arg)
@@ -1011,11 +902,8 @@ class SchemaApi(object):
         P.set_registry(self.pred_graph)
 
         arg_gshapes = self._gen_node(ge.ArgMutations)
-        # arg_ishapes = self._inf_node(nf.ArgMutations)
         arg_ishapes = self._inf_node(nf.IndexUsage)
-
         dtypes_gnode = self._gen_node(ge.DTypesNotImpl)
-        # dtypes_inode = self._inf_node(nf.DTypesNotImpl)
 
         G.set_registry(self.gen_graph)
         if isinstance(arg_gobj, ge.DataTensor):
@@ -1024,16 +912,11 @@ class SchemaApi(object):
             arg_gnode = G.add_node(arg_gobj, arg_gshapes)
 
         G.set_registry(self.inf_graph)
-        # if isinstance(arg_iobj, nf.DataTensor):
-            # arg_inode = G.add_node(arg_iobj, arg_ishapes, dtypes_inode)
-        # else:
-        # arg_inode = G.add_node(arg_iobj, arg_ishapes)
 
         self.args_gnode.append_parent_sn(arg_gnode)
         # self.args_inode.append_parent_sn(arg_inode)
 
         self.arg_gen_nodes[arg_name] = arg_gnode
-        # self.arg_inf_nodes[arg_name] = arg_inode
         
         G.set_registry(self.gen_graph)
         sigmap_gnode = self._gen_node(ge.SigMap)
@@ -1078,7 +961,6 @@ class SchemaApi(object):
         dtype = P.add_node(tensor_dtype_obj, arg_p)
         dtypes.append_parent_sn(dtype)
         self._add_definite_rank(*sigs)
-        self.arg_pred_nodes[arg_name] = arg_p
         self.data_tensors.append(arg_name)
 
     def _arg_shape_list_base(self, arg_name, broadcast_mode=False, *sigs):
@@ -1092,7 +974,6 @@ class SchemaApi(object):
         arg_p = P.add_node(arg_pobj, schema) 
         kind = ShapeKind.List
         self._arg_shape_func(arg_name, sigs, arg_p, arg_gobj, kind)
-        self.arg_pred_nodes[arg_name] = arg_p
 
     def arg_shape_bcast_list(self, arg_name, *sigs):
         """
@@ -1134,7 +1015,6 @@ class SchemaApi(object):
         arg_p = P.add_node(pred_obj, schema)
         kind = ShapeKind.Int
         self._arg_shape_func(arg_name, (index,), arg_p, gen_obj, kind)
-        self.arg_pred_nodes[arg_name] = arg_p
 
     def arg_shape_tensor(self, arg_name, *sigs):
         """
@@ -1149,7 +1029,6 @@ class SchemaApi(object):
         kind = ShapeKind.Tensor
         self._arg_shape_func(arg_name, sigs, arg_p, gen_obj, kind)
         self._add_definite_rank(*sigs)
-        self.arg_pred_nodes[arg_name] = arg_p
 
     def arg_shape_tensor2d(self, arg_name, *sigs):
         """
@@ -1199,9 +1078,7 @@ class SchemaApi(object):
         shape2d_gobj = ge.ShapeTensor2D(arg_name, len(sigs))
         shape2d_pobj = pr.ShapeTensor2D(arg_name, shape2d_gobj, len(sigs))
         p_shape2d = P.add_node(shape2d_pobj, schema)
-        self.arg_pred_nodes[arg_name] = p_shape2d
 
-        # arg_shapes = self._gen_node(ge.GetArgShapes)
         arg_shapes = self._gen_node(ge.ArgMutations)
         g_shape2d = G.add_node(shape2d_gobj, arg_shapes)
         self.arg_gen_nodes[arg_name] = g_shape2d
@@ -1210,7 +1087,6 @@ class SchemaApi(object):
         g_sig_map = self._gen_node(ge.SigMap)
         g_layout = self._gen_node(ge.Layout, base.LAYOUT)
         p_shape_map = self._pred_node(pr.ShapeMap)
-        # p_layout = self._pred_node(pr.Layout, base.LAYOUT)
 
         for i, sig in enumerate(sigs):
             prefix = f'{arg_name}.{i}'
@@ -1239,7 +1115,6 @@ class SchemaApi(object):
         G.set_registry(self.gen_graph)
         schema = self._pred_node(pr.Schema)
         p_rank = P.add_node(rank_pobj, schema)
-        self.arg_pred_nodes[arg_name] = p_rank
 
         g_ranks = self._gen_node(ge.IndexRanks)
         g_rank = G.add_node(ge.Rank(self, sig), g_ranks)
@@ -1266,10 +1141,14 @@ class SchemaApi(object):
         self.dims_graph.maybe_add_input_index(dims_index)
         self._add_definite_rank(rank_sig)
 
-    def add_index_predicate(self, pred_name, status_func, indices):
+    def add_index_predicate(self, pred_name, status_func, templ_func, indices):
         """
         Registers {status_func} with the schema to be used as an additional
         predicate for {indexes} dimensions.
+
+        {templ_func} is a template function.  It is called with the index
+        descriptions of each index in indices, and returns a string
+        interpolating them, which explains the predicate logic.
 
         {pred_name} is a name given to this custom predicate.  It may be used
         in error messages.
@@ -1282,13 +1161,7 @@ class SchemaApi(object):
 
         Custom status functions are found in the flib module.
         """
-        # TODO: Find the appropriate place for this constraint
-        # P.set_registry(self.pred_graph)
-        # id_cons_obj = pr.IndexDimsConstraint(pred_name, status_func)
-        # ids = (pr.GetRanks, pr.GetArgSigs, pr.ShapeMap, pr.Schema)
-        # parents = self._pred_nodes(*ids)
-        # id_cons = P.add_node(id_cons_obj, *parents)
-        # self.pending_index_edges[id_cons.name] = indices
+        self.index_preds.add(pred_name, status_func, templ_func, indices)
 
     def add_index_generator(self, output_indices, gen_func, input_indices, 
             *gen_args):
@@ -1327,18 +1200,13 @@ class SchemaApi(object):
         G.set_registry(self.gen_graph)
 
         g_sig_obj = ge.Sig(self, ret_name, sigs_list)
-        # p_sig_obj = pr.Sig(ret_name, sigs_list)
 
         rten_pobj = pr.GetReturnTensor(ret_name)
         rvalid_pobj = pr.ValidReturnShape(ret_name)
-        # pred_shape_pobj = pr.PredictedShape(ret_name)
 
         schema = self._pred_node(pr.Schema)
-        # layout = self._pred_node(pr.Layout, base.LAYOUT)
         rten = P.add_node(rten_pobj, schema)
 
-        # sig_inds = { idx for sig in sigs for idx in sig }
-        # self.pending_index_edges[pred_shape.name] = list(sig_inds)
         shapes = self._pred_node(pr.GetShapes)
         rval = P.add_node(rvalid_pobj, rten, shapes)
         self.return_nodes.extend((rten, rval))

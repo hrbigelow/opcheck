@@ -2,7 +2,7 @@ import sys
 import math
 import enum
 from contextlib import contextmanager
-from collections import Counter
+from collections import Counter, namedtuple
 import tensorflow as tf
 import logging
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
@@ -72,6 +72,7 @@ def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, **comp):
             input_dims[idx] = dims
 
         while True:
+            op.dims_graph.template_mode = False
             comp_dims = op.dims_graph(input_dims, **comp) 
 
             # fix any visible computed dims which are negative

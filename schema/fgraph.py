@@ -140,7 +140,7 @@ class FuncNode(object):
 
         node = cls(func, pass_subname, num_named_pars, vararg_type)
         for pa in parents:
-            node.append_parent(pa)
+            node._append_parent(pa, pa.use_subname)
         cls.registry[node.used_name()] = node
         return node 
 

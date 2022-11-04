@@ -38,7 +38,8 @@ def init_schema(op):
     op.exclude_combos('input', 'bfloat16', 'i', 2)
     op.exclude_combos('input', 'bfloat16', 'i', 3, LAYOUT, 0)
 
-    op.add_index_predicate('s-d exclusion', flib.not_both_over_one, 'sd')
+    op.add_index_predicate('s-d exclusion', flib.not_both_over_one,
+            flib.not_both_over_one_templ, 'sd')
     op.add_index_generator('sd', flib.gen_not_both_over_one, 'sd', 1, 3)
     op.add_index_generator('f', flib.gen_range, 'f', 3, 10)
     

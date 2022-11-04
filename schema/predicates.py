@@ -5,7 +5,6 @@ from collections import defaultdict
 from .error import *
 from . import base, fgraph
 from .fgraph import NodeFunc, node_name, gen_graph_values
-from .flib import Index
 
 """
 A collection of fgraph.NodeFunc derived classes for use in fgraph.PredNodes.
@@ -435,58 +434,6 @@ class IndexDimsConstraint(NodeFunc):
             return False, err
         return valid, status
 
-class TemplateFunc(NodeFunc):
-    """
-    Calls template_func(*inds, *extra)
-    where inds are a set of OpGrind indices, and extra are any non-index arguments.
-
-    See API computed_index for more details.
-
-    Recursively calls any TemplateFunc nodes registered on parent indices, and
-    accumulates the resulting texts and indices
-    """
-    def __init__(self, index_name, func, num_index_args, op):
-        super().__init__(index_name)
-        self.index = index_name
-        self.func = func
-        self.nidx = num_index_args
-        self.op = op
-
-    def __call__(self, comp_dims, **kwargs):
-        keys = list(kwargs.keys()) # order preserved as of Python 3.6: (pep-468)
-        idx_args = keys[:self.nidx]
-        extra_args = keys[self.nidx:]
-
-        formula = [] 
-        indices = []
-
-        # just takes the values as-is.  For indices, these are the dimensions
-        computation = list(kwargs.values())
-        ftexts = []
-        ctexts = []
-
-        calc_desc = self.op.index[self.index].replace(' ', '_')
-        calc_comp = str(comp_dims)
-
-        for idx in idx_args:
-            v = kwargs[idx]
-            desc = self.op.index[idx].replace(' ', '_')
-            formula.append(desc)
-            indices.append(idx)
-            parent = self.op.comp_dims_templates.get(idx, None)
-            if parent is not None:
-                _, (ftext, ctext, inds) = parent.value()
-                ftexts.extend(ftext)
-                ctexts.extend(ctext)
-                indices.extend(inds)
-
-        formula.extend(kwargs[e] for e in extra_args)
-        
-        formula_text = calc_desc + ' = ' + self.func(*formula)
-        computation_text = calc_comp + ' = ' + self.func(*computation)
-        ftexts.append(formula_text)
-        ctexts.append(computation_text)
-        return True, (ftexts, ctexts, indices)
 
 class DataFormat(ReportNodeFunc):
     def __init__(self, formats, gen_node, arg_name):

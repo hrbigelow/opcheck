@@ -140,12 +140,16 @@ class ArgIndels(ReportNodeFunc):
                 yield edit
 
 class IndexUsage(ReportNodeFunc):
+    """
+    Construct the usage map idx => (dims => [arg1, ...]), and add it to the
+    received shape_edit object.
+    """
     def __init__(self, op):
         super().__init__(op)
 
     def __call__(self, index_ranks, shape_edit, obs_shapes):
         # compute idx usage
-        # apply any insert or delete, then fill in the usages.
+        # if indels are present, pass-through
         if shape_edit.indel_cost() != 0:
             yield shape_edit
             return
@@ -169,6 +173,35 @@ class IndexUsage(ReportNodeFunc):
                     args.add(arg)
                     off += index_ranks[idx]
         shape_edit.add_idx_usage(usage_map)
+        with self.reserve_edit(shape_edit.cost()) as avail:
+            if avail:
+                yield shape_edit
+
+class IndexConstraints(ReportNodeFunc):
+    """
+    Add results of evaluating the index constraints onto the shape_edit object
+    """
+    def __init__(self, op):
+        super().__init__(op)
+        self.cons = op.index_preds
+
+    def __call__(self, shape_edit, **comp):
+        if shape_edit.cost() != 0:
+            yield shape_edit
+            return
+
+        # each usage should have a single entry
+        index_dims = shape_edit.get_index_dims()
+        self.op.dims_graph.template_mode = True
+        index_templ = self.op.dims_graph(index_dims, **comp) 
+
+        for pred in self.cons.preds:
+            input_templs = [ index_templ[i] for i in pred.indices ]
+            input_dims = [ t.dims for t in input_templs ]
+            if not pred.func(*input_dims):
+                shape_edit.add_constraint_error(pred.name, input_templs)
+                break
+
         with self.reserve_edit(shape_edit.cost()) as avail:
             if avail:
                 yield shape_edit

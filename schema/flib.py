@@ -13,9 +13,6 @@ Schema API calls:
     add_index_generator
 """
 
-# Used by predicate functions
-Index = namedtuple('Index', ['code', 'desc', 'dims'])
-
 def diff_ceil(x):
     if isinstance(x, np.ndarray):
         return np.ceil(x)
@@ -59,6 +56,9 @@ def not_both_over_one(shape1, shape2):
     else:
         return Success()
 
+def not_both_over_one_templ(shape1, shape2):
+    return f'"{shape1}" and "{shape2}" dimensions cannot both be over 1'
+
 def divis_by(numer, denom):
     """
     Return a status confirming that {numer} is evenly divisible by {denom}
@@ -92,6 +92,7 @@ def divis_by(numer, denom):
         all_text = main + '\n' + '\n'.join(text)
         return ComponentConstraintError(all_text, error_mask)
 
+
 class PredAbove(object):
     """
     Test that components are >= min_val
@@ -99,20 +100,15 @@ class PredAbove(object):
     def __init__(self, min_val):
         self.min_val = min_val
 
-    def __call__(self, idx):
-        error_mask = (idx.dims < self.min_val).tolist()
-        if not any(error_mask):
-            return Success()
+    def __call__(self, shape):
+        return all(s >= self.min_val for s in shape)
 
-        text = []
-        for i, err in enumerate(error_mask):
-            if err:
-                suffix = str(i) if len(idx.dims) > 1 else ''
-                line = f'{idx.code}{suffix} < {self.min_val}'
-                text.append(line)
-        main = f'\'{idx.desc}\' ({idx.code}) must be >= {self.min_val}'
-        all_text = main + '\n' + '\n'.join(text)
-        return ComponentConstraintError(all_text, error_mask)
+class PredAboveTempl(object):
+    def __init__(self, min_val):
+        self.min_val = min_val
+
+    def __call__(self, shape):
+        return f'"{shape}" dimensions must be >= {self.min_val}'
         
 def gen_not_both_over_one(ranks_list, lo, hi):
     """

@@ -9,7 +9,6 @@ from .error import *
 from .fgraph import FuncNode as F, NodeFunc
 from . import fgraph
 
-
 LAYOUT = ':layout'
 DEFAULT_FORMAT = ':default'
 
@@ -23,8 +22,8 @@ ALL_DTYPES = (
         'complex64', 'complex128',
         )
 
-class UserEditError(BaseException):
-    pass
+def snake_case(phrase):
+    return phrase.replace(' ', '_')
 
 class ShapeKind(enum.Enum):
     """
@@ -43,6 +42,8 @@ class ShapeEdit(object):
         self.arg_delta = {}
         self.usage_map = {}       # idx => (dims => [arg1, arg2, ...]) 
         self.layout = layout
+        self.index_pred_error = None
+        self.findexes = None
 
     def __repr__(self):
         r  = f'arg_sigs: {self.arg_sigs}\n'
@@ -56,6 +57,10 @@ class ShapeEdit(object):
     def add_idx_usage(self, usage_map):
         self.usage_map = usage_map
 
+    def add_constraint_error(self, pred_name, findexes):
+        self.index_pred_error = pred_name
+        self.findexes = findexes
+
     def indel_cost(self):
         return sum(abs(d) for d in self.arg_delta.values())
 
@@ -65,8 +70,11 @@ class ShapeEdit(object):
         ucost = sum(len(u) - 1 for u in self.usage_map.values())
         return ucost
 
+    def pred_cost(self):
+        return 0 if self.index_pred_error is None else 1
+    
     def cost(self):
-        return self.indel_cost() + self.idx_usage_cost()
+        return self.indel_cost() + self.idx_usage_cost() + self.pred_cost()
 
     def arg_templates(self):
         # create arg => template map
@@ -86,6 +94,17 @@ class ShapeEdit(object):
             if tmp_idx == idx:
                 return off, off + rank 
             off += rank
+
+    def get_index_dims(self):
+        # return the imputed index dims, or raise an error if ambiguous
+        if any(len(usage) > 1 for usage in self.usage_map.values()):
+            raise RuntimeError(
+                f'{type(self).__qualname__}: ambiguous index usage')
+        index_dims = {}
+        for idx, usage in self.usage_map.items():
+            assert len(usage) == 1, 'Index Usage should be length 1'
+            index_dims[idx] = next(iter(usage))
+        return index_dims
 
 class ValueEdit(object):
     def __init__(self, obs_val, imputed_val):
@@ -515,28 +534,120 @@ class DimRankConstraint(RankConstraint):
             return (f'Decrease the dimension of index \'{self.source_idx}\' by '
                     f'{rank_error}')
 
+Index = namedtuple('Index', ['dims', 'olc_path', 'desc_path', 'dims_path'])
+
 class CompIndex(NodeFunc):
     # FuncNode object for indices registered with computed_index
     # {comp_func} 
-    def __init__(self, idx, comp_func, extra_arg_names):
+    def __init__(self, graph, idx, comp_func, template_func, num_index_args):
         super().__init__(idx)
-        self.func = comp_func
-        self.extra_names = extra_arg_names
+        self.graph = graph
+        self.idx = idx
+        self.nidx = num_index_args
+        self.dims_func = comp_func
+        self.template_func = template_func
 
-    def __call__(self, *args):
-        # args[:-1] will be index dims
-        # args[-1] will be a kwargs map
-        index_args = [ np.array(a) for a in args[:-1] ]
-        kwargs = args[-1]
-        extra = tuple(kwargs[k] for k in self.extra_names)
-        comp_dims = self.func(*index_args, *extra)
-        if not (isinstance(comp_dims, np.ndarray) and comp_dims.ndim == 1):
-            raise SchemaError(
-                f'{type(self).__qualname__}: function \'{self.func.__name__}\' '
-                f'registered with computed_dims must return a 1D '
-                f'np.ndarray.  Got \'{comp_dims}\'')
-        comp_dims = comp_dims.tolist()
-        return comp_dims
+    def __call__(self, **kwargs):
+        pairs = [ (k,v) for k,v in kwargs.items() ]
+        index_pairs = pairs[:self.nidx]
+        extra_args = [ v for _,v in pairs[self.nidx:] ]
+
+        if not self.graph.template_mode:
+            # v are integer lists
+            index_dims_args = [ np.array(v) for k,v in index_pairs ]
+            comp_dims = self.dims_func(*index_dims_args, *extra_args)
+            return comp_dims.tolist()
+        else:
+            # v are Index objects
+            # Apply the template function to three kinds of information, e.g.:
+            # dims_form: [1,2,3], olc: 'k', desc: 'filter_channel'
+            desc_args = []
+            dims_args = []
+            dims_form_args = []
+            olc_args = []
+
+            for idx, f in index_pairs:
+                desc_args.append(snake_case(self.graph.op.index[idx]))
+                dims_args.append(np.array(f.dims))
+                d = f.dims if isinstance(f.dims, int) else list(f.dims)
+                dims_form_args.append(str(d))
+                olc_args.append(idx)
+
+            comp_dims = self.dims_func(*dims_args, *extra_args)
+            olc_frag = self.template_func(*olc_args, *extra_args)
+            desc_frag = self.template_func(*desc_args, *extra_args)
+            dims_frag = self.template_func(*dims_form_args, *extra_args)
+
+            this_olc = self.idx
+            this_desc = self.graph.op.index[self.idx]
+            this_dims_form = str(comp_dims)
+
+            olc_eq = f'{this_olc} = {olc_frag}'
+            desc_eq = f'{this_desc} = {desc_frag}'
+            dims_eq = f'{this_dims_form} = {dims_frag}'
+
+            olc_path = [ frag for _,v in index_pairs for frag in v.olc_path ]
+            desc_path = [ frag for _,v in index_pairs for frag in v.desc_path ]
+            dims_path = [ frag for _,v in index_pairs for frag in v.dims_path ]
+            
+            olc_path.append(olc_eq)
+            desc_path.append(desc_eq)
+            dims_path.append(dims_eq)
+
+            index = Index(comp_dims, olc_path, desc_path, dims_path)
+            return index
+
+class TemplateFunc(NodeFunc):
+    """
+    Calls template_func(*inds, *extra)
+    where inds are a set of OpGrind indices, and extra are any non-index
+    arguments.
+
+    Recursively calls any TemplateFunc nodes registered on parent indices, and
+    accumulates the resulting texts and indices
+    """
+    def __init__(self, index_name, func, num_index_args, op):
+        super().__init__(index_name)
+        self.index = index_name
+        self.func = func
+        self.nidx = num_index_args
+        self.op = op
+
+    def __call__(self, comp_dims, **kwargs):
+        keys = list(kwargs.keys()) # order preserved as of Python 3.6: (pep-468)
+        idx_args = keys[:self.nidx]
+        extra_args = keys[self.nidx:]
+
+        formula = [] 
+        indices = []
+
+        # just takes the values as-is.  For indices, these are the dimensions
+        computation = list(kwargs.values())
+        ftexts = []
+        ctexts = []
+
+        calc_desc = self.op.index[self.index].replace(' ', '_')
+        calc_comp = str(comp_dims)
+
+        for idx in idx_args:
+            v = kwargs[idx]
+            desc = self.op.index[idx].replace(' ', '_')
+            formula.append(desc)
+            indices.append(idx)
+            parent = self.op.comp_dims_templates.get(idx, None)
+            if parent is not None:
+                _, (ftext, ctext, inds) = parent.value()
+                ftexts.extend(ftext)
+                ctexts.extend(ctext)
+                indices.extend(inds)
+
+        formula.extend(kwargs[e] for e in extra_args)
+        
+        formula_text = calc_desc + ' = ' + self.func(*formula)
+        computation_text = calc_comp + ' = ' + self.func(*computation)
+        ftexts.append(formula_text)
+        ctexts.append(computation_text)
+        return (ftexts, ctexts, indices)
 
 class GenIndex(object):
     """
@@ -610,20 +721,38 @@ class InputVar(NodeFunc):
     def __call__(self):
         return None
 
+Predicate = namedtuple('Predicate', ['name', 'pred_func', 'templ_func',
+    'indices'])
+
+class IndexPredicates(object):
+    """
+    Store all index predicate functions registered on the schema using
+    add_index_predicate
+    """
+    def __init__(self):
+        self.preds = [] 
+
+    def add(self, pred_name, status_func, templ_func, indices):
+        pred = Predicate(pred_name, status_func, templ_func, indices)
+        self.preds.append(pred)
+
 class CompDimsGraph(object):
     """
     Represents the computation graph to calculate computed dims which appear
     in a data tensor signature.  It may compute intermediate computed dims as
     well.
     """
-        
-    def __init__(self):
+    def __init__(self, op):
+        self.op = op
         self.input_indices = {} # idx => FuncNode(InputVar)
         self.comp_indices = {}  # idx => FuncNode(CompIndex)
         self.nodes = {}
         F.set_registry(self.nodes)
         node = F.add_node_sn(InputVar('kwargs'))
         self.kwnode = node
+
+        # set to true to compute the template
+        self.template_mode = False
 
     def maybe_add_input_index(self, idx):
         node = self.input_indices.get(idx, None)
@@ -632,10 +761,12 @@ class CompDimsGraph(object):
             self.input_indices[idx] = node
         return node
 
-    def add_comp_index(self, idx, comp_func, parent_indexes, *const_args):
+    def add_comp_index(self, idx, comp_func, templ_func, parent_indexes):
         """
         Adds computed index {idx}, whose value will be computed with a call to:
         {comp_func}(*index_dims, *const_vals)
+
+        {template_func}(*index_dims, *const_vals) produces 
 
         index_dims are the dimensions from {parent_indices} (a signature-like
         string).
@@ -649,7 +780,8 @@ class CompDimsGraph(object):
                 node = self.maybe_add_input_index(pidx)
             parents.append(node)
         
-        ci_obj = CompIndex(idx, comp_func, const_args)
+        nidx = len(parent_indexes)
+        ci_obj = CompIndex(self, idx, comp_func, templ_func, nidx)
         node = F.add_node_sn(ci_obj, *parents)
         self.comp_indices[idx] = node
 
@@ -677,11 +809,13 @@ class CompDimsGraph(object):
     def __call__(self, index_dims, **kwargs):
         self.kwnode.set_cached(kwargs)
         for idx, node in self.input_indices.items():
-            # that any unavailable indices are not needed for this layout
             val = index_dims.get(idx, None)
-            node.set_cached(val)
+            if self.template_mode:
+                node_val = Index(val, [], [], [])
+            else:
+                node_val = val
+            node.set_cached(node_val)
         comp_nodes = list(self.comp_indices.values())
-
         # this is node name => value
         val_map = fgraph.func_graph_evaluate(*comp_nodes)
         return val_map
