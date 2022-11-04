@@ -72,8 +72,7 @@ def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, **comp):
             input_dims[idx] = dims
 
         while True:
-            op.dims_graph.template_mode = False
-            comp_dims = op.dims_graph(input_dims, **comp) 
+            comp_dims = op.dims_graph.dims(input_dims, **comp) 
 
             # fix any visible computed dims which are negative
             # TODO: zero could need to be 1 for some dims.

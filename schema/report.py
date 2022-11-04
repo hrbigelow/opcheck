@@ -468,10 +468,8 @@ def fix_constraint_error(op, cons_fix):
     Called when  
     """
     index_dims = cons_fix.get_index_dims()
-    pred_name = cons_fixes.index_pred_error
-    findexes = cons_fixes.findexes
-
-    pred = op.index_preds[pred_name]
+    pred = cons_fix.index_pred_error
+    findexes = cons_fix.findexes
     templ_args = [ f'"{op.index[idx]}"' for idx in pred.indices ]
     constraint_msg = pred.templ_func(*templ_args)
 
@@ -484,7 +482,10 @@ def fix_constraint_error(op, cons_fix):
         path = f'{desc_msg}\n{dims_msg}\n'
         paths.append(path)
 
-    path_msg = '\n\n'.join(paths)
+    if len(paths) > 0:
+        path_msg = '\n\n'.join(paths)
+    else:
+        path_msg = None
 
     # inform the actual values for offending dimensions
     items = []
@@ -492,7 +493,12 @@ def fix_constraint_error(op, cons_fix):
         item = f'"{op.index[idx]}" dimensions = {index_dims[idx]}'
         items.append(item)
     values_msg = grammar_list(items)
-    final = f'{constraint_msg}\n\n{path_msg}\n\n{values_msg}'
+    final =  'Fix Constraint Error\n'
+
+    if path_msg is None:
+        final += constraint_msg + '\n\n' + values_msg
+    else:
+        final +=  constraint_msg + '\n\n' + path_msg + '\n\n' + values_msg
     return final
 
 

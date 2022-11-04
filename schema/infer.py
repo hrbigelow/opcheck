@@ -1,5 +1,6 @@
 import itertools
 import copy
+import numpy as np
 from contextlib import contextmanager
 from .fgraph import NodeFunc
 from .base import ALL_DTYPES
@@ -192,14 +193,23 @@ class IndexConstraints(ReportNodeFunc):
 
         # each usage should have a single entry
         index_dims = shape_edit.get_index_dims()
-        self.op.dims_graph.template_mode = True
-        index_templ = self.op.dims_graph(index_dims, **comp) 
+        index_templ = self.op.dims_graph.templates(index_dims, **comp) 
 
         for pred in self.cons.preds:
-            input_templs = [ index_templ[i] for i in pred.indices ]
-            input_dims = [ t.dims for t in input_templs ]
-            if not pred.func(*input_dims):
-                shape_edit.add_constraint_error(pred.name, input_templs)
+            # get any predicate involved indices that also have templates
+            pred_templ = []
+            input_dims = []
+            for idx in pred.indices:
+                templ = index_templ.get(idx, None)
+                if templ is None:
+                    dims = np.array(index_dims[idx])
+                else:
+                    dims = np.array(templ.dims)
+                    pred_templ.append(templ)
+                input_dims.append(dims)
+
+            if not pred.pred_func(*input_dims):
+                shape_edit.add_constraint_error(pred, pred_templ)
                 break
 
         with self.reserve_edit(shape_edit.cost()) as avail:

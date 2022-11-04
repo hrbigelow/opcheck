@@ -42,19 +42,12 @@ def reduce_prod(a):
 
 def not_both_over_one(shape1, shape2):
     """
-    Return a status confirming that no more than one of the shapes has
-    components greater than one.
+    Return true if, for all i, not(shape1[i] > 1 and shape2[i] > 1) is true
     """
-    o1 = shape1.dims > 1
-    o2 = shape2.dims > 1
+    o1 = shape1 > 1
+    o2 = shape2 > 1
     both = o1 & o2
-    if any(both):
-        return ComponentConstraintError(
-                f'One or more components of \'{shape1.desc}\' and '
-                f'\'{shape2.desc}\' were above 1 at the same time',
-                both.tolist())
-    else:
-        return Success()
+    return not np.any(both)
 
 def not_both_over_one_templ(shape1, shape2):
     return f'"{shape1}" and "{shape2}" dimensions cannot both be over 1'

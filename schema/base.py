@@ -57,8 +57,8 @@ class ShapeEdit(object):
     def add_idx_usage(self, usage_map):
         self.usage_map = usage_map
 
-    def add_constraint_error(self, pred_name, findexes):
-        self.index_pred_error = pred_name
+    def add_constraint_error(self, pred, findexes):
+        self.index_pred_error = pred
         self.findexes = findexes
 
     def indel_cost(self):
@@ -806,7 +806,8 @@ class CompDimsGraph(object):
         for node in self.comp_indices.values():
             node.append_parent_sn(self.kwnode)
 
-    def __call__(self, index_dims, **kwargs):
+    def _run(self, template_mode, index_dims, kwargs):
+        self.template_mode = template_mode
         self.kwnode.set_cached(kwargs)
         for idx, node in self.input_indices.items():
             val = index_dims.get(idx, None)
@@ -816,9 +817,14 @@ class CompDimsGraph(object):
                 node_val = val
             node.set_cached(node_val)
         comp_nodes = list(self.comp_indices.values())
-        # this is node name => value
         val_map = fgraph.func_graph_evaluate(*comp_nodes)
         return val_map
+
+    def dims(self, index_dims, **kwargs):
+        return self._run(False, index_dims, kwargs)
+
+    def templates(self, index_dims, **kwargs):
+        return self._run(True, index_dims, kwargs)
 
 class Constraint(object):
     """
