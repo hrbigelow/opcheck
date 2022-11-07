@@ -192,13 +192,15 @@ class IndexConstraints(ReportNodeFunc):
             return
 
         # each usage should have a single entry
-        index_dims = shape_edit.get_index_dims()
-        index_templ = self.op.dims_graph.templates(index_dims, **comp) 
+        input_dims = shape_edit.get_input_dims()
+        comp_dims = self.op.dims_graph.dims(input_dims, **comp)
+        index_templ = self.op.dims_graph.templates(input_dims, **comp) 
+        index_dims = { **input_dims, **comp_dims }
 
         for pred in self.cons.preds:
             # get any predicate involved indices that also have templates
             pred_templ = []
-            input_dims = []
+            pred_input_dims = []
             for idx in pred.indices:
                 templ = index_templ.get(idx, None)
                 if templ is None:
@@ -206,10 +208,10 @@ class IndexConstraints(ReportNodeFunc):
                 else:
                     dims = np.array(templ.dims)
                     pred_templ.append(templ)
-                input_dims.append(dims)
+                pred_input_dims.append(dims)
 
-            if not pred.pred_func(*input_dims):
-                shape_edit.add_constraint_error(pred, pred_templ)
+            if not pred.pred_func(*pred_input_dims):
+                shape_edit.add_constraint_error(pred, pred_templ, index_dims)
                 break
 
         with self.reserve_edit(shape_edit.cost()) as avail:

@@ -456,7 +456,10 @@ class SchemaApi(object):
         live = nodes
         out = [self._gen_node(ge.Args)]
 
+        ctr = 1
         for op_args in fgraph.gen_graph_values(live, out):
+            # print(f'\r{ctr}', end='', flush=True)
+            # ctr += 1
             # print(op_args)
             yield op_args[0] # extract tuple element
 
@@ -471,10 +474,10 @@ class SchemaApi(object):
         cats = [ 'TP', 'TN', 'FP', 'FN' ]
         stats = { k: 0 for k in cats }
 
-        op_args_list = list(self._generate_args())
-        print(f'Generated {len(op_args_list)} test cases')
+        op_args_gen = self._generate_args()
+        # print(f'Generated {len(op_args_list)} test cases')
 
-        for test_num, op_args in enumerate(op_args_list, 1):
+        for test_num, op_args in enumerate(op_args_gen, 1):
             if test_ids is not None and test_num not in test_ids:
                 continue
             # print(op_args)
@@ -671,7 +674,7 @@ class SchemaApi(object):
                 f'index.  Calls to computed_index must be in dependency order')
 
         self.dims_graph.add_comp_index(comp_index, comp_func, tem_func,
-                input_indexes)
+                input_indexes, *extra_args)
 
         # add a predicate to ensure the computed index is >= some minimum value
         min_val_pred = flib.PredAbove(min_val)

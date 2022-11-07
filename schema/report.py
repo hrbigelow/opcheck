@@ -467,10 +467,9 @@ def fix_constraint_error(op, cons_fix):
     """
     Called when  
     """
-    index_dims = cons_fix.get_index_dims()
     pred = cons_fix.index_pred_error
     findexes = cons_fix.findexes
-    templ_args = [ f'"{op.index[idx]}"' for idx in pred.indices ]
+    templ_args = [ f'{op.index[idx]}' for idx in pred.indices ]
     constraint_msg = pred.templ_func(*templ_args)
 
     # show the compute path of all dimensions so the user can trace it back.
@@ -490,7 +489,7 @@ def fix_constraint_error(op, cons_fix):
     # inform the actual values for offending dimensions
     items = []
     for idx in pred.indices:
-        item = f'"{op.index[idx]}" dimensions = {index_dims[idx]}'
+        item = f'"{op.index[idx]}" dimensions = {cons_fix.index_dims[idx]}'
         items.append(item)
     values_msg = grammar_list(items)
     final =  'Fix Constraint Error\n'

@@ -39,7 +39,8 @@ def get_max_dimsize(target_nelem, arg_ranks):
     # print(arg_ranks, dimsize)
     return dimsize
 
-def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, **comp):
+def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, positive_mode,
+        **comp):
     max_dimsize = get_max_dimsize(op.target_nelem, mut_arg_ranks)
     """
     Resolve a set of all index dims consistent with {index_ranks}.  First,
@@ -49,6 +50,8 @@ def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, **comp):
     Finally, the computed index dims are created.  The system iterates
     until all computed index dims are non-negative.
     """
+
+    # [ (idx => dims), (idx => dims), ... ] 
     gen_dims_list = op.gen_indices(index_ranks)
     # indexes appearing in at least one data tensor signature.  (both input
     # and return signatures) (some indexes are merely used as intermediate
@@ -57,6 +60,8 @@ def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, **comp):
     sig_indexes = { idx for sig in arg_sigs.values() for idx in sig }
     sig_indexes = list(sorted(sig_indexes))
 
+    # e.g. gen_dims_list = 
+    # [ {'s': [1,1,1], 'd': [2,3,5]}, { 's': [2,3,1], 'd': [1,1,1] } ]
     for gen_index_dims in gen_dims_list:
         gen_indexes = ''.join(gen_index_dims.keys())
 
@@ -67,9 +72,15 @@ def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, **comp):
                 continue
             if idx in op.dims_graph.computed_indexes():
                 continue
-            dims = [ randint(1, max_dimsize) for _ in
-                    range(index_ranks[idx]) ]
+            dims = [ randint(1, max_dimsize) for _ in range(index_ranks[idx]) ]
             input_dims[idx] = dims
+
+        comp_idxs = op.dims_graph.computed_indexes()
+        if positive_mode:
+            comp_rngs = { idx: range(randint(1, max_dimsize), 10000) for idx in
+                    comp_idxs }
+        else:
+            comp_rngs = { idx: range(-10000, -1) for idx in comp_idxs }
 
         while True:
             comp_dims = op.dims_graph.dims(input_dims, **comp) 
@@ -79,17 +90,22 @@ def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, **comp):
             todo = next(((idx, c, dim) 
                 for idx, dims in comp_dims.items()
                 for c, dim in enumerate(dims)
-                if dim < 0), None)
+                if dim not in comp_rngs[idx]), None)
             if todo is None:
                 index_dims = { **comp_dims, **input_dims }
                 break
-            comp_idx, c, dim = todo
-            comp_inputs = op.dims_graph.get_index_inputs(comp_idx)
+
+            # the first detected out-of-bounds index, and the component
+            # which is out of bounds
+            oob_idx, oob_comp, oob_dim = todo
+            delta = 1 if oob_dim < comp_rngs[oob_idx].start else -1
+
+            comp_inputs = op.dims_graph.get_index_inputs(oob_idx)
             # apply the assumption that computed indexes are either
             # component-wise or broadcasting.  secondly, assume that the
             # computed index is monotonically increasing in the values of
             # the input indices
-            comp_rank = index_ranks[comp_idx]
+            comp_rank = index_ranks[oob_idx]
             for input_idx in comp_inputs:
                 if input_idx in gen_indexes:
                     continue
@@ -97,24 +113,35 @@ def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, **comp):
                     continue
                 input_rank = index_ranks[input_idx]
                 if input_rank == comp_rank:
-                    inc = c
+                    inc = oob_comp
                 elif input_rank == 1:
                     inc = 0
                 else:
                     raise SchemaError(
-                        f'Computed index \'{comp_idx}\' has rank '
+                        f'Computed index \'{oob_idx}\' has rank '
                         f'{comp_rank} but has input index \'{input_idx}\' '
                         f'with rank {input_rank}.\n'
                         f'Computed indices must either be component-wise '
                         f'or broadcasting.')
-                input_dims[input_idx][inc] += 1
+                input_dims[input_idx][inc] += delta
+                """
+                if not positive_mode:
+                    print(f'{input_idx} {inc} '
+                            f'filter: {input_dims["f"]} '
+                            f'{input_dims[input_idx][inc]} '
+                            f'{comp_dims[oob_idx][oob_comp]}')
+                """
 
-        for idx, dims in index_dims.items():
-            if all(d >= 0 for d in dims):
-                continue
-            assert False, f'Index {idx} had negative dims {dims}'
-        # this is irrelevant since it has not anticipated indels yet
-        # check_sizes(arg_sigs, index_dims, op.target_nelem * 10)
+                # it's possible this approach fails and we cannot find any
+                # inputs which yield the desired computed output dimensions
+                if input_dims[input_idx][inc] < 0:
+                    return None
+
+        for idx, dims in comp_dims.items():
+            if any(d not in comp_rngs[idx] for d in dims):
+                assert False, (
+                        f'Index {idx} had out-of-range dims {dims}. '
+                        f'valid range is {comp_rngs[idx]}')
         return index_dims
 
 class Unused:
@@ -296,7 +323,21 @@ class ArgMutations(GenFunc):
                     arg_ranks[arg] -= size
         # compute max_dimsize from arg_ranks
         max_dimsize = get_max_dimsize(self.op.target_nelem, arg_ranks)
-        index_dims = compute_dims(self.op, arg_ranks, index_ranks, sigs, **comp)
+
+        # compute negative dims
+        index_dims = compute_dims(self.op, arg_ranks, index_ranks, sigs, False,
+                **comp)
+        if index_dims is not None:
+            neg_arg_shapes = {}
+            for arg, sig in sigs.items():
+                shape = [ dim for idx in sig for dim in index_dims[idx] ]
+                neg_arg_shapes[arg] = shape
+            yield neg_arg_shapes
+
+        # incorporate the indel
+        index_dims = compute_dims(self.op, arg_ranks, index_ranks, sigs, True,
+                **comp)
+        assert index_dims is not None
 
         num_yielded = 0
         arg_shapes = {}

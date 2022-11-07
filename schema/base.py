@@ -57,9 +57,10 @@ class ShapeEdit(object):
     def add_idx_usage(self, usage_map):
         self.usage_map = usage_map
 
-    def add_constraint_error(self, pred, findexes):
+    def add_constraint_error(self, pred, findexes, index_dims):
         self.index_pred_error = pred
         self.findexes = findexes
+        self.index_dims = index_dims
 
     def indel_cost(self):
         return sum(abs(d) for d in self.arg_delta.values())
@@ -95,7 +96,7 @@ class ShapeEdit(object):
                 return off, off + rank 
             off += rank
 
-    def get_index_dims(self):
+    def get_input_dims(self):
         # return the imputed index dims, or raise an error if ambiguous
         if any(len(usage) > 1 for usage in self.usage_map.values()):
             raise RuntimeError(
@@ -539,18 +540,24 @@ Index = namedtuple('Index', ['dims', 'olc_path', 'desc_path', 'dims_path'])
 class CompIndex(NodeFunc):
     # FuncNode object for indices registered with computed_index
     # {comp_func} 
-    def __init__(self, graph, idx, comp_func, template_func, num_index_args):
+    def __init__(self, graph, idx, comp_func, template_func, *arg_names):
         super().__init__(idx)
         self.graph = graph
         self.idx = idx
-        self.nidx = num_index_args
+        self.arg_names = arg_names
         self.dims_func = comp_func
         self.template_func = template_func
 
     def __call__(self, **kwargs):
-        pairs = [ (k,v) for k,v in kwargs.items() ]
-        index_pairs = pairs[:self.nidx]
-        extra_args = [ v for _,v in pairs[self.nidx:] ]
+        """
+        kwargs[:-1] are the indices
+        kwargs[-1] is the wrapped map of all non-index arguments to the
+        computed index graph.  This is necessary since different computed
+        indices may accept different non-index arguments
+        """
+        wrapped_kwargs = kwargs.pop('kwargs')
+        index_pairs = [ (k,v) for k,v in kwargs.items() ]
+        extra_args = [ wrapped_kwargs[k].value() for k in self.arg_names ]
 
         if not self.graph.template_mode:
             # v are integer lists
@@ -651,8 +658,7 @@ class TemplateFunc(NodeFunc):
 
 class GenIndex(object):
     """
-    Generate dimensions for {output_indices} using {gen_func}.  Used in
-    Kind.GEN_DIMS nodes.  Has parent Kind.RANKS
+    Generate dimensions for {output_indices} using {gen_func}. 
 
     Calls gen_func(ranks_list, *gen_args).  ranks_list are the ranks of each
     index in {input_indices} in order.
@@ -697,7 +703,7 @@ class GenIndex(object):
 
 class GenIndices(object):
     """
-    Aggregator for GenIndex
+    Aggregator for GenIndex.  Returns [ (idx => dims), (idx => dims), ... ]
     """
     def __init__(self):
         self.generators = []
@@ -761,7 +767,8 @@ class CompDimsGraph(object):
             self.input_indices[idx] = node
         return node
 
-    def add_comp_index(self, idx, comp_func, templ_func, parent_indexes):
+    def add_comp_index(self, idx, comp_func, templ_func, parent_indexes,
+            *extra_args):
         """
         Adds computed index {idx}, whose value will be computed with a call to:
         {comp_func}(*index_dims, *const_vals)
@@ -781,7 +788,7 @@ class CompDimsGraph(object):
             parents.append(node)
         
         nidx = len(parent_indexes)
-        ci_obj = CompIndex(self, idx, comp_func, templ_func, nidx)
+        ci_obj = CompIndex(self, idx, comp_func, templ_func, *extra_args)
         node = F.add_node_sn(ci_obj, *parents)
         self.comp_indices[idx] = node
 

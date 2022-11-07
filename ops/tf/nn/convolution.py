@@ -46,8 +46,8 @@ def init_schema(op):
     # compute output spatial dimension 
     def odims(i, f, s, d, padding):
         if padding == 'VALID':
-            pad_filter_dims = (f - 1) * d + 1
-            tmp = i - pad_filter_dims + 1
+            aug_filter_dims = (f - 1) * d + 1
+            tmp = i - aug_filter_dims + 1
             out = flib.ceildiv(tmp, s)
         else:
             out = flib.ceildiv(i, s)
