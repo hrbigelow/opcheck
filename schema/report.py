@@ -1,170 +1,288 @@
 import numpy as np
 from . import base
+from .base import ReportKind
 """
-               df   rank   idx   dtype
-rank       A    0      1     0       ?  (single layout, multiple index_ranks)
-fmt_idx    B    1      0     1       ?  (multiple layouts)
-idx        C    0      0     1       ?  (single layout, single index_ranks)
-fmt        D    1      0     0       ?  (can be up to 2, if) 
-dtype      E    0      0     0       1
-           F    1      1     0       ?  (ignored)
-pass       G    0      0     0       0  (success)
+1 edit distance:
+
+     df     rank    shape    dtype     <indexed by>           <report_type>
+A     1        0        0        0     layout                 carat_tables
+C     0        0        1        0     --                     carat_tables
+B     0        1        0        0     index_ranks            arrow_table
+D     0        0        0        1     --                     dtype_report
 
 
-df: data_format error
-rank: arg rank error
-idx: index usage error
-dtype: dtype error
+2 edit distance:
 
-The six combinations above constitute all possible record types from the graph.
+     df     rank    shape    dtype     <indexed by>           <report_type>
+D     1        1        0        0     layout and index_ranks arrow_table
+E     1        0        1        0     layout                 carat_tables
+F     1        0        0        1     layout                 ??
+G     0        1        0        1     index_ranks            dtype_report
+H     0        0        1        1     --                     dtype_report
 
-FixRank - if <rank> is present but <fmt_idx> and <fmt> are absent, issue the
-message showing closest signature from each <rank> record of the declared data
-format
+For arrow_table, how do we deal with both the rank and data_format error?
+Just put two arrows.
 
-FixDfOrRank - if both <rank> and one of <fmt_idx>, <fmt> records are present,
-issue message showing closest signature from each <rank> record of declared format.
-Show the single signature for each <fmt_idx> or <fmt> record, showing the <fmt>
-record first.  (maybe, if <fmt> is present, skip showing the <fmt_idx>
-records?)
-
-FixIndexUsage - if <idx> is present but not <fmt>, issue the single signature
-from <idx> of declared data_format, and highlight index usage error
-
-FixDfOrIndexUsage - if <idx> and <fmt> are present, issue the single signature
-from <idx> of declared data_format, highlighting index usage error.  Also, show
-the single signature from each <fmt> record. 
-
-FixDType - if <dtype> is present, issue the error which is one of: dtype not
-allowed for arg, 2) dtype of arg1 must be equal to dtype of arg2, 3) dtype __
-not implemented for x {idx description} dimensions (and layout ___)
-
-Success - if <pass> is present, it should be the only record.  Do not print any
-message.
-
-# the only record that should be present is G, the success record
-
-
-Breakdown of Mutual Exclusive categories:
-
-df   rank   idx   dtype
- 0      0     0       0  <pass>
- 0      0     0       1  <dtype>
- 0      0     1       0  <idx>
- 0      0     1       1  <idx>
- 0      1     0       0  <rank>
- 0      1     0       1  <rank>
- 0      1     1       0  excluded by graph
- 0      1     1       1  excluded by graph
- 1      0     0       0  <fmt>
- 1      0     0       1  <fmt>
- 1      0     1       0  <fmt_idx> 
- 1      0     1       1  <fmt_idx>
- 1      1     0       0  ignored
- 1      1     0       1  ignored
- 1      1     1       0  excluded by graph
- 1      1     1       1  excluded by graph
-
-          df   rank   idx  pred   dtype
-rank       0      1     0     0       ?  (single layout, multiple index_ranks)
-fmt_idx    1      0     1     0       ?  (multiple layouts)
-idx        0      0     1     0       ?  (single layout, single index_ranks)
-pred       0      0     0     1       ?
-fmt        1      0     0     ?       ?  (one alternate layout) 
-dtype      0      0     0             1
-           1      1     0             ?  (ignored)
 """
 
-def report(op, fixes, obs_dtypes, obs_shapes, obs_args):
-    """
-    Implement the messages templated in report.txt
-    """
-    rank_err = []
-    fmt_err = []
-    idx_err = []
-    fmt_idx_err = []
-    dtype_err = []
-    dtype_fix = None
-    pred_fix = None
+class Report(object):
+    def __init__(self, op, fixes, obs_dtypes, obs_shapes, obs_args):
+        self.op = op
+        self.fixes = fixes
+        self.obs_dtypes = obs_dtypes
+        self.obs_shapes = obs_shapes
+        self.obs_args = obs_args
 
-    for fix in fixes:
-        shape_edit = fix['shape']
-        df = fix['data_format'].cost()
-        rank = shape_edit.indel_cost()
-        idx = shape_edit.idx_usage_cost()
-        pred = shape_edit.pred_cost()
-        dtype = fix['dtypes'].cost()
-        tup = (df, rank, idx, pred)
-        # print(tup)
+    def report(self):
+        items = []
+        items.append(self.carat_tables())
+        items.append(self.arrow_table())
+        items.append(self.dtype_report())
+        items = list(filter(None, items))
+        return '\n\n'.join(items)
 
-        if tup == (0,1,0,0):
-            rank_err.append(fix)
-        elif tup == (1,0,1,0):
-            fmt_idx_err.append(fix)
-        elif tup == (0,0,1,0):
-            idx_err.append(fix)
-        elif tup[:3] == (1,0,0):
-            fmt_err.append(fix)
-        elif tup == (0,0,0,1):
-            assert pred_fix is None
-            pred_fix = fix['shape']
-        elif tup == (0,0,0) and dtype == 1:
-            assert dtype_fix is None
-            dtype_fix = fix['dtypes']
-        else:
-            continue
+    def dtype_report(self):
+        dtype_fixes = [f for f in self.fixes if f.kind() == ReportKind.DType]
+        uniq_dt = { hash(f.dtype): f.dtype for f in dtype_fixes }.values()
+        items = []
+        for dtype_edit in uniq_dt:
+            item = self._fix_dtype(dtype_edit)
+            items.append(item)
+        return '\n'.join(items)
 
-    assert len(idx_err) < 2
-    idx_fix = None if len(idx_err) == 0 else idx_err[0]
+    def _fix_dtype(self, dtype_edit):
+        """
+        Called if a dtype fix is available.
+        """
+        rules = self.op.dtype_rules
 
-    if dtype_fix is not None:
-        return fix_dtype(op, dtype_fix, obs_dtypes)
+        if dtype_edit.kind == 'indiv':
+            arg = dtype_edit.info
+            obs_dtype = self.obs_dtypes[arg]
+            valid_dtypes = rules.indiv_rules[arg]
+            valid_phrase = grammar_list(valid_dtypes)
 
-    if pred_fix is not None:
-        return fix_constraint_error(op, pred_fix)
+            final = f'Received {arg}.dtype = {obs_dtype}.  Valid dtypes for {arg} '
+            final += f'{valid_phrase}'
 
-    if len(idx_err) > 0:
-        if len(fmt_err) != 0:
-            return fix_df_or_index_usage(op, idx_fix, fmt_err, obs_shapes,
-                    obs_args)
-        else:
-            return fix_index_usage(op, idx_fix, obs_shapes, obs_args)
+        elif dtype_edit.kind == 'equate':
+            arg = dtype_edit.info
+            dtype = self.obs_dtypes[arg]
+            source_arg = rules.equate_rules[arg]
+            source_dtype = self.obs_dtypes[source_arg]
 
-    if len(fmt_err) > 0:
-        return fix_data_format(op, fmt_err, obs_shapes, obs_args)
+            final =  f'Received {arg}.dtype = {dtype} and '
+            final += f'{source_arg}.dtype = {source_dtype}.  '
+            final += f'dtypes of {arg} and {source_arg} must match.'
 
-    if len(rank_err) > 0:
-        if len(fmt_err) > 0 or len(fmt_idx_err) > 0:
-            return fix_df_or_rank(op, rank_err, fmt_err, fmt_idx_err,
-                    obs_shapes, obs_args)
-        else:
-            return fix_rank(op, rank_err, obs_shapes, obs_args)
+        elif dtype_edit.kind == 'combo':
+            rule = dtype_edit.info
 
-    return None
+            items = []
+            for arg, dtypes in rule.dtypes.items():
+                dtype_str = ', '.join(dtypes)
+                item = f'{arg}.dtype in ({dtype_str})'
+                items.append(item)
+
+            for idx, rank in rule.ranks.items():
+                desc = self.op.index[idx]
+                item = f'{rank} {desc} dimensions'
+                items.append(item)
+
+            formats = self.op.data_formats.formats
+            exc_layouts = rule.excluded_layouts
+            exc_formats = [df for df, (l, _) in formats.items() if l in
+                    exc_layouts]
+            fmt_list = ', '.join(exc_formats)
+            item = f'data formats ({fmt_list})'
+            items.append(item)
+            set_msg = grammar_list(items)
+            final = f'This combination is not implemented: {set_msg}'
+        return final
+
+    def _carat_table(self, fix):
+        """
+        Produce a table as depicted in 'FixIndexUsage' in report.txt 
+        """
+        column_names = _get_shape_columns(self.op, self.obs_shapes)
+        header_row = [''] + _get_headers(self.op, column_names)
+        df_name = self.op.data_formats.arg_name
+
+        shape_edit = fix.shape
+        arg_templ = shape_edit.arg_templates()
+        usage_map = shape_edit.usage_map
+        index_ranks = shape_edit.index_ranks 
+        layout = shape_edit.layout
+
+        leader_column = ['received', 'template', 'error']
+        columns = [leader_column]
+        for arg in column_names:
+            if arg == df_name:
+                used_fmt = fix.df.used
+                imp_fmt = fix.df.imputed
+                # the template should only appear if differing
+                if used_fmt != imp_fmt:
+                    hl = '^' * max(len(used_fmt), len(imp_fmt))
+                    col_str = [ used_fmt, imp_fmt, hl ]
+                else:
+                    col_str = [ fix.df.observed, '', '' ]
+            else:
+                # all signature-bearing arguments (or returns)
+                sig = shape_edit.arg_sigs[arg]
+                if arg in self.obs_shapes:
+                    obs_shape = self.obs_shapes[arg]
+                    if isinstance(obs_shape, int):
+                        obs_shape = [obs_shape]
+                else:
+                    obs_shape = []
+                    for idx in sig:
+                        dims = shape_edit.maybe_get_index_dim(idx) 
+                        obs_shape.extend(dims)
+
+                col = [ obs_shape, arg_templ[arg] ]
+                hl_row = []
+                for idx in sig:
+                    do_hl = shape_edit.highlighted(arg, idx)
+                    hl = [do_hl] * index_ranks[idx]
+                    hl_row.extend(hl)
+                widths = [max(len(str(t)), len(str(s))) for s, t in zip(*col)]
+                hl_row_str = ['^' * w if h else '' for h, w in zip(hl_row,
+                    widths)]
+                col.append(hl_row_str)
+                col_str, _ = base.tabulate(col, ' ', False)
+
+            # add the header
+            columns.append(col_str)
+
+        rows = [header_row] + np.array(columns).transpose().tolist()
+        main, _ = base.tabulate(rows, '   ', False)
+        table = '\n'.join(main)
+        return table
+
+    def carat_tables(self):
+        fixes = [f for f in self.fixes if f.kind() == ReportKind.CaratTable]
+        items = []
+        for fix in fixes:
+            table = self._carat_table(fix)
+            items.append(table)
+
+            df_change = _change_data_format_msg(fix)
+            if df_change is not None:
+                items.append(df_change)
+
+            # index usage error messages 
+            usage_msgs = _change_usage_msgs(self.op, fix)
+            usage_items = [ f'=> {item}' for item in usage_msgs]
+            items.extend(usage_items)
+
+            idx_cons_msg = _idx_constraint_msg(self.op, fix)
+            if idx_cons_msg is not None:
+                items.append(idx_cons_msg)
+
+        final = None if len(items) == 0 else '\n\n'.join(items)
+        return final
+
+    def _obs_rank_msg(self):
+        # form a user-facing message describing all observed ranks
+        items = []
+        for arg, shape in self.obs_shapes.items():
+            if isinstance(shape, int):
+                continue
+            item = f'{arg} rank = {len(shape)}'
+            items.append(item)
+
+        if self.op.data_formats.arg_name is not None:
+            df_name = self.op.data_formats.arg_name
+            item = f'{df_name} = {self.obs_args[df_name]}'
+            items.append(item)
+
+        item_str = grammar_list(items)
+        return item_str
+
+    def _template_table(self, fixes):
+        """
+        Produce a table with the input row, then a set of valid template rows.
+        The last column consists of a suggested edit
+        """
+        columns = _get_shape_columns(self.op, self.obs_shapes)
+        header_row = [''] + _get_headers(self.op, columns)
+        df_name = self.op.data_formats.arg_name
+        rows = [header_row]
+        input_row = ['received']
+        for col in columns:
+            if col in self.obs_shapes:
+                obs_shape = self.obs_shapes[col]
+                shape_str = dims_string(obs_shape)
+                input_row.append(shape_str)
+            elif col == df_name:
+                input_row.append(self.obs_args[col])
+        rows.append(input_row)
+
+        used_indexes = set()
+        tips = []
+        for i, fix in enumerate(fixes, 1):
+            edit = fix.shape
+            template_map = edit.arg_templates()
+
+            edit_tips = []
+            row = [f'config {i}'] 
+            for col in columns:
+                if col == df_name:
+                    if fix.df.cost() == 0:
+                        cell = ''
+                    else:
+                        tip = f'Change {fix.df.arg_name} to {fix.df.imputed}'
+                        edit_tips.append(tip)
+                        cell = f'=> {fix.df.imputed}'
+                else:
+                    cell = ' '.join(template_map[col])
+                    if col in edit.arg_delta:
+                        delta = edit.arg_delta[col]
+                        cell = '=> ' + cell
+                        sfx = '' if abs(delta) == 1 else 's'
+                        if delta < 0:
+                            tip = f'remove {abs(delta)} dimension{sfx} from {col}'
+                        else:
+                            tip = f'add {delta} dimension{sfx} to {col}'
+                        edit_tips.append(tip)
+                row.append(cell)
+
+            final_tip = f'=> config {i}: {", ".join(edit_tips)}'
+            tips.append(final_tip)
+            rows.append(row)
+
+        main, _ = base.tabulate(rows, '   ', False)
+        table = '\n'.join(main)
+        tip_msg = '\n'.join(tips)
+        return f'{table}\n\n{tip_msg}'
+
+    def arrow_table(self):
+        """
+        Produce an 'arrow table' format.  It is used for rank errors in the
+        absence of any dtype errors.
+        """
+        fixes = [f for f in self.fixes if f.kind() == ReportKind.ArrowTable]
+        if len(fixes) == 0:
+            return ''
+
+        ranks_msg = self._obs_rank_msg()
+        leader_msg = f'Received invalid configuration: {ranks_msg}.  '
+        leader_msg += f'Closest valid configurations:'
+        table = self._template_table(fixes)
+        index_abbrev = index_abbreviations(self.op)
+        tail_msg = 'For the list of all valid configurations, use: '
+        tail_msg += f'opgrind.explain(\'{self.op.op_path}\')'
+        final = f'{leader_msg}\n\n{table}\n\n{index_abbrev}\n\n{tail_msg}\n'
+        return final
 
 def grammar_list(items):
     # generate a grammatically correct English list
-    if len(items) < 3:
+    if len(items) == 0:
+        return None
+    elif len(items) < 3:
         return ' and '.join(items)
     else:
         return ', '.join(items[:-1]) + ' and ' + items[-1]
-
-def obs_rank_msg(op, obs_shapes, obs_args):
-    # form a user-facing message describing all observed ranks
-    items = []
-    for arg, shape in obs_shapes.items():
-        if isinstance(shape, int):
-            continue
-        item = f'{arg} rank = {len(shape)}'
-        items.append(item)
-
-    if op.data_formats.arg_name is not None:
-        df_name = op.data_formats.arg_name
-        item = f'{df_name} = {obs_args[df_name]}'
-        items.append(item)
-
-    item_str = grammar_list(items)
-    return item_str
 
 def index_abbreviations(op):
     msg = 'index abbreviations:'
@@ -176,141 +294,37 @@ def index_abbreviations(op):
     return tab 
 
 def _get_shape_columns(op, obs_shapes):
-    s = { arg for arg, shp in obs_shapes.items() if isinstance(shp, list) }
+    s = set(obs_shapes.keys()) 
+    # s = { arg for arg, shp in obs_shapes.items() if isinstance(shp, list) }
 
     df_name = op.data_formats.arg_name
     if df_name is not None:
         s.add(df_name)
     columns = [ arg for arg in op.arg_order if arg in s ]
+
+    # append output columns
+    for i in range(op.num_returns):
+        columns.append(f'return[{i}]')
+
     return columns 
 
 def _get_headers(op, columns):
-    return [f'{c}.shape' if c in op.data_tensors else c for c in columns]
-
-def template_table(op, fixes, obs_shapes, obs_args):
-    """
-    Produce a table with the input row, then a set of valid template rows.
-    The last column consists of a suggested edit
-    """
-    columns = _get_shape_columns(op, obs_shapes)
-    header_row = [''] + _get_headers(op, columns)
-    df_name = op.data_formats.arg_name
-    rows = [header_row]
-    input_row = ['received']
-    for col in columns:
-        if col in obs_shapes:
-            cell = ','.join(str(dim) for dim in obs_shapes[col])
-            input_row.append(f'[{cell}]')
-        elif col == df_name:
-            input_row.append(obs_args[col])
-    rows.append(input_row)
-
-    used_indexes = set()
-    tips = []
-    for i, fix in enumerate(fixes, 1):
-        edit = fix['shape']
-        template_map = edit.arg_templates()
-
-        edit_tips = []
-        row = [f'config {i}'] 
-        for col in columns:
-            if col == df_name:
-                df_edit = fix[df_name]
-                if df_edit.cost() == 0:
-                    cell = ''
-                else:
-                    tip = f'Change {df_name} to {df_edit.imp_val}'
-                    edit_tips.append(tip)
-                    cell = f'=> {df_edit.imp_val}'
-            else:
-                cell = ' '.join(template_map[col])
-                if col in edit.arg_delta:
-                    delta = edit.arg_delta[col]
-                    cell = '=> ' + cell
-                    sfx = '' if abs(delta) == 1 else 's'
-                    if delta < 0:
-                        tip = f'remove {abs(delta)} dimension{sfx} from {col}'
-                    else:
-                        tip = f'add {delta} dimension{sfx} to {col}'
-                    edit_tips.append(tip)
-            row.append(cell)
-
-        final_tip = f'=> config {i} tip: {", ".join(edit_tips)}'
-        tips.append(final_tip)
-        rows.append(row)
-
-    main, _ = base.tabulate(rows, '   ', False)
-    table = '\n'.join(main)
-    tip_msg = '\n'.join(tips)
-    return f'{table}\n\n{tip_msg}'
-
-def _fix_config(op, all_fixes, obs_shapes, obs_args):
-    """
-    """
-    ranks_msg = obs_rank_msg(op, obs_shapes, obs_args)
-    leader_msg = f'Received invalid configuration: {ranks_msg}.  '
-    leader_msg += f'Closest valid configurations:'
-    table = template_table(op, all_fixes, obs_shapes, obs_args)
-    index_abbrev = index_abbreviations(op)
-    tail_msg = 'For the list of all valid configurations, use: '
-    tail_msg += f'opgrind.explain(\'{op.op_path}\')'
-    final = f'{leader_msg}\n\n{table}\n\n{index_abbrev}\n\n{tail_msg}\n'
-    return final
-
-def _index_usage_table(op, idx_or_fmt_fix, obs_shapes, obs_args):
-    """
-    Produce a table as depicted in 'FixIndexUsage' in report.txt 
-    """
-    fix = idx_or_fmt_fix
-    column_names = _get_shape_columns(op, obs_shapes)
-    header_row = [''] + _get_headers(op, column_names)
-    df_name = op.data_formats.arg_name
-
-    edit = fix['shape']
-    arg_templ = edit.arg_templates()
-    usage_map = edit.usage_map
-    index_ranks = edit.index_ranks 
-    layout = edit.layout
-
-    leader_column = ['received', 'template', 'error']
-    columns = [leader_column]
-    for arg in column_names:
-        if arg == df_name:
-            obs_df = obs_args[df_name]
-            imp_df = op.data_formats.data_format(layout, index_ranks)
-            # the template should only appear if differing
-            if obs_df != imp_df:
-                hl = '^' * max(len(obs_df), len(imp_df))
-                col_str = [ obs_df, imp_df, hl ]
-            else:
-                col_str = [ obs_df, '', '' ]
+    headers = []
+    for c in columns:
+        if c in op.data_tensors or c in op.return_tensors:
+            headers.append(f'{c}.shape')
         else:
-            col = [ obs_shapes[arg], arg_templ[arg] ]
-            sig = edit.arg_sigs[arg]
-            hl_row = []
-            for idx in sig:
-                do_hl = len(usage_map[idx]) > 1
-                hl = [do_hl] * index_ranks[idx]
-                hl_row.extend(hl)
-            widths = [ max(len(str(t)), len(str(s))) for s, t in zip(*col) ]
-            hl_row_str = ['^' * w if h else '' for h, w in zip(hl_row, widths)]
-            col.append(hl_row_str)
-            col_str, _ = base.tabulate(col, ' ', False)
+            headers.append(c)
+    return headers
 
-        # add the header
-        columns.append(col_str)
-
-    rows = [header_row] + np.array(columns).transpose().tolist()
-    main, _ = base.tabulate(rows, '   ', False)
-    table = '\n'.join(main)
-    return table
-
-def _index_usage_leader(op, idx_fix, obs_shapes, obs_args):
-    usage_map = idx_fix['shape'].usage_map
-    # idx => (dims => [arg1, ...])
-
+def _index_usage_leader(op, shape_edit, obs_shapes, obs_args):
+    """
+    Produce messages of the form:
+    {index_desc} dimensions (index {code}) differ in {shape_list}
+    for each inconsistent usage
+    """
     items = []
-    for idx, usage in usage_map.items():
+    for idx, usage in shape_edit.usage_map.items():
         if len(usage) == 1:
             continue
         desc = op.index[idx]
@@ -322,13 +336,13 @@ def _index_usage_leader(op, idx_fix, obs_shapes, obs_args):
     leader_msg = '\n'.join(items)
     return leader_msg
 
-def _index_usage_change(op, edit):
+def _change_usage_msgs(op, fix):
     """
     Issue messages of the form:
     Change {arg}.shape[{slice}] or {arg2}.shape[{slice}] to the same values.
     """
     index_msgs = []
-    for idx, usage in edit.usage_map.items():
+    for idx, usage in fix.shape.usage_map.items():
         items = []
         if len(usage) == 1:
             continue
@@ -336,7 +350,7 @@ def _index_usage_change(op, edit):
 
         for dims, arg_list in usage.items():
             for arg in arg_list:
-                beg, end = edit.arg_index_slice(arg, idx)
+                beg, end = fix.shape.arg_index_slice(arg, idx)
                 if end - beg == 1:
                     item = f'{arg}.shape[{beg}] = {dims[0]}'
                 else:
@@ -348,129 +362,50 @@ def _index_usage_change(op, edit):
         index_msgs.append(index_msg)
     return index_msgs
 
-def fix_dtype(op, dtype_fix, obs_dtypes):
-    """
-    Called if a dtype fix is available.
-    """
-    rules = op.dtype_rules
-
-    if dtype_fix.kind == 'indiv':
-        arg = dtype_fix.info
-        obs_dtype = obs_dtypes[arg]
-        valid_dtypes = rules.indiv_rules[arg]
-        valid_phrase = grammar_list(valid_dtypes)
-
-        final = f'Received {arg}.dtype = {obs_dtype}.  Valid dtypes for {arg} '
-        final += f'{valid_phrase}'
-    elif dtype_fix.kind == 'equate':
-        arg = dtype_fix.info
-        dtype = obs_dtypes[arg]
-        source_arg = rules.equate_rules[arg]
-        source_dtype = obs_dtypes[source_arg]
-
-        final =  f'Received {arg}.dtype = {dtype} and '
-        final += f'{source_arg}.dtype = {source_dtype}.  '
-        final += f'dtypes of {arg} and {source_arg} must match.'
-
-    elif dtype_fix.kind == 'combo':
-        rule = dtype_fix.info
-
-        items = []
-        for arg, dtypes in rule.dtypes.items():
-            dtype_str = ', '.join(dtypes)
-            item = f'{arg}.dtype in ({dtype_str})'
-            items.append(item)
-
-        for idx, rank in rule.ranks.items():
-            desc = op.index[idx]
-            item = f'{rank} {desc} dimensions'
-            items.append(item)
-
-        formats = op.data_formats.formats
-        exc_layouts = rule.excluded_layouts
-        exc_formats = [df for df, (l, _) in formats.items() if l in exc_layouts]
-        fmt_list = ', '.join(exc_formats)
-        item = f'data formats ({fmt_list})'
-        items.append(item)
-        final = grammar_list(items)
-
-    return f'Fix DType\n{final}'
-
-def fix_index_usage(op, idx_fix, obs_shapes, obs_args):
-    """
-    Called when idx fix is present but no fmt, and no dtype fix
-    """
-    table = _index_usage_table(op, idx_fix, obs_shapes, obs_args)
-    leader = _index_usage_leader(op, idx_fix, obs_shapes, obs_args)
-    usage_msgs = _index_usage_change(op, idx_fix['shape'])
-    usage_items = [ f'=> {item}' for item in usage_msgs]
-    usage_msg = '\n'.join(usage_items)
-    final = f'Fix Index Usage\n{leader}\n\n{table}\n\n{usage_msg}\n'
-    return final
-
-def fix_df_or_index_usage(op, idx_fix, fmt_fixes, obs_shapes, obs_args):
-    """
-    Called when idx fix and fmt fix are both available, but no dtype fix
-    """
-    df_name = op.data_formats.arg_name
-    leader = f'Shapes are inconsistent for the provided {df_name}.  '
-    leader += 'Suggestions:'
-    usage_table = _index_usage_table(op, idx_fix, obs_shapes, obs_args)
-    usage_msgs = _index_usage_change(op, idx_fix['shape'])
-
-    final =  f'Fix Data Format or Index Usage\n'
-    final += f'{leader}\n\n'
-
-    for fmt_fix in fmt_fixes:
-        df_table = _index_usage_table(op, fmt_fix, obs_shapes, obs_args)
-        inf_df = fmt_fix[df_name].imp_val
-        df_msg = f'=> Change {df_name} to {inf_df}'
-        final += f'{df_table}\n\n{df_msg}\n\n'
-
-    usage_items = [ f'=> {item}' for item in usage_msgs]
-    usage_msg = '\n'.join(usage_items)
-    final += f'{usage_table}\n\n{usage_msg}\n'
-    return final
-
-def fix_data_format(op, fmt_fixes, obs_shapes, obs_args):
-    """
-    Called when there is no idx fix
-    """
-    final = 'Fix Data Format\n'
-    final += _fix_config(op, fmt_fixes, obs_shapes, obs_args)
-    return final
-
-def fix_rank(op, rank_fixes, obs_shapes, obs_args):
-    """
-    Called when rank fixes are present but fmt_idx and fmt fixes are both
-    absent.
-    """
-    final = 'Fix Ranks\n'
-    final += _fix_config(op, rank_fixes, obs_shapes, obs_args)
-    return final
-
-def fix_df_or_rank(op, rank_fixes, fmt_fixes, fmt_idx_fixes, obs_shapes,
-        obs_args):
-    """
-    Called when rank fixes are present and one of fmt_idx or fmt fixes are also
-    present.
-    """
-    if len(fmt_fixes) == 0:
-        all_fixes = rank_fixes + fmt_idx_fixes
+def _change_data_format_msg(fix):
+    if fix.df.cost() != 0:
+        msg = f'=> Change {fix.df.arg_name} to {fix.df.imputed}'
     else:
-        all_fixes = fmt_fixes + rank_fixes
-    final = 'Fix Data Format or Ranks\n'
-    final += _fix_config(op, all_fixes, obs_shapes, obs_args)
-    return final
+        msg = None
+    return msg
 
-def fix_constraint_error(op, cons_fix):
+def dims_string(dims):
+    # create a string representation of dimensions, 
+    if isinstance(dims, int):
+        return str(dims)
+    else:
+        s = ','.join('?' if d is None else str(d) for d in dims)
+        return f'[{s}]'
+
+def _idx_constraint_msg(op, fix):
     """
-    Called when  
+    Called when index dimensions violate a constraint added with
+    API function add_index_predicate.
+
+    Produces a message like:
+
+    "output spatial" dimensions must be >= 0
+
+    output spatial = ceil((input_spatial - (filter_spatial - 1) * dilations) / strides)
+    [-2] = ceil(([16] - ([10] - 1) * 2) / 1)
     """
-    pred = cons_fix.index_pred_error
-    findexes = cons_fix.findexes
+    if fix.shape.pred_cost() == 0:
+        return None
+
+    pred = fix.shape.index_pred_error
+    findexes = fix.shape.findexes
     templ_args = [ f'{op.index[idx]}' for idx in pred.indices ]
+
+    items = []
+    for idx in pred.indices:
+        item =  f'"{op.index[idx]}" ({idx}) dimensions = '
+        idx_dims = fix.shape.maybe_get_index_dim(idx)
+        item += dims_string(idx_dims)
+        items.append(item)
+    values_msg = grammar_list(items)
     constraint_msg = pred.templ_func(*templ_args)
+
+    notice = f'Shape constraint violation:  {values_msg}.  {constraint_msg}'
 
     # show the compute path of all dimensions so the user can trace it back.
     # there will be one-letter-code, description, and dimensions. 
@@ -478,26 +413,15 @@ def fix_constraint_error(op, cons_fix):
     for findex in findexes:
         desc_msg = '\n'.join(p for p in findex.desc_path)
         dims_msg = '\n'.join(p for p in findex.dims_path)
-        path = f'{desc_msg}\n{dims_msg}\n'
+        path =  f'Formula:    {desc_msg}\n'
+        path += f'Values :    {dims_msg}'
         paths.append(path)
 
-    if len(paths) > 0:
-        path_msg = '\n\n'.join(paths)
-    else:
+    if len(paths) == 0:
         path_msg = None
-
-    # inform the actual values for offending dimensions
-    items = []
-    for idx in pred.indices:
-        item = f'"{op.index[idx]}" dimensions = {cons_fix.index_dims[idx]}'
-        items.append(item)
-    values_msg = grammar_list(items)
-    final =  'Fix Constraint Error\n'
-
-    if path_msg is None:
-        final += constraint_msg + '\n\n' + values_msg
     else:
-        final +=  constraint_msg + '\n\n' + path_msg + '\n\n' + values_msg
-    return final
+        path_msg = '\n\n'.join(paths)
 
+    main = list(filter(None, (notice, path_msg)))
+    return '\n\n'.join(main)
 

@@ -10,7 +10,7 @@ from .fgraph import FuncNode as F, NodeFunc
 from . import fgraph
 
 LAYOUT = ':layout'
-DEFAULT_FORMAT = ':default'
+SINGLE_FORMAT = ':single_format'
 
 ALL_DTYPES = (
         'int8', 'int16', 'int32', 'int64',
@@ -37,6 +37,7 @@ class ShapeKind(enum.Enum):
 
 class ShapeEdit(object):
     def __init__(self, op, index_ranks, arg_sigs, layout):
+        self.op = op
         self.arg_sigs = arg_sigs  # arg => sig (the index signature for arg
         self.index_ranks = index_ranks  # idx => rank
         self.arg_delta = {}
@@ -44,11 +45,13 @@ class ShapeEdit(object):
         self.layout = layout
         self.index_pred_error = None
         self.findexes = None
+        self.comp_dims = None
 
     def __repr__(self):
         r  = f'arg_sigs: {self.arg_sigs}\n'
         r += f'arg_delta: {self.arg_delta}\n'
         r += f'usage_map: {self.usage_map}\n'
+        r += f'pred: {self.index_pred_error}\n'
         return r
 
     def add_indels(self, arg_delta):
@@ -57,13 +60,21 @@ class ShapeEdit(object):
     def add_idx_usage(self, usage_map):
         self.usage_map = usage_map
 
-    def add_constraint_error(self, pred, findexes, index_dims):
+    def add_comp_dims(self, comp_dims):
+        self.comp_dims = comp_dims
+
+    def add_constraint_error(self, pred, findexes):
+        # predicate {pred}, which accepts {findexes} as arguments has been
+        # violated with the imputed {index_dims}.  This function is only called
+        # if there are no index usage errors
         self.index_pred_error = pred
         self.findexes = findexes
-        self.index_dims = index_dims
 
     def indel_cost(self):
-        return sum(abs(d) for d in self.arg_delta.values())
+        # this assumes that each indel incurs an additional downstream cost of
+        # 1.  this is a simple heuristic to make up for the fact that there is
+        # no check for index usage error or index constraint error 
+        return sum(abs(d) + 1 for d in self.arg_delta.values())
 
     def idx_usage_cost(self):
         # cost of 1 for every additional usage of an index (regardless of 
@@ -107,22 +118,69 @@ class ShapeEdit(object):
             index_dims[idx] = next(iter(usage))
         return index_dims
 
+    def maybe_get_index_dim(self, idx):
+        if idx in self.usage_map:
+            usage = self.usage_map[idx]
+            if len(usage) == 1:
+                return next(iter(usage))
+            else:
+                return [None] * self.index_ranks[idx]
+        elif self.comp_dims is not None and idx in self.comp_dims:
+            return self.comp_dims[idx]
+        else:
+            return [None] * self.index_ranks[idx]
+
+    def highlighted(self, arg, idx):
+        # return whether the usage of idx in arg should be highlighted
+        if idx in self.usage_map and len(self.usage_map[idx]) > 1:
+            return True
+        elif (self.index_pred_error is not None and idx in
+                self.index_pred_error.indices):
+            return True
+        else:
+            return False
+
 class ValueEdit(object):
-    def __init__(self, obs_val, imputed_val):
+    def __init__(self, name, obs_val, imputed_val):
+        self.name = name
         self.obs_val = obs_val
         self.imp_val = imputed_val
 
     def __repr__(self):
-        return f'{type(self).__qualname__}({self.obs_val}, {self.imp_val})'
+        f = f'{type(self).__qualname__}[{self.name}]'
+        f += f'({self.obs_val}, {self.imp_val})'
+        return f
 
     def cost(self):
         return 0 if self.obs_val == self.imp_val else 1
 
+class DataFormatEdit(object):
+    def __init__(self, df_name, observed_fmt, used_fmt, imputed_fmt):
+        self.arg_name = df_name
+        self.observed = observed_fmt
+        self.used = used_fmt
+        self.imputed = imputed_fmt
+
+    def __repr__(self):
+        s = f'{type(self).__qualname__}'
+        s += f'(obs: {self.observed}, used: {self.used}, imp: {self.imputed})'
+        return s
+
+    def cost(self):
+        return 0 if self.used == self.imputed else 1
+
+        
 class DTypesEdit(object):
     def __init__(self, rule_kind, info):
         # one of 'indiv', 'equate', 'combo', or None
         self.kind = rule_kind
         self.info = info
+
+    def __hash__(self):
+        return hash((self.kind, self.info))
+
+    def __repr__(self):
+        return f'{type(self).__qualname__}[{self.kind},{self.info}]'
 
     def cost(self):
         return 0 if self.kind is None else 1
@@ -182,6 +240,11 @@ class ComboRule(object):
         self.ranks = {}
 
         self.excluded_layouts = set()
+
+    def __repr__(self):
+        f = f'{type(self).__qualname__}({self.dtypes}, {self.ranks}, '
+        f += f'{self.excluded_layouts}'
+        return f
 
     def exclude_dtypes(self, arg, dtype_expr):
         dtypes = parse_dtype_expr(dtype_expr)
@@ -317,14 +380,22 @@ class DataFormats(object):
     def __init__(self, arg_name, formats, rank_index):
         self.arg_name = arg_name
         if formats is None:
-            self.formats = { DEFAULT_FORMAT: (0, None) }
+            self.formats = { SINGLE_FORMAT: (0, None) }
             self.rank_index = None
         else:
             self.formats = formats
             self.rank_index = rank_index
 
-    def default(self):
-        return DEFAULT_FORMAT
+    def single(self):
+        # return a pseudo-format for ops that have no switch for data_format
+        return SINGLE_FORMAT
+
+    def default_layout(self):
+        if None not in self.formats:
+            raise RuntimeError(
+                f'Cannot call default_layout if None is not permitted for '
+                f'{self.arg_name}')
+        return self.formats[None][0]
 
     def num_layouts(self):
         return len({ lr[0] for lr in self.formats.values() })
@@ -586,7 +657,7 @@ class CompIndex(NodeFunc):
             dims_frag = self.template_func(*dims_form_args, *extra_args)
 
             this_olc = self.idx
-            this_desc = self.graph.op.index[self.idx]
+            this_desc = snake_case(self.graph.op.index[self.idx])
             this_dims_form = str(comp_dims)
 
             olc_eq = f'{this_olc} = {olc_frag}'
@@ -898,6 +969,81 @@ class ArgRankConstraint(Constraint):
         thi = obs_rank 
         residual = sum(index_ranks.get(idx, 0) for idx in arg_sig)
         return max(0, tlo - residual), max(0, thi - residual)
+
+class ReportKind(enum.Enum):
+    CaratTable = 0 
+    ArrowTable = 1
+    DType = 2
+
+class Fix(object):
+    def __init__(self, df_edit, dtype_edit, shape_edit, **kwargs):
+        self.df = df_edit
+        self.dtype = dtype_edit
+        self.shape = shape_edit
+        self.kwargs = kwargs
+
+    def __repr__(self):
+        f = f'df: {self.df}\ndtype: {self.dtype}\nshape: {self.shape}'
+        f += f'kwargs: {self.kwargs}\n'
+        f += f'cost(df,dt,indel,usg,prd): '
+        f += f'{self.df.cost()}, '
+        f += f'{self.dtype.cost()}, '
+        f += f'{self.shape.indel_cost()}, '
+        f += f'{self.shape.idx_usage_cost()}, '
+        f += f'{self.shape.pred_cost()}'
+        return f
+
+    def summary(self):
+        """
+        Display a logical, one-line summary of this fix, for indexing purposes
+        """
+        shape = self.shape
+        ranks = [shape.index_ranks[idx] for idx in shape.op.index.keys()]
+        rank_str = ','.join(str(r) for r in ranks)
+        r =  f'L:{self.shape.layout}, R:{rank_str}'
+        if self.df.cost() != 0:
+            r += f' DF:{self.df.observed}=>{self.df.imputed}'
+        if self.dtype.cost() != 0:
+            r += f' DT:{self.dtype.kind}'
+        if self.shape.cost() != 0:
+            if self.shape.indel_cost() != 0:
+                items = []
+                for arg, delta in self.shape.arg_delta.items():
+                    if delta > 0:
+                        item = f'{arg}(ins {delta})'
+                    else:
+                        item = f'{arg}(del {abs(delta)})'
+                    items.append(item)
+                indel_msg = ', '.join(items)
+                r += f' Indels({indel_msg})'
+            if self.shape.idx_usage_cost() != 0:
+                items = []
+                for idx, usage in self.shape.usage_map.items():
+                    if len(usage) > 1:
+                        all_args = [a for u in usage.values() for a in u]
+                        arg_msg = ','.join(all_args)
+                        item = f'{idx}:{arg_msg}'
+                        items.append(item)
+                usage_msg = ', '.join(items)
+                r += f' Usage({usage_msg})'
+            if self.shape.pred_cost() != 0:
+                pred_name = self.shape.index_pred_error.name
+                r += f' PredError({pred_name})'
+        return r
+
+    def kind(self):
+        dtype_cost = self.dtype.cost()
+        rank_cost = self.shape.indel_cost()
+
+        if dtype_cost != 0:
+            return ReportKind.DType
+        elif rank_cost != 0:
+            return ReportKind.ArrowTable
+        else:
+            return ReportKind.CaratTable
+
+    def cost(self):
+        return self.df.cost() + self.dtype.cost() + self.shape.cost()
 
 # convert rows of arbitrary objects to tabular row strings
 def tabulate(rows, sep, left_align=True):

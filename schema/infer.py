@@ -117,9 +117,11 @@ class ArgIndels(ReportNodeFunc):
         delete a subrange from a shape.  
         """
         arg_delta = {}
-        edit = base.ShapeEdit(self, index_ranks, sigs, layout)
+        edit = base.ShapeEdit(self.op, index_ranks, sigs, layout)
 
         for arg, rank in arg_ranks.items():
+            if arg not in obs_shapes:
+                continue
             obs_shape = obs_shapes[arg]
             sig = sigs[arg]
             if isinstance(obs_shape, int):
@@ -194,6 +196,8 @@ class IndexConstraints(ReportNodeFunc):
         # each usage should have a single entry
         input_dims = shape_edit.get_input_dims()
         comp_dims = self.op.dims_graph.dims(input_dims, **comp)
+        shape_edit.add_comp_dims(comp_dims)
+
         index_templ = self.op.dims_graph.templates(input_dims, **comp) 
         index_dims = { **input_dims, **comp_dims }
 
@@ -211,7 +215,7 @@ class IndexConstraints(ReportNodeFunc):
                 pred_input_dims.append(dims)
 
             if not pred.pred_func(*pred_input_dims):
-                shape_edit.add_constraint_error(pred, pred_templ, index_dims)
+                shape_edit.add_constraint_error(pred, pred_templ)
                 break
 
         with self.reserve_edit(shape_edit.cost()) as avail:
@@ -230,9 +234,15 @@ class DataFormat(ReportNodeFunc):
         self.rank_idx = rank_idx
 
     def __call__(self, ranks, layout, obs_args):
-        inf_format = self.formats.data_format(layout, ranks)
-        obs_format = obs_args.get(self.arg_name, base.DEFAULT_FORMAT)
-        edit = base.ValueEdit(obs_format, inf_format)
+        imp_fmt = self.formats.data_format(layout, ranks)
+        obs_fmt = obs_args.get(self.arg_name, None)
+        if obs_fmt is None:
+            # this will only occur if the schema permits None for data_format
+            def_layout = self.formats.default_layout()
+            used_fmt = self.formats.data_format(def_layout, ranks)
+        else:
+            used_fmt = obs_fmt
+        edit = base.DataFormatEdit(self.arg_name, obs_fmt, used_fmt, imp_fmt)
         with self.reserve_edit(edit.cost()) as avail:
             if avail:
                 yield edit
@@ -255,7 +265,7 @@ class Options(ReportNodeFunc):
     def __call__(self, obs_args):
         obs_option = obs_args[self.arg_name]
         for imp_option in self.options:
-            edit = base.ValueEdit(obs_option, imp_option)
+            edit = base.ValueEdit(self.arg_name, obs_option, imp_option)
             with self.reserve_edit(edit.cost()) as avail:
                 if avail:
                     yield edit
@@ -272,14 +282,13 @@ class DTypes(ReportNodeFunc):
                 yield edit
 
 class Report(NodeFunc):
-    def __init__(self):
+    def __init__(self, op):
         super().__init__(None)
+        self.op = op
 
-    def __call__(self, dtypes, index_usage, **kwargs):
-        out_map = {
-                'dtypes': dtypes,
-                'shape': index_usage,
-                **kwargs
-                }
-        yield out_map
+    def __call__(self, dtype_edit, shape_edit, **kwargs):
+        df_node_name = self.op.data_format_inode.used_name()
+        df_edit = kwargs.pop(df_node_name)
+        res = base.Fix(df_edit, dtype_edit, shape_edit, **kwargs)
+        yield res
 

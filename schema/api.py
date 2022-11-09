@@ -80,6 +80,7 @@ class SchemaApi(object):
         self.dtypes = None 
         self.predicate_nodes = None
         self.data_format_gobj = None
+        self.data_format_inode = None
 
         # Objects shared between graphs
         self.data_formats = None
@@ -92,8 +93,7 @@ class SchemaApi(object):
         self.index_preds = base.IndexPredicates()
         self.num_returns = 0
         self.return_nodes = []
-
-        # 
+        self.return_tensors = []
 
         # error status
         # None: success.  pr.ErrorReport or list of Fix objects is failure
@@ -205,13 +205,11 @@ class SchemaApi(object):
         Check the return tensors' shapes and types against those predicted by
         the framework
         """
-        if not isinstance(self.input_errors, Success):
-            return
-
         if not isinstance(op_return, (list, tuple)):
             op_return = (op_return,)
         self.returns = { f'return[{i}]': v for i, v in enumerate(op_return) }
-        error = fgraph.pred_graph_evaluate(self.return_pred_graph.values())
+
+        error = fgraph.pred_graph_evaluate(self.pred_graph.values())
         if error is not None:
             raise SchemaError(error.msg(self))
 
@@ -317,13 +315,40 @@ class SchemaApi(object):
             obs_dtypes = self.obs_dtypes.get_cached()
             obs_shapes = self.obs_shapes.get_cached()
             obs_args = self.obs_args.get_cached()
-            msg = report.report(self, fixes, obs_dtypes, obs_shapes, obs_args)
+            rep = report.Report(self, fixes, obs_dtypes, obs_shapes, obs_args)
+            msg = rep.report()
         elif isinstance(self.input_error, pr.ErrorReport):
             msg = self.input_error.report()
         else:
             raise RuntimeError(
                 f'Unknown type of input error: {type(self.input_error)}')
         return msg
+
+    def _report_edit_summary(self):
+        if self.input_error is None:
+            msg = ''
+        elif isinstance(self.input_error, list):
+            fixes = self.input_error
+            items = [ f.summary() for f in fixes]
+            msg = ', '.join(items)
+        elif isinstance(self.input_error, pr.ErrorReport):
+            msg = self.input_error.report()
+        else:
+            raise RuntimeError(
+                f'Unknown type of input error: {type(self.input_error)}')
+
+        # summarize returns if any
+        items = []
+        for ret in self.returns.values():
+            item = f'{ret.shape.as_list()}:{ret.dtype.name}'
+            items.append(item)
+        if len(items) == 0:
+            ret_msg = None
+        else:
+            ret_items = ', '.join(items)
+            ret_msg = f'Return({ret_items})'
+        finals = list(filter(None, (msg, ret_msg)))
+        return '\t'.join(finals)
 
     def _get_arg(self, arg_name):
         """Retrieve the value of {arg_name} argument at call-time."""
@@ -384,7 +409,7 @@ class SchemaApi(object):
         cons_obj = nf.IndexConstraints(self)
         cons_inode = G.add_node(cons_obj, idx_usage_inode)
 
-        report_obj = nf.Report()
+        report_obj = nf.Report(self)
         self.report_inode = G.add_node(report_obj, self.dtypes, cons_inode)
 
     def _init_gen_graph(self):
@@ -400,15 +425,6 @@ class SchemaApi(object):
         arg_muts_obj = ge.ArgMutations(self)
         arg_muts = G.add_node(arg_muts_obj, arg_indels, index_ranks, sigs)
         self.args_gnode = G.add_node(ge.Args())
-
-        for i in range(self.num_returns):
-            ret_name = f'return[{i}]'
-            ret_tensor = fgraph.node_name(pr.GetReturnTensor, ret_name)
-            valid_return = fgraph.node_name(pr.ValidReturnShape, ret_name)
-            ret_node = self.pred_graph.pop(ret_tensor)
-            self.return_pred_graph[ret_tensor] = ret_node
-            valid_ret_node = self.pred_graph.pop(valid_return)
-            self.return_pred_graph[valid_return] = valid_ret_node
 
     def _finalize(self):
         self.dims_graph.finalize()
@@ -471,6 +487,7 @@ class SchemaApi(object):
 
         stats_fh = open(os.path.join(out_dir, f'{self.op_path}.stats.txt'), 'w')
         report_fh = open(os.path.join(out_dir, f'{self.op_path}.txt'), 'w')
+        diagnostic_fh = open(os.path.join(out_dir, f'{self.op_path}.sum.txt'), 'w')
         cats = [ 'TP', 'TN', 'FP', 'FN' ]
         stats = { k: 0 for k in cats }
 
@@ -478,8 +495,14 @@ class SchemaApi(object):
         # print(f'Generated {len(op_args_list)} test cases')
 
         for test_num, op_args in enumerate(op_args_gen, 1):
-            if test_ids is not None and test_num not in test_ids:
-                continue
+            if test_ids is not None:
+                if len(test_ids) == 0:
+                    break
+                if test_num not in test_ids:
+                    continue
+                else:
+                    test_ids.remove(test_num)
+
             # print(op_args)
             # self.show_graph_calls = True
             arg_dict = { k: v.value() for k, v in op_args.items() }
@@ -518,6 +541,9 @@ class SchemaApi(object):
             print('\n\n', call, file=report_fh)
             print(f'Framework Error\n{self.framework_error}\n', file=report_fh)
             print(self._report(), file=report_fh)
+            edit_summary = self._report_edit_summary()
+            diagnostic = f'{test_num}\t{cat}\t{edit_summary}'
+            print(diagnostic, file=diagnostic_fh)
 
         print()
         stats_fh.close()
@@ -853,11 +879,12 @@ class SchemaApi(object):
         ranks_inode = self._inf_node(nf.IndexRanks)
         df_iobj = nf.DataFormat(self, self.data_formats, arg_name, rank_idx)
         df_inode = G.add_node(df_iobj, ranks_inode, layout_inode, self.obs_args)
+        self.data_format_inode = df_inode
 
         if arg_name is not None:
             self.arg_gen_nodes[arg_name] = df_gnode
             self.args_gnode.append_parent_sn(df_gnode)
-            self.report_inode.append_parent_sn(df_inode)
+            self.report_inode.append_parent(df_inode)
 
         P.set_registry(self.pred_graph)
         schema = self._pred_node(pr.Schema)
@@ -1197,6 +1224,7 @@ class SchemaApi(object):
         """
         index = self.num_returns
         ret_name = f'return[{index}]'
+        self.return_tensors.append(ret_name)
         sigs_list = self._check_sigs_layout(ret_name, sigs)
 
         P.set_registry(self.pred_graph)
@@ -1213,5 +1241,13 @@ class SchemaApi(object):
         shapes = self._pred_node(pr.GetShapes)
         rval = P.add_node(rvalid_pobj, rten, shapes)
         self.return_nodes.extend((rten, rval))
+
+        G.set_registry(self.inf_graph)
+        layout_inode = self._inf_node(ge.Layout)
+        sig_iobj = ge.Sig(self, ret_name, sigs_list)
+        sig_inode = G.add_node(sig_iobj, layout_inode)
+        sigmap_inode = self._inf_node(ge.SigMap)
+        sigmap_inode.append_parent_sn(sig_inode)
+
         self.num_returns += 1
 

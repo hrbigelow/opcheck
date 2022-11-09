@@ -12,30 +12,14 @@ Schema API calls:
     add_index_predicate
     add_index_generator
 """
-
-def diff_ceil(x):
-    if isinstance(x, np.ndarray):
-        return np.ceil(x)
-    else:
-        return math.ceil(x)
-
-def diff_floor(x):
-    if isinstance(x, np.ndarray):
-        return np.floor(x)
-    else:
-        return math.floor(x)
-
 def ceildiv(a, b):
-    return diff_ceil(a / b)
+    return np.ceil(a / b).astype(a.dtype)
 
 def floordiv(a, b):
-    return diff_floor(a / b)
+    return a // b
 
 def mod(a, b):
-    if isinstance(a, np.ndarray):
-        return np.mod(a, b)
-    else:
-        return math.fmod(a, b)
+    return np.mod(a, b)
 
 def reduce_prod(a):
     return np.array([np.prod(a)])
@@ -57,34 +41,22 @@ def divis_by(numer, denom):
     Return a status confirming that {numer} is evenly divisible by {denom}
     """
     # this may broadcast
-    rem = numer.dims % denom.dims
-    if np.all(rem == 0):
-        return Success()
-    else:
-        text = []
-        sn = numer.code
-        sd = denom.code
-        for i, mod in enumerate(rem):
-            if len(numer.dims) == 1:
-                ncode, nval = sn, numer.dims[0]
-            else:
-                ncode, nval = f'{sn}{i+1}', numer.dims[i]
-            if len(denom.dims) == 1:
-                dcode, dval = sd, denom.dims[0]
-            else:
-                dcode, dval = f'{sd}{i+1}', denom.dims[i]
+    rem = numer % denom
+    return np.all(rem == 0)
 
-            if mod != 0:
-                line = (f'{ncode} is not divisible by {dcode}  '
-                        f'({nval} % {dval} = {mod})')
-                text.append(line)
+def divis_by_templ(numer, denom):
+    return f'"{numer}" dimensions must be divisible by "{denom}" dimensions'
 
-        error_mask = (rem != 0).tolist()
-        main = (f'\'{numer.desc}\' ({numer.code}) dimensions must be '
-                f'divisible by \'{denom.desc}\' ({denom.code})')
-        all_text = main + '\n' + '\n'.join(text)
-        return ComponentConstraintError(all_text, error_mask)
-
+def gen_divis_by(dummy, lo, hi):
+    """
+    Generate a list of shape tuples.  Each tuple has two members.  Each member
+    is rank 1.  The first member is divisible by the second.  Both are in range
+    [lo, hi]
+    """
+    q = randint(lo, hi+1)
+    mul = randint(1, hi // q + 1)
+    p = q * mul
+    return [([p], [q])]
 
 class PredAbove(object):
     """

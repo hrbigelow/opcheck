@@ -6,6 +6,7 @@ def init_schema(op):
     op.add_index('f', 'filter spatial', 'i')
     op.add_index('o', 'output spatial', 'i')
     op.add_index('k', 'input channel', (1, 1))
+    op.add_index('j', 'output filter', (1, 1))
     op.add_index('l', 'output channel', (1, 1))
     op.add_index('s', 'strides', 'i')
     op.add_index('d', 'dilations', 'i')
@@ -22,7 +23,7 @@ def init_schema(op):
 
     op.arg_layout('data_format', formats, 'i')
     op.arg_tensor('input', 'bki', 'bik')
-    op.arg_tensor('filters', 'fkl')
+    op.arg_tensor('filters', 'fjl')
     op.arg_option('padding', ('VALID', 'SAME'))
     op.arg_shape_bcast_list('strides', 's')
     op.arg_shape_bcast_list('dilations', 'd')
@@ -42,6 +43,9 @@ def init_schema(op):
             flib.not_both_over_one_templ, 'sd')
     op.add_index_generator('sd', flib.gen_not_both_over_one, 'sd', 1, 3)
     op.add_index_generator('f', flib.gen_range, 'f', 3, 10)
+
+    op.add_index_predicate('k % j == 0', flib.divis_by, flib.divis_by_templ, 'kj')
+    op.add_index_generator('jk', flib.gen_divis_by, '', 1, 8) 
     
     # compute output spatial dimension 
     def odims(i, f, s, d, padding):

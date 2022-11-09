@@ -450,7 +450,7 @@ class DataFormat(ReportNodeFunc):
 
     def __call__(self, op):
         if self.arg_name is None:
-            return True, self.formats.default()
+            return True, self.formats.single()
 
         data_format = op._get_arg(self.arg_name)
         valid = (data_format in self.formats.all_formats())
