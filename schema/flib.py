@@ -28,13 +28,14 @@ def not_both_over_one(shape1, shape2):
     """
     Return true if, for all i, not(shape1[i] > 1 and shape2[i] > 1) is true
     """
-    o1 = shape1 > 1
-    o2 = shape2 > 1
-    both = o1 & o2
-    return not np.any(both)
+    o1 = np.any(shape1 > 1)
+    o2 = np.any(shape2 > 1)
+    return not (o1 and o2)
 
 def not_both_over_one_templ(shape1, shape2):
-    return f'"{shape1}" and "{shape2}" dimensions cannot both be over 1'
+    msg =  f'"{shape1}" and "{shape2}" dimensions cannot '
+    msg += f'both contain an element over 1'
+    return msg
 
 def divis_by(numer, denom):
     """

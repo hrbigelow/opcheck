@@ -119,7 +119,7 @@ class ShapeTensor2DArg(OpArg):
         ten = tf.transpose(ten)
         return ten
 
-class ShapeIntArg(OpArg):
+class IntArg(OpArg):
     """
     An OpArg produced by ge.ShapeInt
     """

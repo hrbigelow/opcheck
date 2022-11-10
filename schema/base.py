@@ -234,40 +234,50 @@ def parse_dtype_expr(type_expr):
 class ComboRule(object):
     def __init__(self):
         # tensor => [excluded_dtype, ...]
-        self.dtypes = {}
+        self.dtypes = None 
 
         # idx => excluded_rank
-        self.ranks = {}
+        self.ranks = None 
 
-        self.excluded_layouts = set()
+        self.layouts = None
 
     def __repr__(self):
         f = f'{type(self).__qualname__}({self.dtypes}, {self.ranks}, '
-        f += f'{self.excluded_layouts}'
+        f += f'{self.layouts}'
         return f
 
-    def exclude_dtypes(self, arg, dtype_expr):
-        dtypes = parse_dtype_expr(dtype_expr)
-        excluded = self.dtypes.setdefault(arg, [])
-        excluded.extend(dtypes)
+    def exclude_dtypes(self, arg, *dtype_exprs):
+        self.dtypes = {}
+        for dtype_expr in dtype_exprs:
+            dtypes = parse_dtype_expr(dtype_expr)
+            excluded = self.dtypes.setdefault(arg, [])
+            excluded.extend(dtypes)
 
-    def exclude_rank(self, idx, rank):
-        self.ranks[idx] = rank
+    def exclude_rank(self, idx, *ranks):
+        self.ranks = {}
+        for rank in ranks:
+            self.ranks[idx] = rank
 
-    def exclude_layout(self, layout):
-        self.excluded_layouts.add(layout)
+    def exclude_layout(self, *layouts):
+        self.layouts = set()
+        for layout in layouts:
+            self.layouts.add(layout)
 
     def match(self, obs_dtypes, index_ranks, layout):
-        for arg, dtypes in self.dtypes.items():
-            obs_dtype = obs_dtypes[arg]
-            if obs_dtype not in dtypes:
-                return False
-        for idx, rank in self.ranks.items():
-            obs_rank = index_ranks[idx]
-            if obs_rank != rank:
-                return False
-        if layout not in self.excluded_layouts:
-            return False 
+        # return True if this ComboRule matches the observations
+        if self.dtypes is not None:
+            for arg, dtypes in self.dtypes.items():
+                obs_dtype = obs_dtypes[arg]
+                if obs_dtype not in dtypes:
+                    return False
+        if self.ranks is not None:
+            for idx, rank in self.ranks.items():
+                obs_rank = index_ranks[idx]
+                if obs_rank != rank:
+                    return False
+        if self.layouts is not None:
+            if layout not in self.layouts:
+                return False 
         return True
 
 class DTypeRules(object):
@@ -318,14 +328,15 @@ class DTypeRules(object):
         combo_rule = ComboRule()
         for i in range(0, nitem, 2):
             field = field_val_pairs[i]
-            value = field_val_pairs[i+1]
+            values = field_val_pairs[i+1]
+            if not isinstance(values, (tuple, list)):
+                values = (values,)
             if field in self.data_tensors:
-                addr = f't:{field}'
-                combo_rule.exclude_dtypes(field, value)
+                combo_rule.exclude_dtypes(field, *values)
             elif field in self.indices:
-                combo_rule.exclude_rank(field, value)
+                combo_rule.exclude_rank(field, *values)
             elif field == LAYOUT:
-                combo_rule.exclude_layout(value)
+                combo_rule.exclude_layout(*values)
             else:
                 raise RuntimeError(
                     f'{type(self).__qualname__}: got field \'{field}\' which '
@@ -390,12 +401,23 @@ class DataFormats(object):
         # return a pseudo-format for ops that have no switch for data_format
         return SINGLE_FORMAT
 
-    def default_layout(self):
+    def default_format(self, ranks):
+        """
+        Return the format consistent with the ranks in the case when the user
+        does not submit an argument value for data_format
+        """
         if None not in self.formats:
             raise RuntimeError(
-                f'Cannot call default_layout if None is not permitted for '
+                f'Cannot call default_format if None is not permitted for '
                 f'{self.arg_name}')
-        return self.formats[None][0]
+        def_layout = self.formats[None][0]
+        return self.data_format(def_layout, ranks)
+
+    def observed_format(self, obs_args):
+        if self.arg_name is None:
+            return SINGLE_FORMAT
+        else:
+            return obs_args.get(self.arg_name, None)
 
     def num_layouts(self):
         return len({ lr[0] for lr in self.formats.values() })

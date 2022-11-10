@@ -2,15 +2,12 @@ import sys
 import math
 import enum
 from contextlib import contextmanager
-from collections import Counter, namedtuple
+from collections import namedtuple
 import tensorflow as tf
 import logging
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import numpy as np
-import itertools
 from random import randint, choice, sample
-from functools import partial
-from collections import defaultdict
 from .fgraph import FuncNode as F, func_graph_evaluate, NodeFunc
 from .base import ALL_DTYPES
 from .oparg import *
@@ -226,7 +223,7 @@ class RankRange(GenFunc):
 
     def __call__(self, **index_ranks):
         # Get the initial bounds consistent with the schema
-        sch_lo, sch_hi = 0, 1e10
+        sch_lo, sch_hi = 0, 100000
         for cons in self.schema_cons:
             clo, chi = cons(**index_ranks)
             sch_lo = max(sch_lo, clo)
@@ -391,7 +388,6 @@ class DataFormat(GenFunc):
     def __call__(self, ranks, layout):
         inferred_fmt = self.formats.data_format(layout, ranks)
         num_yielded = 0
-        rank = ranks[self.rank_idx]
         for alt_fmt in self.formats.all_formats():
             if num_yielded == self.op.max_yield_count:
                 break
@@ -403,56 +399,6 @@ class DataFormat(GenFunc):
                     if avail:
                         yield oparg.ValueArg(alt_fmt) 
                         num_yielded += 1
-
-IndelMutation = namedtuple('IndelMutation', ['arg', 'delta'])
-
-class Indels(GenFunc):
-    """
-    Represent an Indel mutation on one of the argument shapes
-    Parents: ArgRanks, Sigs
-    """
-    def __init__(self, op):
-        super().__init__(op)
-
-    def __call__(self, arg_ranks, sigs, obs_shapes):
-        if self.op.generation_mode == GenMode.Test:
-            yield None
-            if not self.available_edit(1):
-                return
-            definite_inds = self.op.definite_rank_indices
-            arg_names = list(arg_ranks.keys())
-            arg_ranks_tup = tuple(arg_ranks[n] for n in arg_names)
-            for t, arg in enumerate(arg_names):
-                sig = sigs[arg]
-                definite_sig = any(idx in definite_inds for idx in sig)
-                for delta in (-1, 1):
-                    z = enumerate(arg_ranks_tup)
-                    mut = tuple(r + delta if i == t else r for i, r in z)
-                    # collisions with valid ranks will be filtered out
-                    # later
-                    if any(r < 0 for r in mut):
-                        continue
-                    # Mutating a rank to 1 aliases with the broadcasting
-                    # behavior of an indefinite sig.
-                    if not definite_sig and mut[t] == 1:
-                        continue
-
-                    # the suggestion gives the original arg and rank
-                    args = (arg, arg_ranks[arg])
-                    with self.new_error(self, args, 1) as avail:
-                        assert avail
-                        indel = IndelMutation(arg, delta)
-                        yield indel
-
-        elif self.op.generation_mode == GenMode.Inference:
-            """
-            All observed ranks are accounted for in RankRange nodes, which set
-            errors as Indel instances.  So, any rank discrepancies between
-            implied and observed ranks are already accounted for. 
-            """
-            yield None
-        else:
-            raise RuntimeError('generation_mode not set')
 
 class DTypeIndiv(GenFunc):
     """
@@ -540,7 +486,7 @@ class DataTensor(GenFunc):
         arg = oparg.DataTensorArg(shape, dtype)
         yield arg
 
-class ShapeInt(GenFunc):
+class ShapeInt(NodeFunc):
     """
     Produce an integer value representing the shape of arg_name.  Returns the
     empty list if the shape is inconsistent with a non-broadcasted integer.
@@ -554,7 +500,7 @@ class ShapeInt(GenFunc):
         if len(shape) != 1:
             return []
         else:
-            arg = oparg.ShapeIntArg(shape[0])
+            arg = oparg.IntArg(shape[0])
             yield arg
 
 class ShapeList(GenFunc):
@@ -605,6 +551,20 @@ class ShapeTensor2D(GenFunc):
         arg = oparg.ShapeTensor2DArg(rows)
         yield arg
 
+class RankInt(NodeFunc):
+    """
+    Generate an argument which is an integer defining the rank of a signature
+    """
+    def __init__(self, arg_name, sig):
+        super().__init__(arg_name)
+        self.arg_name = arg_name
+        self.sig = sig
+
+    def __call__(self, index_ranks):
+        rank = sum(index_ranks[idx] for idx in self.sig)
+        arg = oparg.IntArg(rank)
+        yield arg
+        
 class Int(GenFunc):
     def __init__(self, lo, hi):
         super().__init__(f'{lo}-{hi}')

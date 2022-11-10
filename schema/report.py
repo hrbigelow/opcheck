@@ -79,23 +79,27 @@ class Report(object):
             rule = dtype_edit.info
 
             items = []
-            for arg, dtypes in rule.dtypes.items():
-                dtype_str = ', '.join(dtypes)
-                item = f'{arg}.dtype in ({dtype_str})'
+            if rule.dtypes is not None:
+                for arg, dtypes in rule.dtypes.items():
+                    dtype_str = ', '.join(dtypes)
+                    item = f'{arg}.dtype in ({dtype_str})'
+                    items.append(item)
+
+            if rule.ranks is not None:
+                for idx, rank in rule.ranks.items():
+                    desc = self.op.index[idx]
+                    item = f'{rank} {desc} dimensions'
+                    items.append(item)
+
+            if rule.layouts is not None:
+                formats = self.op.data_formats.formats
+                exc_layouts = rule.layouts
+                exc_formats = [df for df, (l, _) in formats.items() if l in
+                        exc_layouts]
+                fmt_list = ', '.join(exc_formats)
+                item = f'data formats ({fmt_list})'
                 items.append(item)
 
-            for idx, rank in rule.ranks.items():
-                desc = self.op.index[idx]
-                item = f'{rank} {desc} dimensions'
-                items.append(item)
-
-            formats = self.op.data_formats.formats
-            exc_layouts = rule.excluded_layouts
-            exc_formats = [df for df, (l, _) in formats.items() if l in
-                    exc_layouts]
-            fmt_list = ', '.join(exc_formats)
-            item = f'data formats ({fmt_list})'
-            items.append(item)
             set_msg = grammar_list(items)
             final = f'This combination is not implemented: {set_msg}'
         return final

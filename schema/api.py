@@ -325,8 +325,19 @@ class SchemaApi(object):
         return msg
 
     def _report_edit_summary(self):
+        """
+        In case of TP and FP, provides a single-line summary of the list of
+        suggested edits.  For TN, the empty string.  For FN, the framework
+        exception in string form.
+        """
         if self.input_error is None:
-            msg = ''
+            if self.framework_error is None:
+                msg = None
+            else:
+                err_string = str(self.framework_error.ex)
+                mt = re.match('\{\{.+?\}\} (.+)', err_string)
+                msg = err_string if mt is None else mt.groups()[0]
+
         elif isinstance(self.input_error, list):
             fixes = self.input_error
             items = [ f.summary() for f in fixes]
@@ -536,13 +547,14 @@ class SchemaApi(object):
             stats[cat] += 1
             progress = '  '.join(f'{c}: {stats[c]:-5d}' for c in cats)
             print(f'\rTest: {test_num:-5d}  {progress}', end='')
-            call = f'{test_num}\t{cat}\t{op_args}'
+            arg_fields = '\t'.join(f'{k}:{v}' for k,v in op_args.items())
+            call = f'{test_num}\t{cat}\t{arg_fields}'
             print(call, file=stats_fh)
             print('\n\n', call, file=report_fh)
             print(f'Framework Error\n{self.framework_error}\n', file=report_fh)
             print(self._report(), file=report_fh)
             edit_summary = self._report_edit_summary()
-            diagnostic = f'{test_num}\t{cat}\t{edit_summary}'
+            diagnostic = f'{call}\t{edit_summary}'
             print(diagnostic, file=diagnostic_fh)
 
         print()
@@ -708,24 +720,13 @@ class SchemaApi(object):
         name = f'{comp_index} >= {min_val}'
         self.add_index_predicate(name, min_val_pred, min_val_templ, comp_index)  
 
-    def _gen_nodes_map(self):
-        # get a map of idx => primary rank node (from the gen_graph) for all
-        # indexes
-        nodes = {} 
-        for idx in self.index.keys():
-            pri_idx = self.equiv_index[idx]
-            node = self.gen_graph[pri_idx]
-            nodes[idx] = node
-        return nodes
-
     def limit_ranks(self, sig, min_val, max_val):
         """
         Declare that the rank of {sig} be in [{min_val}, {max_val}]
         """
         self._check_sig(sig, 'rank limits')
-        node_map = self._gen_nodes_map()
         for idx in sig:
-            if idx not in node_map:
+            if idx not in self.equiv_index:
                 raise SchemaError(
                     f'Index \'{idx}\' mentioned in signature \'{sig}\' was '
                     f'not registered with add_index.  All indices must first '
@@ -735,8 +736,11 @@ class SchemaApi(object):
         pri_sig = ''.join(sorted(self.equiv_index[idx] for idx in sig))
         cons = base.SumRangeConstraint(pri_sig, min_val, max_val)
         for idx in sig:
-            node = node_map[idx]
-            node.func.add_schema_constraint(cons)
+            pri_idx = self.equiv_index[idx]
+            gnode = self.gen_graph[pri_idx]
+            gnode.func.add_schema_constraint(cons)
+            inode = self.inf_graph[pri_idx]
+            inode.func.add_schema_constraint(cons)
 
     def valid_dtypes(self, tensor_name, type_list):
         """
@@ -877,14 +881,14 @@ class SchemaApi(object):
         G.set_registry(self.inf_graph)
         layout_inode = self._inf_node(nf.Layout)
         ranks_inode = self._inf_node(nf.IndexRanks)
-        df_iobj = nf.DataFormat(self, self.data_formats, arg_name, rank_idx)
+        df_iobj = nf.DataFormat(self, self.data_formats, arg_name)
         df_inode = G.add_node(df_iobj, ranks_inode, layout_inode, self.obs_args)
         self.data_format_inode = df_inode
+        self.report_inode.append_parent(df_inode)
 
         if arg_name is not None:
             self.arg_gen_nodes[arg_name] = df_gnode
             self.args_gnode.append_parent_sn(df_gnode)
-            self.report_inode.append_parent(df_inode)
 
         P.set_registry(self.pred_graph)
         schema = self._pred_node(pr.Schema)
@@ -892,7 +896,10 @@ class SchemaApi(object):
         p_arg = P.add_node(data_format_obj, schema) 
 
         arg_node = self._pred_node(pr.ArgMap)
-        arg_node.append_parent_sn(p_arg)
+        if arg_name is None:
+            arg_node.append_parent(p_arg)
+        else:
+            arg_node.append_parent_sn(p_arg)
 
     def _check_sigs_layout(self, arg_name, sigs_list):
         if self.data_formats is None:
@@ -1139,17 +1146,22 @@ class SchemaApi(object):
         {sig}
         """
         cons_name = f'rank({sig}) == \'{arg_name}\''
-        rank_pobj = pr.ArgInt(arg_name, 0, None)
 
         P.set_registry(self.pred_graph)
-        G.set_registry(self.gen_graph)
+        rank_pobj = pr.ArgInt(arg_name, 0, None)
         schema = self._pred_node(pr.Schema)
-        p_rank = P.add_node(rank_pobj, schema)
+        rank_inode = P.add_node(rank_pobj, schema)
 
+        P.set_registry(self.inf_graph)
+        arg_node = self._pred_node(pr.ArgMap)
+        arg_node.append_parent_sn(rank_inode)
+
+        G.set_registry(self.gen_graph)
         g_ranks = self._gen_node(ge.IndexRanks)
-        g_rank = G.add_node(ge.Rank(self, sig), g_ranks)
-        self.arg_gen_nodes[arg_name] = g_rank
-        self.args_node.append_parent_sn(g_rank)
+        rank_gobj = ge.RankInt(arg_name, sig)
+        rank_gnode = G.add_node(rank_gobj, g_ranks)
+        self.arg_gen_nodes[arg_name] = rank_gnode
+        self.args_gnode.append_parent_sn(rank_gnode)
 
         self._add_definite_rank(sig)
 

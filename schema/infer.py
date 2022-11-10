@@ -67,7 +67,7 @@ class RankRange(ReportNodeFunc):
 
     def __call__(self, _, sigs, **index_ranks):
         # Get the initial bounds consistent with the schema
-        sch_lo, sch_hi = 0, 1e10
+        sch_lo, sch_hi = 0, 100000
         for cons in self.schema_cons:
             clo, chi = cons(**index_ranks)
             sch_lo = max(sch_lo, clo)
@@ -227,22 +227,21 @@ class DataFormat(ReportNodeFunc):
     Generate the special data_format argument, defined by the 'layout' API call
     Inference: yields None or ValueEdit
     """
-    def __init__(self, op, formats, arg_name, rank_idx):
+    def __init__(self, op, formats, arg_name):
         super().__init__(op, arg_name)
         self.formats = formats
-        self.arg_name = arg_name
-        self.rank_idx = rank_idx
 
     def __call__(self, ranks, layout, obs_args):
         imp_fmt = self.formats.data_format(layout, ranks)
-        obs_fmt = obs_args.get(self.arg_name, None)
+        obs_fmt = self.formats.observed_format(obs_args)
         if obs_fmt is None:
             # this will only occur if the schema permits None for data_format
-            def_layout = self.formats.default_layout()
-            used_fmt = self.formats.data_format(def_layout, ranks)
+            used_fmt = self.formats.default_format(ranks)
         else:
             used_fmt = obs_fmt
-        edit = base.DataFormatEdit(self.arg_name, obs_fmt, used_fmt, imp_fmt)
+
+        arg_name = self.formats.arg_name
+        edit = base.DataFormatEdit(arg_name, obs_fmt, used_fmt, imp_fmt)
         with self.reserve_edit(edit.cost()) as avail:
             if avail:
                 yield edit
