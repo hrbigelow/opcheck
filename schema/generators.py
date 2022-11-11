@@ -298,30 +298,18 @@ class ArgIndels(GenFunc):
 
 class ArgMutations(GenFunc):
     """
-    Test: arg => shape  (shapes are mutated or not)
+    Compute dimensions of all indices given index_ranks, and incorporating
+    arg_indels.  Also, produce a negative computed dimension version
     """
     def __init__(self, op):
         super().__init__(op)
 
     def __call__(self, arg_indels, index_ranks, sigs, **comp):
-        # compute arg_ranks from index_ranks, sigs, arg_indels
+        # yield negative dims version
         arg_ranks = {}
         for arg, sig in sigs.items():
             arg_ranks[arg] = sum(index_ranks[idx] for idx in sig)
-            indel = arg_indels.get(arg, None)
-            if indel is not None:
-                kind, rest = indel[0], indel[1:]
-                if kind == Indel.Insert:
-                    _, size = rest
-                    arg_ranks[arg] += size
-                elif kind == Indel.Delete:
-                    beg, end = rest
-                    size = end - beg
-                    arg_ranks[arg] -= size
-        # compute max_dimsize from arg_ranks
-        max_dimsize = get_max_dimsize(self.op.target_nelem, arg_ranks)
 
-        # compute negative dims
         index_dims = compute_dims(self.op, arg_ranks, index_ranks, sigs, False,
                 **comp)
         if index_dims is not None:
@@ -331,9 +319,24 @@ class ArgMutations(GenFunc):
                 neg_arg_shapes[arg] = shape
             yield neg_arg_shapes
 
+        mut_arg_ranks = {}
+        for arg, sig in sigs.items():
+            mut_arg_ranks[arg] = arg_ranks[arg]
+            indel = arg_indels.get(arg, None)
+            if indel is not None:
+                kind, rest = indel[0], indel[1:]
+                if kind == Indel.Insert:
+                    _, size = rest
+                    mut_arg_ranks[arg] += size
+                elif kind == Indel.Delete:
+                    beg, end = rest
+                    size = end - beg
+                    mut_arg_ranks[arg] -= size
+
         # incorporate the indel
-        index_dims = compute_dims(self.op, arg_ranks, index_ranks, sigs, True,
-                **comp)
+        max_dimsize = get_max_dimsize(self.op.target_nelem, mut_arg_ranks)
+        index_dims = compute_dims(self.op, mut_arg_ranks, index_ranks, sigs,
+                True, **comp)
         assert index_dims is not None
 
         num_yielded = 0
@@ -402,9 +405,8 @@ class DataFormat(GenFunc):
 
 class DTypeIndiv(GenFunc):
     """
-    A Dtype with an individual valid set.
-    Test mode yields a dtype or symbolic
-    Inference:  yields None or a DTypesEdit
+    Generates all valid dtypes for {arg_name}, which has been declared with 
+    API call valid_dtypes.  Generates up to op.max_gen_invalid_dtypes ones
     """
     def __init__(self, op, arg_name):
         super().__init__(op, arg_name)
@@ -414,19 +416,12 @@ class DTypeIndiv(GenFunc):
                 self.valid_dtypes)
 
     def __call__(self):
-        num_yielded = 0
-        for i, y in enumerate(self.valid_dtypes):
-            if num_yielded == self.op.max_yield_count:
-                break
-            yield y
-            num_yielded += 1
+        yield from self.valid_dtypes
         with self.reserve_edit(1) as avail:
             if avail:
-                if num_yielded == self.op.max_yield_count:
-                    return 
-                y = choice(self.invalid_dtypes)
-                yield y
-                num_yielded += 1
+                tot = min(len(self.invalid_dtypes), self.op.dtype_err_quota)
+                ys = sample(self.invalid_dtypes, tot)
+                yield from ys
 
 class DTypeEquiv(GenFunc):
     """
@@ -440,17 +435,16 @@ class DTypeEquiv(GenFunc):
         self.all_dtypes = ALL_DTYPES
 
     def __call__(self, src_dtype):
-        num_yielded = 0
+        num_err = 0
         for dtype in self.all_dtypes:
             if dtype == src_dtype:
                 yield src_dtype
-                num_yielded += 1
             else:
                 with self.reserve_edit(1) as avail:
                     if avail:
                         yield dtype
-                        num_yielded += 1
-            if num_yielded == self.op.max_yield_count:
+                        num_err += 1
+            if num_err == self.op.dtype_err_quota:
                 break
 
 class DTypesNotImpl(GenFunc):

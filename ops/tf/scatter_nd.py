@@ -1,8 +1,12 @@
 def init_schema(op):
-    op.add_index('r', 'read address', 1, 3)
-    op.add_index('c', 'write address component', 1, 1)
-    op.add_index('e', 'slice element', 0, 4)
-    op.add_index('w', 'write address', 1, 3)
+    op.add_index('r', 'read address', (1, 4))
+    op.add_index('e', 'slice element', (0, 4))
+    op.add_index('c', 'write address component', (1, 1))
+    op.add_index('w', 'write address', (1, 5))
+
+    # op.limit_ranks('rc', 1, 10)
+    # op.limit_ranks('re', 1, 10)
+    # op.limit_ranks('we', 1, 10)
 
     op.arg_tensor('indices', 'rc')
     op.arg_tensor('updates', 're')
@@ -11,12 +15,15 @@ def init_schema(op):
     op.return_tensor('we')
 
     def rankw(indices_shape):
-        return indices_shape[-1]
+        if len(indices_shape) == 0:
+            return None
+        else:
+            return indices_shape[-1]
     op.rank_dims_constraint('rank(w) == dims(c)', rankw, 'w', 'c', 'indices')
 
-    op.valid_dtypes('indices', ('int32',))
+    op.valid_dtypes('indices', ('int32+',))
     # op.valid_dtypes('updates', ('int32', 'float32'))
-    op.valid_dtypes('updates', ('float32',))
+    op.valid_dtypes('updates', ('int', 'float', 'complex', 'bool'))
 
 """
 This schema determines index ranks and dims as follows:

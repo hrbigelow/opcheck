@@ -130,6 +130,20 @@ class ShapeEdit(object):
         else:
             return [None] * self.index_ranks[idx]
 
+    def get_arg_shape(self, arg):
+        """
+        Get the imputed shape of arg
+        """
+        if self.cost() != 0:
+            raise RuntimeError(
+                f'Cannot call {type(self).__qualname__} with non-zero cost')
+        sig = self.arg_sigs[arg]
+        index_dims = self.get_input_dims()
+        if self.comp_dims is not None:
+            index_dims.update(self.comp_dims)
+        shape = [ dim for idx in sig for dim in index_dims[idx] ]
+        return shape
+
     def highlighted(self, arg, idx):
         # return whether the usage of idx in arg should be highlighted
         if idx in self.usage_map and len(self.usage_map[idx]) > 1:
@@ -926,24 +940,13 @@ class CompDimsGraph(object):
     def templates(self, index_dims, **kwargs):
         return self._run(True, index_dims, kwargs)
 
-class Constraint(object):
-    """
-    Static list of argument names to retrieve from a map
-    """
-    def __init__(self, *names):
-        self.arg_names = names
-
-    def get_argnames(self):
-        return self.arg_names
-
-class SumRangeConstraint(Constraint):
+class SumRangeConstraint(object):
     """
     Expresses the constraint RANK(sig) in [lo, hi].  When called, it provides a
     residual range based on values provided for some subset of indexes in the
     signature.
     """
     def __init__(self, sig, lo, hi):
-        super().__init__()
         self.sig = sig
         self.lo = lo
         self.hi = hi
@@ -952,17 +955,60 @@ class SumRangeConstraint(Constraint):
         return f'{type(self).__name__}: RANK({self.sig}) in [{self.lo}, {self.hi}]'
 
     def __call__(self, **index_ranks):
+        prev = [ r for idx, r in index_ranks.items() if idx in self.sig ]
+        part = sum(prev)
+        final = (len(prev) + 1 == len(self.sig))
+        lo = max(0, self.lo - part) if final else 0
+        hi = max(0, self.hi - part)
+        return lo, hi
+
+class ShapeFuncConstraint(object): 
+    """
+    Expresses the constraint RANK(sig) = func(obs_shapes[shape_arg])
+    """
+    def __init__(self, sig, func, shape_arg):
+        self.sig = sig
+        self.func = func
+        self.shape_arg = shape_arg
+
+    def __repr__(self):
+        r =  f'{type(self).__qualname__}: RANK({self.sig}) = '
+        r += f'{self.func.__name__}(...)'
+        return r
+
+    def __call__(self, obs_shapes, **index_ranks):
+        shape = obs_shapes[self.shape_arg]
+        rank = self.func(shape)
+        if rank is None:
+            return 0, -1
+
         residual = sum(index_ranks.get(idx, 0) for idx in self.sig)
-        return max(0, self.lo - residual), max(0, self.hi - residual)
+        target = rank - residual
+        return target, target
 
+class SigRankValueConstraint(object):
+    """
+    Defines the constraint RANK(sig) = arg
+    """
+    def __init__(self, arg, sig):
+        self.arg = arg
+        self.sig = sig
+
+    def __repr__(self):
+        r =  f'{type(self).__qualname__}: RANK({self.sig}) = {self.arg}'
+        return r
+
+    def __call__(self, obs_args, **index_ranks):
+        rank = obs_args[self.arg]
+        residual = sum(index_ranks.get(idx, 0) for idx in self.sig)
+        target = rank - residual
+        return target, target
+
+"""
 class ArgRankConstraint(Constraint):
-    """
-    Used during the GenMode.Inference phase
-    Expresses one of these constraints:
-    1. RANK(SIG(arg)) = RANK(arg)   (if with_low_bound is True)
-    2. RANK(SIG(arg)) in [0, RANK(arg)]   (otherwise)
-
-    """
+    # Expresses one of these constraints:
+    # 1. RANK(SIG(arg)) = RANK(arg)   (if with_low_bound is True)
+    # 2. RANK(SIG(arg)) in [0, RANK(arg)]   (otherwise)
     def __init__(self, op, arg_name, with_low_bound=False):
         super().__init__('shapes', 'sigs')
         self.arg_name = arg_name
@@ -991,6 +1037,7 @@ class ArgRankConstraint(Constraint):
         thi = obs_rank 
         residual = sum(index_ranks.get(idx, 0) for idx in arg_sig)
         return max(0, tlo - residual), max(0, thi - residual)
+"""
 
 class ReportKind(enum.Enum):
     CaratTable = 0 

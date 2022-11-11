@@ -33,11 +33,21 @@ class ReportNodeFunc(NodeFunc):
     """
     Same role as ge.ReportNodeFunc, this allows reporting errors
     """
+    def __init__(self, name=None):
+        super().__init__(name)
+
     def user_msg(self, *info):
         """
         A message describing the constraint(s) defined
         """
         raise NotImplementedError
+
+class NoSuggestionsFound(ReportNodeFunc):
+    def __init__(self):
+        super().__init__()
+
+    def user_msg(self):
+        return 'OpGrind found no suggestions'
 
 class DataTensor(ReportNodeFunc):
     """
@@ -60,40 +70,39 @@ class DataTensor(ReportNodeFunc):
         else:
             return True, ten
 
-class GetReturnTensor(ReportNodeFunc):
-    def __init__(self, ret_name):
-        super().__init__(ret_name)
-        self.ret_name = ret_name
+class GetReturnTensors(ReportNodeFunc):
+    def __init__(self):
+        super().__init__(None)
 
-    def user_msg(self, received_val):
-        msg =  f'{self.ret_name} expected to be a tensor.  Received '
+    def user_msg(self, ret_index, received_val):
+        msg =  f'Return {ret_index} expected to be a tensor.  Received '
         msg += f'{received_val}'
         return msg
 
     def __call__(self, op):
-        ten = op._get_return(self.ret_name)
-        if not isinstance(ten, tf.Tensor):
-            return False, ErrorReport(self, ten)
-        else:
-            return True, ten
+        for ridx, ten in enumerate(op.returns):
+            if not isinstance(ten, tf.Tensor):
+                return False, ErrorReport(self, ridx, ten)
+        return True, op.returns
 
-class ValidReturnShape(ReportNodeFunc):
-    def __init__(self, ret_name):
-        super().__init__(ret_name)
-        self.ret_name = ret_name
+class ValidReturnShapes(ReportNodeFunc):
+    def __init__(self):
+        super().__init__()
 
-    def user_msg(self, act_shape, pred_shape):
-        msg =  f'Return tensor was expected to have shape {pred_shape} but '
-        msg += f'was {act_shape}'
+    def user_msg(self, ret_index, act_shape, pred_shape):
+        msg =  f'Return tensor {ret_index} was expected to have shape '
+        msg += f'{pred_shape} but was {act_shape}'
         return msg
 
-    def __call__(self, tensor, shapes):
-        actual_shape = tensor.shape.as_list()
-        predicted_shape = shapes[self.ret_name]
-        if actual_shape == predicted_shape:
-            return True, None
-        else:
-            return False, ErrorReport(self, actual_shape, predicted_shape)
+    def __call__(self, op, tensors):
+        for ridx, tensor in enumerate(tensors):
+            actual_shape = tensor.shape.as_list()
+            ret_name = f'return[{ridx}]'
+            pred_shape = op.inf_result.get_arg_shape(ret_name)
+            if actual_shape == pred_shape:
+                return True, None
+            else:
+                return False, ErrorReport(self, ridx, actual_shape, pred_shape)
 
 class TensorDType(NodeFunc):
     def __init__(self, name):
@@ -461,7 +470,7 @@ class DataFormat(ReportNodeFunc):
 
 class ArgInt(ReportNodeFunc):
     def __init__(self, arg_name, lo, hi):
-        super().__init__(f'{arg_name}[{lo}-{hi}]')
+        super().__init__(arg_name)
         self.arg_name = arg_name
         if lo is None:
             self.lo = -sys.maxsize - 1

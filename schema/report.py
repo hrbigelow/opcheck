@@ -143,7 +143,9 @@ class Report(object):
                         dims = shape_edit.maybe_get_index_dim(idx) 
                         obs_shape.extend(dims)
 
-                col = [ obs_shape, arg_templ[arg] ]
+                # shape_str = dims_string(obs_shape)
+                obs_repr = ['?' if d is None else str(d) for d in obs_shape]
+                col = [ obs_repr, arg_templ[arg] ]
                 hl_row = []
                 for idx in sig:
                     do_hl = shape_edit.highlighted(arg, idx)
@@ -182,6 +184,9 @@ class Report(object):
             idx_cons_msg = _idx_constraint_msg(self.op, fix)
             if idx_cons_msg is not None:
                 items.append(idx_cons_msg)
+
+        index_msg = index_abbreviations(self.op)
+        items.append(index_msg)
 
         final = None if len(items) == 0 else '\n\n'.join(items)
         return final
@@ -313,13 +318,7 @@ def _get_shape_columns(op, obs_shapes):
     return columns 
 
 def _get_headers(op, columns):
-    headers = []
-    for c in columns:
-        if c in op.data_tensors or c in op.return_tensors:
-            headers.append(f'{c}.shape')
-        else:
-            headers.append(c)
-    return headers
+    return [op._arg_shape_name(c) for c in columns]
 
 def _index_usage_leader(op, shape_edit, obs_shapes, obs_args):
     """
@@ -352,17 +351,22 @@ def _change_usage_msgs(op, fix):
             continue
         desc = op.index[idx]
 
+        all_args = set()
         for dims, arg_list in usage.items():
             for arg in arg_list:
+                arg_shape_name = op._arg_shape_name(arg)
                 beg, end = fix.shape.arg_index_slice(arg, idx)
                 if end - beg == 1:
-                    item = f'{arg}.shape[{beg}] = {dims[0]}'
+                    item = f'{arg_shape_name}[{beg}] = {dims[0]}'
                 else:
-                    item = f'{arg}.shape[{beg}:{end}] = {dims}'
+                    item = f'{arg_shape_name}[{beg}:{end}] = {list(dims)}'
                 items.append(item)
+                all_args.add(arg)
+
+        arg_list_msg = grammar_list(all_args) 
         item_str = grammar_list(items)
-        index_msg =  f'Change {item_str} to the same value(s) to fix '
-        index_msg += f'index {idx} ({desc}) usage conflict.'
+        index_msg =  f'{op.index[idx]} (index {idx}) has inconsistent '
+        index_msg += f'dimensions in {arg_list_msg}. {item_str}'
         index_msgs.append(index_msg)
     return index_msgs
 

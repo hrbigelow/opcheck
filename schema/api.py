@@ -50,6 +50,9 @@ class SchemaApi(object):
         self.max_yield_count = 1000
         self.comp_dims_mode = True
 
+        # error quotas
+        self.dtype_err_quota = 2
+
         # TODO: enable setting this
         self.max_search_dist = 4
         self.show_graph_calls = False
@@ -95,14 +98,16 @@ class SchemaApi(object):
         self.return_nodes = []
         self.return_tensors = []
 
-        # error status
         # None: success.  pr.ErrorReport or list of Fix objects is failure
-        self.input_error = None  # None means success.
-        self.framework_error = None
+        self.op_error = None  # None means success.
+        self.framework_exc_msg = None
 
         # call time values
         self.arguments = {}
-        self.returns = {}  # 'return[0]' => tensor, 'return[1]' => tensor, ...
+        self.returns = [] 
+
+    def _set_gen_error_quotas(self, dtype_quota):
+        self.dtype_err_quota = dtype_quota
 
     def _pred_node(self, pred_class, name=None):
         name = fgraph.node_name(pred_class, name)
@@ -136,23 +141,24 @@ class SchemaApi(object):
         def wrapped_op(*args, **kwargs):
             # executes during 'framework call phase'
             try:
-                self.input_error = self._check_args(*args, **kwargs)
+                self.op_error = self._check_args(*args, **kwargs)
             except BaseException as ex:
                 raise OpGrindInternalError(ex)
             try:
                 ret_val = self.framework_op(**self.arguments)
-                # ret_val = None
-            except BaseException as ex:
-                self.framework_error = FrameworkError(ex)
-                self.return_status = NotApplicable()
-            else:
-                self.framework_error = None
                 self._check_return(ret_val)
+            except BaseException as ex:
+                exc_str = str(ex)
+                mt = re.match('\{\{.+?\}\} (.+)', exc_str)
+                if mt is None:
+                    self.framework_exc_msg = exc_str 
+                else:
+                    self.framework_exc_msg = mt.groups()[0]
+                raise ex
             finally:
                 msg = self._report()
-                print(msg, file=sys.stderr)
-                if isinstance(self.framework_error, FrameworkError):
-                    raise self.framework_error.ex
+                if msg is not None:
+                    print(msg, file=sys.stderr)
                 return ret_val
 
         self.wrapped_op = wrapped_op
@@ -175,7 +181,8 @@ class SchemaApi(object):
         bind.apply_defaults()
         self.arguments = bind.arguments
         self.returns.clear()
-        self.framework_error = None
+        self.framework_exc_msg = None
+        self.inf_result = None
 
         for dist in range(self.max_search_dist+1):
             self.avail_edits = dist
@@ -190,6 +197,10 @@ class SchemaApi(object):
                 continue
             elif ret is None:
                 # success
+                # by definition, there was one fix from pr.Inventory, and
+                # it has zero edit distance
+                fix = self.inventory_node.get_cached()[0]
+                self.inf_result = fix.shape 
                 return None
             else:
                 # ret is a list of Fix objects
@@ -197,21 +208,23 @@ class SchemaApi(object):
                     raise RuntimeError(f'Got pred graph type {type(ret)}')
                 return ret
                 # fixes.extend(ret)
-
-        # return fixes
+        # No fixes found
+        return pr.ErrorReport(pr.NoSuggestionsFound())
 
     def _check_return(self, op_return):
         """
         Check the return tensors' shapes and types against those predicted by
         the framework
         """
+        if self.op_error is not None:
+            return
+
         if not isinstance(op_return, (list, tuple)):
             op_return = (op_return,)
-        self.returns = { f'return[{i}]': v for i, v in enumerate(op_return) }
 
-        error = fgraph.pred_graph_evaluate(self.pred_graph.values())
-        if error is not None:
-            raise SchemaError(error.msg(self))
+        self.returns = list(op_return)
+        error = fgraph.pred_graph_evaluate(*self.return_nodes)
+        self.op_error = error
 
     def _shape_key_order(self, shape_keys):
         def key_fun(shape_key):
@@ -283,45 +296,21 @@ class SchemaApi(object):
         tab, _ = tabulate(rows, '  ', left_align=True)
         return tab
 
-
-    def _index_usage_phrase(self, idx, component_usages, ranks):
-        def phrase_join(names):
-            qnames = [f'\'{n}\'' for n in names]
-            phrase = ', '.join(qnames[:-1])
-            sep = '' if phrase == '' else ' and '
-            return sep.join((phrase, qnames[-1]))
-
-        phrases = []
-        r = ranks[idx]
-        for c, usage in enumerate(component_usages):
-            if len(usage) == 1:
-                continue
-            sep = ''
-            main_phrase = ''
-            for sz, arg_list in usage.items():
-                phrase = phrase_join(arg_list)
-                main_phrase += sep + f'size {sz} in {phrase}'
-                sep = ', '
-            idxc = idx if r == 1 else f'{idx}{c+1}'
-            msg = f'Index \'{idxc}\' ({self.index[idx]}) has {main_phrase}.'
-            phrases.append(msg)
-        return '\n'.join(phrases)
-
     def _report(self):
-        if self.input_error is None:
-            msg = ''
-        elif isinstance(self.input_error, list):
-            fixes = self.input_error
+        if self.op_error is None:
+            msg = None
+        elif isinstance(self.op_error, list):
+            fixes = self.op_error
             obs_dtypes = self.obs_dtypes.get_cached()
             obs_shapes = self.obs_shapes.get_cached()
             obs_args = self.obs_args.get_cached()
             rep = report.Report(self, fixes, obs_dtypes, obs_shapes, obs_args)
             msg = rep.report()
-        elif isinstance(self.input_error, pr.ErrorReport):
-            msg = self.input_error.report()
+        elif isinstance(self.op_error, pr.ErrorReport):
+            msg = self.op_error.report()
         else:
             raise RuntimeError(
-                f'Unknown type of input error: {type(self.input_error)}')
+                f'Unknown type of input error: {type(self.op_error)}')
         return msg
 
     def _report_edit_summary(self):
@@ -330,27 +319,25 @@ class SchemaApi(object):
         suggested edits.  For TN, the empty string.  For FN, the framework
         exception in string form.
         """
-        if self.input_error is None:
-            if self.framework_error is None:
-                msg = None
-            else:
-                err_string = str(self.framework_error.ex)
-                mt = re.match('\{\{.+?\}\} (.+)', err_string)
-                msg = err_string if mt is None else mt.groups()[0]
+        if self.op_error is None:
+            msg = '' 
 
-        elif isinstance(self.input_error, list):
-            fixes = self.input_error
+        elif isinstance(self.op_error, list):
+            fixes = self.op_error
             items = [ f.summary() for f in fixes]
             msg = ', '.join(items)
-        elif isinstance(self.input_error, pr.ErrorReport):
-            msg = self.input_error.report()
+
+        elif isinstance(self.op_error, pr.ErrorReport):
+            msg = self.op_error.report()
         else:
             raise RuntimeError(
-                f'Unknown type of input error: {type(self.input_error)}')
+                f'Unknown type of input error: {type(self.op_error)}')
+
+        msg += '\t' + (self.framework_exc_msg or '')
 
         # summarize returns if any
         items = []
-        for ret in self.returns.values():
+        for ret in self.returns:
             item = f'{ret.shape.as_list()}:{ret.dtype.name}'
             items.append(item)
         if len(items) == 0:
@@ -369,6 +356,12 @@ class SchemaApi(object):
                 f'Known parameters are: {self.arg_order}')
         return self.arguments[arg_name]
 
+    def _arg_shape_name(self, arg_name):
+        if arg_name in [*self.data_tensors, *self.return_tensors]:
+            return f'{arg_name}.shape'
+        else:
+            return arg_name
+
     def _check_sig(self, signature, name):
         if any(s not in self.index.keys() for s in signature):
             raise SchemaError(
@@ -378,23 +371,20 @@ class SchemaApi(object):
                 f"{','.join(self.index.keys())}"
                 f'Call OpSchema.add_index with the missing index.')
 
-    def _get_return(self, ret_name):
-        try:
-            return self.returns[ret_name]
-        except IndexError:
-            raise SchemaError(
-                f'{type(self).__qualname__}: name \'{ret_name}\' not a '
-                f'registered return name')
-    
     def _init_pred_graph(self):
         P.set_registry(self.pred_graph)
-        P.add_node(pr.Schema(self))
+        schema = P.add_node(pr.Schema(self))
         shapes = P.add_node(pr.ShapeMap())
         dtypes = P.add_node(pr.DTypes())
         argmap = P.add_node(pr.ArgMap())
         inventory = P.add_node(pr.Inventory(self), dtypes, shapes, argmap)
-        get_shapes = P.add_node(pr.GetShapes(), inventory)
-        self.return_nodes.append(get_shapes)
+        self.inventory_node = inventory
+
+        rten_pobj = pr.GetReturnTensors()
+        rvalid_pobj = pr.ValidReturnShapes()
+        rten = P.add_node(rten_pobj, schema)
+        rvalid = P.add_node(rvalid_pobj, schema, rten)
+        self.return_nodes = [schema, rten, rvalid]
 
     def _init_inf_graph(self):
         G.set_registry(self.inf_graph)
@@ -496,9 +486,8 @@ class SchemaApi(object):
                 f'{type(self).__qualname__}: Could not open output path '
                 f'\'{out_dir}\' for report generation')
 
-        stats_fh = open(os.path.join(out_dir, f'{self.op_path}.stats.txt'), 'w')
         report_fh = open(os.path.join(out_dir, f'{self.op_path}.txt'), 'w')
-        diagnostic_fh = open(os.path.join(out_dir, f'{self.op_path}.sum.txt'), 'w')
+        summary_fh = open(os.path.join(out_dir, f'{self.op_path}.sum.txt'), 'w')
         cats = [ 'TP', 'TN', 'FP', 'FN' ]
         stats = { k: 0 for k in cats }
 
@@ -527,39 +516,31 @@ class SchemaApi(object):
             except BaseException as ex:
                 pass
 
-            if self.input_error is None:
-                if self.framework_error is None:
-                    cat = 'TN'
-                else:
-                    cat = 'FN'
+            if self.op_error is None:
+                cat = 'TN' if self.framework_exc_msg is None else 'FN'
 
-            elif isinstance(self.input_error, pr.ErrorReport):
-                pass
+            elif isinstance(self.op_error, pr.ErrorReport):
+                cat = 'FP' if self.framework_exc_msg is None else 'TP'
 
             else:
-                assert isinstance(self.input_error, list)
-                failed_checks = 0
-                fixes = list(self.input_error)
-                if self.framework_error is None:
-                    cat = 'FP'
-                else:
-                    cat = 'TP'
+                assert isinstance(self.op_error, list)
+                cat = 'FP' if self.framework_exc_msg is None else 'TP'
+
             stats[cat] += 1
             progress = '  '.join(f'{c}: {stats[c]:-5d}' for c in cats)
             print(f'\rTest: {test_num:-5d}  {progress}', end='')
             arg_fields = '\t'.join(f'{k}:{v}' for k,v in op_args.items())
             call = f'{test_num}\t{cat}\t{arg_fields}'
-            print(call, file=stats_fh)
             print('\n\n', call, file=report_fh)
-            print(f'Framework Error\n{self.framework_error}\n', file=report_fh)
+            print(f'Framework Msg\n{self.framework_exc_msg}\n', file=report_fh)
             print(self._report(), file=report_fh)
             edit_summary = self._report_edit_summary()
-            diagnostic = f'{call}\t{edit_summary}'
-            print(diagnostic, file=diagnostic_fh)
+            summary = f'{call}\t{edit_summary}'
+            print(summary, file=summary_fh)
 
         print()
-        stats_fh.close()
         report_fh.close()
+        summary_fh.close()
 
     # ============ PUBLIC API ====================
     def add_index(self, idx, description, constraint=None):
@@ -610,7 +591,7 @@ class SchemaApi(object):
             G.set_registry(self.inf_graph)
             sigs_inode = self._inf_node(ge.SigMap)
             idx_iobj = nf.RankRange(self, idx)
-            idx_inode = G.add_node_sn(idx_iobj, self.obs_shapes, sigs_inode)
+            idx_inode = G.add_node_sn(idx_iobj, self.obs_shapes, self.obs_args)
             ranks_inode.append_parent_sn(idx_inode)
 
             if isinstance(constraint, tuple):
@@ -1163,6 +1144,12 @@ class SchemaApi(object):
         self.arg_gen_nodes[arg_name] = rank_gnode
         self.args_gnode.append_parent_sn(rank_gnode)
 
+        # TODO: add schema constraint, 
+        cons = base.SigRankValueConstraint(arg_name, sig)
+        for idx in sig:
+            pri_idx = self.equiv_index[idx]
+            inode = self.inf_graph[pri_idx]
+            inode.func.add_args_constraint(cons)
         self._add_definite_rank(sig)
 
     def rank_dims_constraint(self, constraint_name, get_dims, rank_sig,
@@ -1182,6 +1169,13 @@ class SchemaApi(object):
         self.gen_indices.add_generator(gen_single_index, dims_index, rank_sig)
         self.dims_graph.maybe_add_input_index(dims_index)
         self._add_definite_rank(rank_sig)
+
+        # add the constraint to the inference graph 
+        cons = base.ShapeFuncConstraint(rank_sig, get_dims, shape_arg)
+        for idx in rank_sig:
+            pri_idx = self.equiv_index[idx]
+            inode = self.inf_graph[pri_idx]
+            inode.func.add_shapes_constraint(cons)
 
     def add_index_predicate(self, pred_name, status_func, templ_func, indices):
         """
@@ -1243,16 +1237,6 @@ class SchemaApi(object):
         G.set_registry(self.gen_graph)
 
         g_sig_obj = ge.Sig(self, ret_name, sigs_list)
-
-        rten_pobj = pr.GetReturnTensor(ret_name)
-        rvalid_pobj = pr.ValidReturnShape(ret_name)
-
-        schema = self._pred_node(pr.Schema)
-        rten = P.add_node(rten_pobj, schema)
-
-        shapes = self._pred_node(pr.GetShapes)
-        rval = P.add_node(rvalid_pobj, rten, shapes)
-        self.return_nodes.extend((rten, rval))
 
         G.set_registry(self.inf_graph)
         layout_inode = self._inf_node(ge.Layout)

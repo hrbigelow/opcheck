@@ -1,13 +1,13 @@
 def init_schema(op):
     op.add_index('b', 'batch')
-    op.add_index('r', 'read location', (1, 100))
-    op.add_index('w', 'write location', (1, 100))
+    op.add_index('r', 'read location', (1, 7))
+    op.add_index('w', 'write location')
     op.add_index('e', 'slice element')
     op.add_index('c', 'read address component', (1, 1))
 
     # allowed rank combinations
-    op.limit_ranks('bre', 0, 8)
-    op.limit_ranks('bwc', 0, 8)
+    op.limit_ranks('bwc', 0, 10)
+    op.limit_ranks('bre', 0, 10)
 
     # argument interpretations
     op.arg_tensor('indices', 'bwc')
@@ -20,7 +20,10 @@ def init_schema(op):
     op.valid_dtypes('params', ('int32+', 'float'))
 
     def rankr(indices_shape):
-        return indices_shape[-1]
+        if len(indices_shape) == 0:
+            return None
+        else:
+            return indices_shape[-1]
     op.rank_dims_constraint('rank(r) == dims(c)', rankr, 'r', 'c', 'indices')
 
     # output shape prediction
