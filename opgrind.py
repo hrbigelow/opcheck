@@ -98,12 +98,13 @@ def _get_from_path(op_path):
     op = REGISTRY[op_path]
     return op
 
-def validate(op_path, out_dir, test_ids=None, skip_ids=None):
+def validate(op_path, out_dir, test_ids, skip_ids, dtype_err_quota):
     """
     Run generated test configurations and confirm opgrind flags errors
     appropriately, and does not flag errors where none exist.
     """
     op = _get_from_path(op_path)
+    op._set_gen_error_quotas(dtype_err_quota)
     op._validate(out_dir, test_ids)
 
 def explain(op_path):
@@ -165,7 +166,7 @@ def print_inf_graph(op_path, out_dir):
 
 def print_comp_dims_graph(op_path, out_dir):
     op = REGISTRY[op_path]
-    nodes = op.dims_graph.nodes.values()
+    nodes = op.dims_graph.values()
     fname = f'{out_dir}/{op_path}.comp_dims'
     _dot_graph(op, nodes, fname)
 

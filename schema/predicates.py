@@ -164,19 +164,29 @@ class ShapeInt(ReportNodeFunc):
     """
     Interpret the integer as a shape.
     """
-    def __init__(self, arg_name, gen_node):
+    def __init__(self, arg_name, lo=None, hi=None):
         super().__init__(arg_name)
         self.arg_name = arg_name
-        self.gen_node = gen_node
+        self.min_val = lo
+        self.max_val = hi
 
     def user_msg(self, received_val):
-        msg =  f'Argument \'{self.arg_name}\' expected to be a non-negative '
-        msg += f'integer.  Received \'{received_val}\' instead.'
+        msg =  f'Argument \'{self.arg_name}\' expected to be an integer'
+        if self.min_val is not None:
+            if self.max_val is not None:
+                msg += f' in [{self.min_val}, {self.max_val}]'
+            else:
+                msg += f' >= {self.min_val}'
+        else:
+            if self.max_val is not None:
+                msg += f' <= {self.max_val}'
         return msg
 
     def __call__(self, op):
         i = op._get_arg(self.arg_name)
-        if not isinstance(i, int) or i < 0:
+        lo = -int(1e10) if self.min_val is None else self.min_val
+        hi = int(1e10) if self.max_val is None else self.max_val 
+        if not isinstance(i, int) or i not in range(lo, hi+1):
             return False, ErrorReport(self, i)
         else:
             return True, [i]
@@ -202,7 +212,7 @@ class ShapeTensorFunc(ReportNodeFunc):
         elif received_val.dtype != tf.int32:
             msg += 'Received dtype = {received_val.dtype.name}.'
         else:
-            nums = ten.numpy().tolist()
+            nums = received_val.numpy().tolist()
             if any(n < 0 for n in nums):
                 msg += 'One or more elements were less than zero.'
         return msg
@@ -380,12 +390,11 @@ class Inventory(NodeFunc):
         else:
             return False, fixes
 
+"""
 class IndexDimsConstraint(NodeFunc):
-    """
-    Constrains the dimensions of {indices} by applying the predicate function
-    {status_func}, called as status_func(Index1, Index2, ...) where each Index
-    object is an flib.Index object derived from one of the indices.
-    """
+    # Constrains the dimensions of {indices} by applying the predicate function
+    # {status_func}, called as status_func(Index1, Index2, ...) where each Index
+    # object is an flib.Index object derived from one of the indices.
     def __init__(self, name, status_func):
         super().__init__(name)
         self.func = status_func 
@@ -442,7 +451,7 @@ class IndexDimsConstraint(NodeFunc):
                     arg_sigs, shapes)
             return False, err
         return valid, status
-
+"""
 
 class DataFormat(ReportNodeFunc):
     def __init__(self, formats, gen_node, arg_name):

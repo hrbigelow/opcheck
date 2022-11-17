@@ -12,8 +12,23 @@ Schema API calls:
     add_index_predicate
     add_index_generator
 """
+def filter_pad(filt, dilation):
+    return (filt - 1) * dilation + 1
+
+def filter_pad_t(filt, dilation):
+    return f'({filt} - 1) * {dilation} + 1'
+
+def gen_stride_dil(max_val):
+    yield 1
+    yield choice(range(2, max_val+1))
+
+def gen_split(mid, max_val):
+    if mid > 0:
+        yield choice(range(1, mid+1))
+    yield choice(range(mid, max_val+1))
+
 def ceildiv(a, b):
-    return np.ceil(a / b).astype(a.dtype)
+    return np.ceil(a / b)
 
 def floordiv(a, b):
     return a // b
@@ -48,7 +63,7 @@ def divis_by(numer, denom):
 def divis_by_templ(numer, denom):
     return f'"{numer}" dimensions must be divisible by "{denom}" dimensions'
 
-def gen_divis_by(dummy, lo, hi):
+def gen_divis_by(lo, hi):
     """
     Generate a list of shape tuples.  Each tuple has two members.  Each member
     is rank 1.  The first member is divisible by the second.  Both are in range
@@ -57,7 +72,7 @@ def gen_divis_by(dummy, lo, hi):
     q = randint(lo, hi+1)
     mul = randint(1, hi // q + 1)
     p = q * mul
-    return [([p], [q])]
+    yield (p, q)
 
 class PredAbove(object):
     """
@@ -75,6 +90,23 @@ class PredAboveTempl(object):
 
     def __call__(self, shape):
         return f'"{shape}" dimensions must be >= {self.min_val}'
+
+class PredBelow(object):
+    """
+    Test that components are >= max_val
+    """
+    def __init__(self, max_val):
+        self.max_val = max_val
+
+    def __call__(self, shape):
+        return all(s <= self.max_val for s in shape)
+
+class PredBelowTempl(object):
+    def __init__(self, max_val):
+        self.max_val = max_val
+
+    def __call__(self, shape):
+        return f'"{shape}" dimensions must be <= {self.max_val}'
         
 def gen_not_both_over_one(ranks_list, lo, hi):
     """

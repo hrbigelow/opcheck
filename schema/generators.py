@@ -9,7 +9,7 @@ logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import numpy as np
 from random import randint, choice, sample
 from .fgraph import FuncNode as F, func_graph_evaluate, NodeFunc
-from .base import ALL_DTYPES
+from .base import ALL_DTYPES, INDEX_RANKS
 from .oparg import *
 from .error import *
 from . import oparg, base, fgraph
@@ -36,110 +36,189 @@ def get_max_dimsize(target_nelem, arg_ranks):
     # print(arg_ranks, dimsize)
     return dimsize
 
-def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, positive_mode,
-        **comp):
+def comp_index_clusters(op):
+    """
+    Produce a list of clusters of computed indices.  Each cluster itself is a
+    list.  cluster assignment is based on single-linkage clustering.  Two
+    computed indices are linked iff they share an input index
+    """
+    graph = op.dims_graph
+    comp_idxs = graph.computed_indexes()
+    input_idxs = graph.input_indexes()
+    nidx = len(input_idxs)
+    adj = np.identity(nidx).astype(np.bool)
+    for cidx in comp_idxs:
+        inputs = graph.get_index_inputs(cidx)
+        if len(inputs) == 0:
+            continue
+        pos = [input_idxs.index(i) for i in inputs]
+        sp = pos[0]
+        for p in pos[1:]:
+            adj[sp,p] = True
+    while True:
+        nadj = np.matmul(adj, adj.transpose())
+        if np.all(nadj == adj):
+            break
+        adj = nadj
+    # iclust[p] = cluster, where p is the index into input_idxs
+    iclust = list(range(nidx))
+    for p in range(nidx):
+        # find position of first True
+        ft = adj[p].tolist().index(True)
+        cl = iclust[ft]
+        iclust[p] = cl
+
+    nclust = max(iclust) + 1
+    cclust = [[] for _ in range(nclust)]
+    for cidx in comp_idxs:
+        inputs = graph.get_index_inputs(cidx)
+        if len(inputs) == 0:
+            continue
+        p = input_idxs.index(inputs[0])
+        cl = iclust[p]
+        cclust[cl].append(cidx)
+    return cclust
+
+def less_lb(op, comp_dims, target_ival):
+    """
+    Returns True if any computed index values are less than the target range.
+    """
+    for cidx, dims in comp_dims.items():
+        lo = target_ival[cidx][0]
+        if any(d < lo for d in dims):
+            return True
+    return False
+
+def less_ub(op, comp_dims, target_ival):
+    """
+    Computes comp_idxs using input_dims.  Returns True if all computed index
+    values are <= target range
+    """
+    for cidx, dims in comp_dims.items():
+        hi = target_ival[cidx][1]
+        if any(hi < d for d in dims):
+            return False
+    # all dims are <= target range
+    return True
+
+def ival_bsearch(op, ranks, max_dimsize, comp_idxs, gen_dims, less_fn,
+        pos_mode, **comp):
+    """
+    Find the acceptable input range for all free index inputs 
+    """
+    graph = op.dims_graph
+    free_idxs = { i for c in comp_idxs for i in graph.get_index_inputs(c) if i
+            not in gen_dims }
+    ranges = {}
+    for idx in free_idxs:
+        rng = op.index[idx].dims_range()
+        lo = max(rng.start, 1)
+        hi = min(rng.stop - 1, max_dimsize)
+        ranges[idx] = [lo, hi]
+
+    free_dims = {}
+    target_ival = {}
+    for cidx in comp_idxs:
+        if pos_mode:
+            rng = op.index[cidx].dims_range()
+            lo = max(rng.start, 1)
+            hi = min(rng.stop - 1, max_dimsize)
+        else:
+            lo, hi = (-max_dimsize, -1)
+        target_ival[cidx] = (lo, hi)
+
+    while any(r[0] != r[1] for r in ranges.values()):
+        for fidx in free_idxs:
+            r = ranks[fidx]
+            lo, hi = ranges[fidx]
+            mid = (lo + hi) // 2
+            free_dims[fidx] = [mid] * r
+        input_dims = { **free_dims, **gen_dims }
+        all_comp_dims = graph.dims(input_dims, **comp)
+        comp_dims = { cidx: all_comp_dims[cidx] for cidx in comp_idxs }
+
+        is_less = less_fn(op, comp_dims, target_ival)
+        print('pos_mode: ', pos_mode, 
+                ', is_less: ', is_less, 
+                ', comp_dims: ', comp_dims,
+                ', target_ival: ', target_ival,
+                # ', gen_dims: ', gen_dims,
+                ', ranges: ', ranges)
+        for fidx in free_idxs:
+            lo, hi = ranges[fidx]
+            mid = (lo + hi) // 2
+            if is_less:
+                ranges[fidx][0] = mid + 1
+            else:
+                ranges[fidx][1] = mid
+
+    found = { idx: r[0] for idx, r in ranges.items() }
+    return found
+
+def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, pos_mode, **comp):
+    """
+    Resolve a set of all index dims consistent with {index_ranks}.  First, any
+    indexes registered with add_index_generator or rank_dims_constraint will be
+    computed.  The system iterates until all computed index dims are
+    non-negative.
+    """
+    # results
+    final_dims_list = []
+    gen_dims_list = op.gen_indices(index_ranks)
+    clusters = comp_index_clusters(op)
     max_dimsize = get_max_dimsize(op.target_nelem, mut_arg_ranks)
-    """
-    Resolve a set of all index dims consistent with {index_ranks}.  First,
-    any indexes registered with add_index_generator or rank_dims_constraint
-    will be computed.  Then, remaining indexes not registered with
-    computed_index will be randomly generated in [1, max_dimsize].
-    Finally, the computed index dims are created.  The system iterates
-    until all computed index dims are non-negative.
-    """
 
     # [ (idx => dims), (idx => dims), ... ] 
-    gen_dims_list = op.gen_indices(index_ranks)
-    # indexes appearing in at least one data tensor signature.  (both input
-    # and return signatures) (some indexes are merely used as intermediate
-    # quantities to simplify computation)
-    # create deterministic order 
-    sig_indexes = { idx for sig in arg_sigs.values() for idx in sig }
-    sig_indexes = list(sorted(sig_indexes))
-
-    # e.g. gen_dims_list = 
     # [ {'s': [1,1,1], 'd': [2,3,5]}, { 's': [2,3,1], 'd': [1,1,1] } ]
-    for gen_index_dims in gen_dims_list:
-        gen_indexes = ''.join(gen_index_dims.keys())
-
-        # generated dims will not change during the below iteration
-        input_dims = dict(gen_index_dims) 
-        for idx in sig_indexes:
-            if idx in input_dims:
-                continue
-            if idx in op.dims_graph.computed_indexes():
-                continue
-            dims = [ randint(1, max_dimsize) for _ in range(index_ranks[idx]) ]
-            input_dims[idx] = dims
-
-        comp_idxs = op.dims_graph.computed_indexes()
-        if positive_mode:
-            comp_rngs = { idx: range(randint(1, max_dimsize), 10000) for idx in
-                    comp_idxs }
-        else:
-            comp_rngs = { idx: range(-10000, -1) for idx in comp_idxs }
-
-        while True:
-            comp_dims = op.dims_graph.dims(input_dims, **comp) 
-
-            # fix any visible computed dims which are negative
-            # TODO: zero could need to be 1 for some dims.
-            todo = next(((idx, c, dim) 
-                for idx, dims in comp_dims.items()
-                for c, dim in enumerate(dims)
-                if dim not in comp_rngs[idx]), None)
-            if todo is None:
-                index_dims = { **comp_dims, **input_dims }
-                break
-
-            # the first detected out-of-bounds index, and the component
-            # which is out of bounds
-            oob_idx, oob_comp, oob_dim = todo
-            delta = 1 if oob_dim < comp_rngs[oob_idx].start else -1
-
-            comp_inputs = op.dims_graph.get_index_inputs(oob_idx)
-            # apply the assumption that computed indexes are either
-            # component-wise or broadcasting.  secondly, assume that the
-            # computed index is monotonically increasing in the values of
-            # the input indices
-            comp_rank = index_ranks[oob_idx]
-            for input_idx in comp_inputs:
-                if input_idx in gen_indexes:
+    for gen_dims in gen_dims_list:
+        free_dims = {}
+        for cl in clusters:
+            # find the equal_range [lo, hi) such that any input values in this
+            # range yield outputs in the target range
+            lo = ival_bsearch(op, index_ranks, max_dimsize, cl, gen_dims,
+                    less_lb, pos_mode, **comp)
+            hi = ival_bsearch(op, index_ranks, max_dimsize, cl, gen_dims,
+                    less_ub, pos_mode, **comp)
+            print('lo: ', lo, ', hi: ', hi)
+            for fidx in lo.keys():
+                lb = lo[fidx]
+                ub = hi[fidx]
+                if lb == ub:
+                    free_dims[fidx] = None
                     continue
-                if input_idx not in input_dims:
-                    continue
-                input_rank = index_ranks[input_idx]
-                if input_rank == comp_rank:
-                    inc = oob_comp
-                elif input_rank == 1:
-                    inc = 0
-                else:
-                    raise SchemaError(
-                        f'Computed index \'{oob_idx}\' has rank '
-                        f'{comp_rank} but has input index \'{input_idx}\' '
-                        f'with rank {input_rank}.\n'
-                        f'Computed indices must either be component-wise '
-                        f'or broadcasting.')
-                input_dims[input_idx][inc] += delta
-                """
-                if not positive_mode:
-                    print(f'{input_idx} {inc} '
-                            f'filter: {input_dims["f"]} '
-                            f'{input_dims[input_idx][inc]} '
-                            f'{comp_dims[oob_idx][oob_comp]}')
-                """
+                r = index_ranks[fidx]
+                free_dims[fidx] = [randint(lb,ub) for _ in range(r)]
+        if any(fdims is None for fdims in free_dims.values()):
+            continue
 
-                # it's possible this approach fails and we cannot find any
-                # inputs which yield the desired computed output dimensions
-                if input_dims[input_idx][inc] < 0:
-                    return None
+        input_dims = { **free_dims, **gen_dims }
+        comp_dims = op.dims_graph.dims(input_dims, **comp) 
+        final_dims = { **input_dims, **comp_dims }
+        print('final_dims: ', final_dims)
 
-        for idx, dims in comp_dims.items():
-            if any(d not in comp_rngs[idx] for d in dims):
+        for idx, rank in index_ranks.items():
+            if idx not in final_dims:
+                rng = op.index[idx].dims_range()
+                lo = max(rng.start, 1)
+                hi = min(rng.stop - 1, max_dimsize)
+                final_dims[idx] = [randint(lo, hi) for _ in range(rank)] 
+        final_dims_list.append(final_dims)
+
+        # TODO: handle broadcasting logic
+        # apply the assumption that computed indexes are either
+        # component-wise or broadcasting.  secondly, assume that the
+        # computed index is monotonically increasing in the values of
+        # the input indices
+        """
+        for idx, rng in comp_ranges.items():
+            dims = comp_dims[idx]
+            if any(d not in rng for d in dims):
                 assert False, (
                         f'Index {idx} had out-of-range dims {dims}. '
-                        f'valid range is {comp_rngs[idx]}')
-        return index_dims
+                        f'valid range is {rng}')
+        """
+    print(final_dims_list)
+    return final_dims_list
 
 class Unused:
     pass
@@ -175,6 +254,91 @@ class GenFunc(NodeFunc):
         finally:
             if doit:
                 self.op.avail_test_edits += dist
+
+def plex(res):
+    """
+    convert a list of individual results into one multiplexed result.
+    rlist := [res, ...]
+    res   := [item, ...]
+    item  := int or (int, ...)
+    [[1, 2, 3], [4, 5, 6], [7, 8, 9]] => [[1, 4, 7], [2, 5, 8], [3, 6, 9]]
+
+    [[(1,5,3),(2,6,3)], [(6,8,3),(2,6,4)], [(9,5,3),(2,6,7)], [(5,1,0),(2,1,3)]] => 
+    [([1,6,9,5], [5,8,5,1], [3,3,3,0]), ([2,2,2,2], [6,6,6,1], [3,4,7,3])]
+    """
+    if len(res) == 0:
+        return res
+    item = res[0][0]
+    if isinstance(item, int):
+        return list(list(z) for z in zip(*res))
+    elif isinstance(item, tuple):
+        return [tuple(list(z) for z in zip(*c)) for c in zip(*res)]
+
+class GenDims(NodeFunc):
+    """
+
+    """
+    def __init__(self, name, func, rank_idx, yield_scalar, max_prod, pars):
+        super().__init__(name)
+        """
+        func(*inputs, *extra_vals, max_val) yields a list of ints or a list of
+        tuples
+        """
+        self.func = func
+        self.rank_idx = rank_idx
+        self.yield_scalar = yield_scalar
+        self.max_prod = max_prod
+        self.pars = pars
+
+    def max_result(self, vals):
+        return max(np.prod(v) if isinstance(v, tuple) else v for v in vals)
+
+    def __call__(self, kwnode, *input_dims):
+        index_ranks = kwnode[INDEX_RANKS]
+        if self.yield_scalar:
+            yield from self.func(*input_dims, *self.pars, self.max_prod)
+
+        rank = index_ranks[self.rank_idx]
+        res = []
+        max_val = self.max_prod
+        for r in range(rank):
+            ins = tuple(d[r] if isinstance(d, list) else d for d in input_dims)
+            vals = list(self.func(*ins, *self.pars, max_val))
+            res.append(vals)
+            max_item = self.max_result(vals)
+            max_val //= max_item
+        pres = plex(res)
+        yield from pres 
+
+class CompDims(NodeFunc):
+    """
+    Wrap a dims computation, performing scalar broadcasting as necessary
+    """
+    def __init__(self, name, func, tfunc, rank_idx, arg_names):
+        super().__init__(name)
+        self.func = func
+        self.tfunc = tfunc
+        self.rank_idx = rank_idx
+        self.arg_names = arg_names
+
+    def __call__(self, kwnode, *input_dims):
+        arg_vals = tuple(kwnode[k] for k in self.arg_names)
+        index_ranks = kwnode[INDEX_RANKS]
+        rank = index_ranks[self.rank_idx]
+        result = []
+        for r in range(rank):
+            ins = tuple(d[r] if isinstance(d, list) else d for d in input_dims)
+            res = self.func(*ins, *arg_vals)
+            result.append(res)
+        yield result
+
+class DimsInput(NodeFunc):
+    # A dummy node for supplying input to the Dims graph via set_cached()
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self):
+        return None
 
 class Layout(GenFunc):
     def __init__(self, op, name):
@@ -223,7 +387,7 @@ class RankRange(GenFunc):
 
     def __call__(self, **index_ranks):
         # Get the initial bounds consistent with the schema
-        sch_lo, sch_hi = 0, 100000
+        sch_lo, sch_hi = 0, 10000
         for cons in self.schema_cons:
             clo, chi = cons(**index_ranks)
             sch_lo = max(sch_lo, clo)
@@ -298,8 +462,8 @@ class ArgIndels(GenFunc):
 
 class ArgMutations(GenFunc):
     """
-    Compute dimensions of all indices given index_ranks, and incorporating
-    arg_indels.  Also, produce a negative computed dimension version
+    Compute dimensions of all indices given index_ranks using the schema's
+    generative dims_graph.
     """
     def __init__(self, op):
         super().__init__(op)
@@ -310,9 +474,13 @@ class ArgMutations(GenFunc):
         for arg, sig in sigs.items():
             arg_ranks[arg] = sum(index_ranks[idx] for idx in sig)
 
-        index_dims = compute_dims(self.op, arg_ranks, index_ranks, sigs, False,
-                **comp)
-        if index_dims is not None:
+        dims_input = { INDEX_RANKS: index_ranks, **comp } 
+        self.op.dims_input_node.set_cached(dims_input)
+        all_nodes = set(self.op.dims_graph.values())
+        live_nodes = all_nodes.difference([self.op.dims_input_node])
+        index_dims_list = fgraph.gen_graph_values(live_nodes, live_nodes)
+        # index_dims_list = compute_dims(self.op, arg_ranks, index_ranks, sigs, False, **comp)
+        for index_dims in index_dims_list:
             neg_arg_shapes = {}
             for arg, sig in sigs.items():
                 shape = [ dim for idx in sig for dim in index_dims[idx] ]
@@ -335,47 +503,48 @@ class ArgMutations(GenFunc):
 
         # incorporate the indel
         max_dimsize = get_max_dimsize(self.op.target_nelem, mut_arg_ranks)
-        index_dims = compute_dims(self.op, mut_arg_ranks, index_ranks, sigs,
-                True, **comp)
-        assert index_dims is not None
+        index_dims_list = compute_dims(self.op, mut_arg_ranks, index_ranks,
+                sigs, True, **comp)
+        assert len(index_dims_list) > 0
 
-        num_yielded = 0
-        arg_shapes = {}
-        for arg, sig in sigs.items():
-            shape = [ dim for idx in sig for dim in index_dims[idx] ]
-            indel = arg_indels.get(arg, None)
-            if indel is not None:
-                kind, rest = indel[0], indel[1:]
-                if kind == Indel.Insert:
-                    pos, size = rest
-                    ins = [randint(1, max_dimsize) for _ in range(size)]
-                    shape[pos:pos] = ins
-                elif kind == Indel.Delete:
-                    beg, end = rest
-                    del shape[beg:end]
-            arg_shapes[arg] = shape
+        for index_dims in index_dims_list:
+            num_yielded = 0
+            arg_shapes = {}
+            for arg, sig in sigs.items():
+                shape = [ dim for idx in sig for dim in index_dims[idx] ]
+                indel = arg_indels.get(arg, None)
+                if indel is not None:
+                    kind, rest = indel[0], indel[1:]
+                    if kind == Indel.Insert:
+                        pos, size = rest
+                        ins = [randint(1, max_dimsize) for _ in range(size)]
+                        shape[pos:pos] = ins
+                    elif kind == Indel.Delete:
+                        beg, end = rest
+                        del shape[beg:end]
+                arg_shapes[arg] = shape
 
-        yield arg_shapes
-        num_yielded += 1
+            yield arg_shapes
+            num_yielded += 1
 
-        # generate point mutations
-        with self.reserve_edit(1) as avail:
-            if not avail:
-                return
-            for arg, shape in arg_shapes.items():
-                if num_yielded == self.op.max_yield_count:
-                    break
-                if len(shape) == 0:
-                    continue
-                i = choice(range(len(shape)))
-                old_val = shape[i]
-                new_val, alt_val = sample(range(1, max_dimsize), 2)
-                val = new_val if new_val != shape[i] else alt_val
-                shape[i] = val
-                copy = { k: list(v) for k, v in arg_shapes.items() }
-                yield copy
-                num_yielded += 1
-                shape[i] = old_val
+            # generate point mutations
+            with self.reserve_edit(1) as avail:
+                if not avail:
+                    return
+                for arg, shape in arg_shapes.items():
+                    if num_yielded == self.op.max_yield_count:
+                        break
+                    if len(shape) == 0:
+                        continue
+                    i = choice(range(len(shape)))
+                    old_val = shape[i]
+                    new_val, alt_val = sample(range(1, max_dimsize), 2)
+                    val = new_val if new_val != shape[i] else alt_val
+                    shape[i] = val
+                    copy = { k: list(v) for k, v in arg_shapes.items() }
+                    yield copy
+                    num_yielded += 1
+                    shape[i] = old_val
 
 class DataFormat(GenFunc):
     """
@@ -441,11 +610,9 @@ class DTypeEquiv(GenFunc):
                 yield src_dtype
             else:
                 with self.reserve_edit(1) as avail:
-                    if avail:
+                    if avail and num_err != self.op.dtype_err_quota:
                         yield dtype
                         num_err += 1
-            if num_err == self.op.dtype_err_quota:
-                break
 
 class DTypesNotImpl(GenFunc):
     """
@@ -512,15 +679,15 @@ class ShapeList(GenFunc):
         arg = oparg.ShapeListArg(shape)
         yield arg
 
-class ShapeTensor(GenFunc):
+class ShapeTensor(NodeFunc):
     """
     Generate the current shape of the input signature as a tensor
     """
-    def __init__(self, op, arg_name):
-        super().__init__(op, arg_name)
+    def __init__(self, arg_name):
+        super().__init__(arg_name)
         self.arg_name = arg_name
 
-    def __call__(self, arg_muts, arg_indels, sigs, obs_shapes):
+    def __call__(self, arg_shapes):
         shape = arg_shapes[self.arg_name]
         arg = oparg.ShapeTensorArg(shape)
         yield arg

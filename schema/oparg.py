@@ -25,6 +25,10 @@ class DataTensorArg(OpArg):
     """
     def __init__(self, shape, dtype_name):
         super().__init__()
+        nelem = np.prod(shape)
+        if nelem > int(1e8):
+            raise SchemaError(f'Shape \'{shape}\' has {nelem} elements, '
+                    f'which exceeds 1e8 elements')
         self.shape = shape
         self.dtype = tf.dtypes.as_dtype(dtype_name)
 
@@ -42,11 +46,6 @@ class DataTensorArg(OpArg):
                 f'{ex}')
 
     def _value(self):
-        nelem = np.prod(self.shape)
-        # print(repr(self), nelem)
-        if nelem > int(1e8):
-            raise SchemaError(f'Shape \'{self.shape}\' has {nelem} elements, '
-                    f'which exceeds 1e8 elements')
         if self.dtype.is_integer:
             lo = max(self.dtype.min, -1000)
             hi = min(self.dtype.max, 1000) 

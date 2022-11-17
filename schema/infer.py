@@ -3,7 +3,7 @@ import copy
 import numpy as np
 from contextlib import contextmanager
 from .fgraph import NodeFunc
-from .base import ALL_DTYPES
+from .base import ALL_DTYPES, INDEX_RANKS
 from . import base
 from . import oparg
 
@@ -215,14 +215,37 @@ class IndexConstraints(ReportNodeFunc):
             return
 
         # each usage should have a single entry
+        index_ranks = shape_edit.index_ranks
+        dims_input = { INDEX_RANKS: index_ranks, **comp } 
+        self.op.dims_input_node.set_cached(dims_input)
         input_dims = shape_edit.get_input_dims()
-        comp_dims = self.op.dims_graph.dims(input_dims, **comp)
+        all_nodes = list(self.op.dims_graph.values())
+        res_nodes = [] 
+        for sig, node in self.op.dims_graph.items():
+            if node == self.op.dims_input_node:
+                continue
+            elif all(idx in input_dims for idx in sig):
+                val = (input_dims[idx] for idx in sig)
+                if len(val) == 1:
+                    val = val[0]
+                node.set_cached(val)
+            else:
+                res_nodes.append(node)
+        comp_dims_list = fgraph.gen_graph_values(all_nodes, res_nodes)
+        assert len(comp_dims_list) == 1, 'Internal Error with comp graph'
+        comp_dims = comp_dims_list[0]
+        # comp_dims = self.op.dims_graph.dims(input_dims, **comp)
         shape_edit.add_comp_dims(comp_dims)
 
         index_templ = self.op.dims_graph.templates(input_dims, **comp) 
         index_dims = { **input_dims, **comp_dims }
 
         for pred in self.cons.preds:
+            # skip any predicates if any input indices are missing - this can
+            # happen when the predicate only applies to specific layouts
+            if not all(idx in index_dims for idx in pred.indices):
+                continue
+
             # get any predicate involved indices that also have templates
             pred_templ = []
             pred_input_dims = []

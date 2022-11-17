@@ -11,6 +11,7 @@ from . import fgraph
 
 LAYOUT = ':layout'
 SINGLE_FORMAT = ':single_format'
+INDEX_RANKS = ':index_ranks'
 
 ALL_DTYPES = (
         'int8', 'int16', 'int32', 'int64',
@@ -48,7 +49,8 @@ class ShapeEdit(object):
         self.comp_dims = None
 
     def __repr__(self):
-        r  = f'arg_sigs: {self.arg_sigs}\n'
+        r  = f'layout: {self.layout}\n'
+        r += f'arg_sigs: {self.arg_sigs}\n'
         r += f'arg_delta: {self.arg_delta}\n'
         r += f'usage_map: {self.usage_map}\n'
         r += f'pred: {self.index_pred_error}\n'
@@ -642,7 +644,7 @@ class DimRankConstraint(RankConstraint):
             return (f'Decrease the dimension of index \'{self.source_idx}\' by '
                     f'{rank_error}')
 
-Index = namedtuple('Index', ['dims', 'olc_path', 'desc_path', 'dims_path'])
+CIndex = namedtuple('CIndex', ['dims', 'olc_path', 'desc_path', 'dims_path'])
 
 class CompIndex(NodeFunc):
     # FuncNode object for indices registered with computed_index
@@ -672,7 +674,7 @@ class CompIndex(NodeFunc):
             comp_dims = self.dims_func(*index_dims_args, *extra_args)
             return comp_dims.tolist()
         else:
-            # v are Index objects
+            # v are CIndex objects
             # Apply the template function to three kinds of information, e.g.:
             # dims_form: [1,2,3], olc: 'k', desc: 'filter_channel'
             desc_args = []
@@ -681,7 +683,8 @@ class CompIndex(NodeFunc):
             olc_args = []
 
             for idx, f in index_pairs:
-                desc_args.append(snake_case(self.graph.op.index[idx]))
+                ind = self.graph.op.index[idx]
+                desc_args.append(snake_case(ind.desc))
                 dims_args.append(np.array(f.dims))
                 d = f.dims if isinstance(f.dims, int) else list(f.dims)
                 dims_form_args.append(str(d))
@@ -693,7 +696,8 @@ class CompIndex(NodeFunc):
             dims_frag = self.template_func(*dims_form_args, *extra_args)
 
             this_olc = self.idx
-            this_desc = snake_case(self.graph.op.index[self.idx])
+            ind = self.graph.op.index[self.idx]
+            this_desc = snake_case(ind.desc)
             this_dims_form = str(comp_dims)
 
             olc_eq = f'{this_olc} = {olc_frag}'
@@ -708,7 +712,7 @@ class CompIndex(NodeFunc):
             desc_path.append(desc_eq)
             dims_path.append(dims_eq)
 
-            index = Index(comp_dims, olc_path, desc_path, dims_path)
+            index = CIndex(comp_dims, olc_path, desc_path, dims_path)
             return index
 
 class TemplateFunc(NodeFunc):
@@ -926,7 +930,7 @@ class CompDimsGraph(object):
         for idx, node in self.input_indices.items():
             val = index_dims.get(idx, None)
             if self.template_mode:
-                node_val = Index(val, [], [], [])
+                node_val = CIndex(val, [], [], [])
             else:
                 node_val = val
             node.set_cached(node_val)

@@ -6,6 +6,7 @@ import tensorflow as tf
 import numpy as np
 import itertools
 from collections import defaultdict
+from random import choice
 from . import predicates as pr
 from . import generators as ge
 from . import infer as nf
@@ -35,14 +36,40 @@ argument, either the arg_name:tensor node (for tensor arguments) or the
 arg_name:arg node for non-tensors.
 """
 
+class Index(object):
+    """
+    Represents the central shape-bearing concept.
+    pri_idx is the index whose rank this one is equated to.  Or, if pri_idx ==
+    idx, it means the instance itself is a primary index
+    dims_range is 2-member tuple, each member an integer or None.
+    None signifies no limit
+    """
+    def __init__(self, idx, desc, pri_idx, rank_range, dims_range):
+        self.idx = idx
+        self.desc = desc
+        self.pri_idx = pri_idx
+        self.rank_range = rank_range
+        self.dims_min = dims_range[0]
+        self.dims_max = dims_range[1]
+
+    def __repr__(self):
+        r =  f'{type(self).__qualname__}({self.idx}): {self.desc}, '
+        r += f'{self.pri_idx}, {self.rank_range}, '
+        r += f'{self.dims_min}-{self.dims_max}'
+        return r
+
+    def primary(self):
+        return self.idx == self.pri_idx
+
+    def dims_range(self):
+        min_dim = 0 if self.dims_min is None else self.dims_min
+        max_dim = 1000000 if self.dims_max is None else self.dims_max
+        return range(min_dim, max_dim + 1)
+
 class SchemaApi(object):
     def __init__(self, op_path):
         self.op_path = op_path
-        self.index = {} # idx => description
-
-        # sidx => tidx.  RANK(sidx) is determined from RANK(tidx)
-        # indices in which sidx == tidx are called 'primary'
-        self.equiv_index = {} 
+        self.index = {} # idx => Index
 
         # flags
         self.avail_edits = 0
@@ -73,7 +100,8 @@ class SchemaApi(object):
         self.pred_graph = {}
         self.gen_graph = {} # idx => node, for generating inventory
         self.inf_graph = {}
-        self.dims_graph = base.CompDimsGraph(self)
+        self.dims_graph = {}
+        # self.dims_graph = base.CompDimsGraph(self)
 
         # These will be set to ge.ObservedValue nodes
         self.obs_dtypes = None
@@ -135,6 +163,7 @@ class SchemaApi(object):
         self._init_pred_graph()
         self._init_inf_graph()
         self._init_gen_graph()
+        self._init_dims_graph()
         init_schema_func(self)
         self._finalize()
 
@@ -146,7 +175,6 @@ class SchemaApi(object):
                 raise OpGrindInternalError(ex)
             try:
                 ret_val = self.framework_op(**self.arguments)
-                self._check_return(ret_val)
             except BaseException as ex:
                 exc_str = str(ex)
                 mt = re.match('\{\{.+?\}\} (.+)', exc_str)
@@ -156,6 +184,7 @@ class SchemaApi(object):
                     self.framework_exc_msg = mt.groups()[0]
                 raise ex
             finally:
+                self._check_return(ret_val)
                 msg = self._report()
                 if msg is not None:
                     print(msg, file=sys.stderr)
@@ -413,6 +442,10 @@ class SchemaApi(object):
         report_obj = nf.Report(self)
         self.report_inode = G.add_node(report_obj, self.dtypes, cons_inode)
 
+    def _init_dims_graph(self):
+        G.set_registry(self.dims_graph)
+        self.dims_input_node = G.add_node(ge.DimsInput())
+
     def _init_gen_graph(self):
         G.set_registry(self.gen_graph)
         layout_gobj = ge.Layout(self, base.LAYOUT)
@@ -428,7 +461,7 @@ class SchemaApi(object):
         self.args_gnode = G.add_node(ge.Args())
 
     def _finalize(self):
-        self.dims_graph.finalize()
+        # self.dims_graph.finalize()
         if self.data_formats is None:
             self.arg_layout(None, None, None)
 
@@ -543,7 +576,7 @@ class SchemaApi(object):
         summary_fh.close()
 
     # ============ PUBLIC API ====================
-    def add_index(self, idx, description, constraint=None):
+    def add_index(self, idx, description, constraint=None, dims_range=None):
         """
         Add index {idx} with {description} to the schema.  {idx} must be a
         single letter and can be referred to in later signatures.
@@ -551,23 +584,38 @@ class SchemaApi(object):
         {constraint} may be one of:
 
         1. an integer pair tuple of (<min_rank>, <max_rank>) 
+        2. a single integer - interpreted as (<rank>, <rank>)
         2. the name of a previously registered index to equate the rank
         3. None - a constraint will be placed downstream limiting these ranks
+
+        {dims_range} maybe be None or a pair of (integer or None)
+        1. None - no restriction on the range of dimensions
+        2. (int, None)  low bounded
+        3. (None, None) high bounded
+        4. (int, int) low and high bounded
+        5. int - used for both low and high bound
         """
         if idx in self.index:
             raise SchemaError(f'Index \'{idx}\' already registered') 
 
         ranks_gnode = self._gen_node(ge.IndexRanks)
         ranks_inode = self._inf_node(ge.IndexRanks) # same class
+
+        if isinstance(dims_range, (int, type(None))):
+            dims_range = (dims_range, dims_range)
+        
         if isinstance(constraint, str):
             primary_idx = constraint
             if primary_idx not in self.index:
                 raise SchemaError(f'Source index \'{primary_idx}\' is not '
                         f'a registered index')
-            elif self.equiv_index[primary_idx] != primary_idx:
+            elif self.index[primary_idx].pri_idx != primary_idx:
                 raise SchemaError(f'Source index \'{primary_idx}\' is not '
                         f'a primary index')
             else:
+                index = Index(idx, description, primary_idx, None, dims_range)
+                self.index[idx] = index
+
                 G.set_registry(self.gen_graph)
                 gobj = ge.RankEquiv(self, idx)
                 pa = self.gen_graph[primary_idx]
@@ -580,10 +628,16 @@ class SchemaApi(object):
                 idx_inode = G.add_node_sn(iobj, ipa) 
                 ranks_inode.append_parent_sn(idx_inode)
 
-                self.equiv_index[idx] = primary_idx
+        elif isinstance(constraint, (tuple, int, type(None))):
+            if isinstance(constraint, int):
+                rank_range = (constraint, constraint)
+            else:
+                rank_range = constraint
 
-        elif isinstance(constraint, (tuple, type(None))):
             G.set_registry(self.gen_graph)
+            index = Index(idx, description, idx, rank_range, dims_range)
+            self.index[idx] = index
+
             idx_gobj = ge.RankRange(self, idx)
             idx_gnode = G.add_node_sn(idx_gobj)
             ranks_gnode.append_parent_sn(idx_gnode)
@@ -594,36 +648,48 @@ class SchemaApi(object):
             idx_inode = G.add_node_sn(idx_iobj, self.obs_shapes, self.obs_args)
             ranks_inode.append_parent_sn(idx_inode)
 
-            if isinstance(constraint, tuple):
-                pair = constraint
-                if not (len(pair) == 2 
-                        and isinstance(pair[0], int) 
-                        and isinstance(pair[1], int) 
-                        and 0 <= pair[0] 
-                        and pair[0] <= pair[1]):
+            if isinstance(rank_range, tuple):
+                if not (len(rank_range) == 2 
+                        and isinstance(rank_range[0], int) 
+                        and isinstance(rank_range[1], int) 
+                        and 0 <= rank_range[0] 
+                        and rank_range[0] <= rank_range[1]):
                     raise SchemaError(
                         f'{type(self).__qualname__}: Got constraint tuple '
-                        f'\'{pair}\' but it is not a 2-integer tuple')
-                lo, hi = pair
-                cons = base.SumRangeConstraint(idx, lo, hi)
+                        f'\'{rank_range}\' but it is not a 2-integer tuple')
+                cons = base.SumRangeConstraint(idx, *rank_range)
                 idx_gobj.add_schema_constraint(cons)
                 idx_iobj.add_schema_constraint(cons)
+            else:
+                pass
 
-            primary_inds = { *self.equiv_index.values() }
-            for primary_idx in primary_inds:
-                gpa = self.gen_graph[primary_idx]
+            pri_inds = [ind.idx for ind in self.index.values() if ind.primary()]
+            for pidx in pri_inds:
+                if pidx == idx:
+                    continue
+                gpa = self.gen_graph[pidx]
                 idx_gnode.append_parent_sn(gpa)
-
-                ipa = self.inf_graph[primary_idx]
+                ipa = self.inf_graph[pidx]
                 idx_inode.append_parent_sn(ipa)
 
-            self.equiv_index[idx] = idx
         else:
             raise SchemaError(
                 f'{type(self).__qualname__}: Got constraint \'{constraint}\''
                 f' but expected either an index, None, or an integer pair.')
 
-        self.index[idx] = description
+        min_val = self.index[idx].dims_min
+        if min_val is not None:
+            min_val_pred = flib.PredAbove(min_val)
+            min_val_templ = flib.PredAboveTempl(min_val)
+            name = f'{idx} >= {min_val}'
+            self.add_index_predicate(name, min_val_pred, min_val_templ, idx)  
+
+        max_val = self.index[idx].dims_max
+        if max_val is not None:
+            max_val_pred = flib.PredBelow(max_val)
+            max_val_templ = flib.PredBelowTempl(max_val)
+            name = f'{idx} >= {max_val}'
+            self.add_index_predicate(name, max_val_pred, max_val_templ, idx)  
 
     def arg_unchecked(self, arg_name):
         """
@@ -631,38 +697,117 @@ class SchemaApi(object):
         """
         pass
 
-    # TODO: add validation to restrict extra_args to prevent graph cycles
-    def computed_index(self, comp_index, comp_func, tem_func, input_indexes,
-            min_val, *extra_args):
-        """
-        Registers {comp_func} to compute the dimensions of {comp_index}.
-        Registers {tem_func} which produces a text string explaining how
-        the index is computed.
+    def _get_dims_nodes(self, sig):
+        nodes = []
+        graph = self.dims_graph
+        for idx in sig:
+            if idx not in self.index:
+                raise SchemaError(
+                    f'Index \'{idx}\', found in sig \'{sig}\' is not '
+                    f'yet registered with add_index')
 
-        Adds an index predicate to ensure all components of the computed index
-        are >= {min_val}
+            pa = next((nd for name, nd in graph.items() if nd !=
+                self.dims_input_node and idx in name), None)
+            if pa is None:
+                raise SchemaError(
+                    f'Index \'{idx}\' mentioned in sig \'{sig}\' has not '
+                    f'yet been registered by a call to comp_dims, gen_dims or '
+                    f'gen_dims_func.  Must be registered before it is used '
+                    f'as input to another call')
+            nodes.append(pa)
+        return nodes
+
+    def _get_primary_idx(self, sig):
+        pri = { self.index[idx].pri_idx for idx in sig }
+        if len(pri) > 1:
+            raise SchemaError(
+                f'More than one primary index found in sig \'{sig}\': '
+                ', '.join(pri)
+                )
+        return pri.pop() if len(pri) == 1 else None
+
+    def gen_dims_func(self, out_sig, func, in_sig, max_prod, do_scalar, *pars):
+        """
+        Calls func(*in_dims, max_val, *pars), which yields one or more
+        results.  Each result is either a single integer, if out_sig is a
+        single index, or a tuple with len(out_sig) members.
+
+        Multiplexes the call rank times, where rank is determined as the
+        run-time rank of the indices in in_sig.
+        """
+        parents = self._get_dims_nodes(in_sig)
+        pri_idx_in = self._get_primary_idx(in_sig)
+        pri_idx_out = self._get_primary_idx(out_sig)
+        if pri_idx_in is not None and pri_idx_in != pri_idx_out:
+            raise SchemaError(
+                f'Primary index for in_sig \'{in_sig}\' was {pri_idx_in} '
+                f'but primary index for out_sig \'{out_sig}\' was {pri_idx_out}. '
+                f'Must be equal.')
+
+        gdims = ge.GenDims(out_sig, func, pri_idx_out, do_scalar, max_prod, pars)
+        G.set_registry(self.dims_graph)
+        G.add_node_sn(gdims, self.dims_input_node, *parents)
+
+    def gen_dims(self, out_idx, max_prod):
+        """
+        Generate dimensions of {out_idx} of appropriate rank such that the
+        product is in [1, max_prod]
+        """
+        def gen(max_val):
+            yield choice(range(1, max_val+1))
+        self.gen_dims_func(out_idx, gen, '', max_prod, False)
+
+    def comp_dims(self, out_idx, func, tfunc, in_sig, *arg_names):
+        """
+        Register {func} as the formula defining {out_idx}, called as:
+        func(*in_dims, *arg_vals), where in_dims are the run-time dimensions
+        of indices in in_sig.
+
+        arg_names must be argument names registered with arg_option or
+        arg_layout.
+        """
+        parents = self._get_dims_nodes(in_sig)
+        pri_idx_in = self._get_primary_idx(in_sig)
+        pri_idx_out = self._get_primary_idx(out_idx)
+        if pri_idx_in != pri_idx_out:
+            raise SchemaError(
+                f'Primary index for in_sig \'{in_sig}\' was {pri_idx_in} '
+                f'but primary index for out_sig \'{out_idx}\' was {pri_idx_out}. '
+                f'Must be equal.')
+
+        mut_gnode = self._gen_node(ge.ArgMutations)
+        for arg_name in arg_names:
+            if arg_name not in self.arg_order:
+                raise SchemaError(
+                    f'name \'{arg_name}\' in arg_names is not found in the '
+                    f'framework op input arguments.  Input arguments are: '
+                    '\, '.join(self.arg_order))
+            else:
+                arg_gnode = self.arg_gen_nodes[arg_name]
+                mut_gnode.maybe_append_parent_sn(arg_gnode)
+
+        cdims = ge.CompDims(out_idx, func, tfunc, pri_idx_out, arg_names) 
+        G.set_registry(self.dims_graph)
+        G.add_node_sn(cdims, self.dims_input_node, *parents)
+
+
+    # TODO: add validation to restrict extra_args to prevent graph cycles
+    def computed_index(self, out_idx, func, tfunc, in_sig, *extra_args):
+        """
+        Registers {func} to compute the dimensions of {idx}.
+        Registers {tfunc} which produces a text string explaining how
+        the index is computed.
 
         {extra_args} can be one of: LAYOUT or a parameter registered with
         arg_option.  
 
         The following calls are made:
 
-        comp_func(*index_dims, *extra_vals)
-        (index_dims are the resolved dimensions of {input_indexes})
+        func(*in_dims, *extra_vals)
+        (index_dims are the resolved dimensions of {in_sig})
         (extra_vals are the runtime values of {extra_args})
-
-        If a downstream constraint (registered with add_index_predicate) fails,
-        then OpGrind makes these calls:
-
-        tem_func(*index_desc, *extra_vals)
-        tem_func(*index_dims, *extra_vals)
-        (index_desc are the snake_cased descriptions of {input_indexes})
-
-        for any computed indices that are used directly or indirectly by the
-        predicate (ancestor indices).  The output strings are then assembled to
-        create an explanatory error message.
         """
-        if not all(idx in self.index for idx in input_indexes):
+        if not all(idx in self.index for idx in in_sig):
             raise SchemaError(
                 f'{type(self).__qualname__}: In schema \'{self.op_path}\'.\n'
                 f'Indices string \'{input_indexes}\' contains unregistered '
@@ -676,8 +821,11 @@ class SchemaApi(object):
         for arg in extra_args:
             if arg == base.LAYOUT:
                 node = self._gen_node(ge.Layout, base.LAYOUT)
-            else:
+            elif arg in self.arg_gen_nodes:
                 node = self.arg_gen_nodes[arg]
+            else:
+                raise SchemaError(
+                    f'did not understand extra_args value \'{arg}\'')
             extra_node_names.append(node.name)
             arg_muts.maybe_append_parent_sn(node)
             cons_inode.maybe_append_parent_sn(node)
@@ -695,11 +843,6 @@ class SchemaApi(object):
         self.dims_graph.add_comp_index(comp_index, comp_func, tem_func,
                 input_indexes, *extra_args)
 
-        # add a predicate to ensure the computed index is >= some minimum value
-        min_val_pred = flib.PredAbove(min_val)
-        min_val_templ = flib.PredAboveTempl(min_val)
-        name = f'{comp_index} >= {min_val}'
-        self.add_index_predicate(name, min_val_pred, min_val_templ, comp_index)  
 
     def limit_ranks(self, sig, min_val, max_val):
         """
@@ -707,17 +850,17 @@ class SchemaApi(object):
         """
         self._check_sig(sig, 'rank limits')
         for idx in sig:
-            if idx not in self.equiv_index:
+            if idx not in self.index:
                 raise SchemaError(
                     f'Index \'{idx}\' mentioned in signature \'{sig}\' was '
                     f'not registered with add_index.  All indices must first '
                     f'be registered before being used in a limit_ranks call')
 
         # add constraint to each node in the sig
-        pri_sig = ''.join(sorted(self.equiv_index[idx] for idx in sig))
+        pri_sig = ''.join(sorted(self.index[idx].pri_idx for idx in sig))
         cons = base.SumRangeConstraint(pri_sig, min_val, max_val)
         for idx in sig:
-            pri_idx = self.equiv_index[idx]
+            pri_idx = self.index[idx].pri_idx
             gnode = self.gen_graph[pri_idx]
             gnode.func.add_schema_constraint(cons)
             inode = self.inf_graph[pri_idx]
@@ -1021,6 +1164,9 @@ class SchemaApi(object):
         Register {arg_name} as an integer parameter which defines the shape of
         an index.  The shape will be the broadcasted value of the argument if
         the index has rank greater than 1.
+
+        If {lo} and/or {hi} are provided, the argument is additionally
+        validated to be in that range.
         """
         # TODO: currently uses arg_shape_func, which assumes the arg defines
         # the rank.  In this case, it only defines the shape as the integer 
@@ -1029,7 +1175,8 @@ class SchemaApi(object):
         P.set_registry(self.pred_graph)
         schema = self._pred_node(pr.Schema)
         gen_obj = ge.ShapeInt(arg_name)
-        pred_obj = pr.ShapeInt(arg_name, gen_obj)
+        ind = self.index[index]
+        pred_obj = pr.ShapeInt(arg_name, ind.dims_min, ind.dims_max)
         arg_p = P.add_node(pred_obj, schema)
         kind = ShapeKind.Int
         self._arg_shape_func(arg_name, (index,), arg_p, gen_obj, kind)
@@ -1147,7 +1294,7 @@ class SchemaApi(object):
         # TODO: add schema constraint, 
         cons = base.SigRankValueConstraint(arg_name, sig)
         for idx in sig:
-            pri_idx = self.equiv_index[idx]
+            pri_idx = self.index[idx].pri_idx
             inode = self.inf_graph[pri_idx]
             inode.func.add_args_constraint(cons)
         self._add_definite_rank(sig)
@@ -1173,7 +1320,7 @@ class SchemaApi(object):
         # add the constraint to the inference graph 
         cons = base.ShapeFuncConstraint(rank_sig, get_dims, shape_arg)
         for idx in rank_sig:
-            pri_idx = self.equiv_index[idx]
+            pri_idx = self.index[idx].pri_idx
             inode = self.inf_graph[pri_idx]
             inode.func.add_shapes_constraint(cons)
 
