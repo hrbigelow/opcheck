@@ -18,17 +18,17 @@ def filter_pad(filt, dilation):
 def filter_pad_t(filt, dilation):
     return f'({filt} - 1) * {dilation} + 1'
 
-def gen_stride_dil(max_val):
-    yield 1
-    yield choice(range(2, max_val+1))
+def gen_stride_dil():
+    yield 1, 1
+    yield 2, None 
 
-def gen_split(mid, max_val):
+def gen_split(mid):
     if mid > 0:
-        yield choice(range(1, mid+1))
-    yield choice(range(mid, max_val+1))
+        yield 1, mid
+    yield mid + 1, None 
 
 def ceildiv(a, b):
-    return np.ceil(a / b)
+    return np.ceil(a / b).astype(int)
 
 def floordiv(a, b):
     return a // b
@@ -72,7 +72,7 @@ def gen_divis_by(lo, hi):
     q = randint(lo, hi+1)
     mul = randint(1, hi // q + 1)
     p = q * mul
-    yield (p, q)
+    yield ((p, p), (q, q))
 
 class PredAbove(object):
     """

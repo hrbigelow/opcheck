@@ -1,6 +1,7 @@
 import sys
 import math
 import enum
+from copy import copy
 from contextlib import contextmanager
 from collections import namedtuple
 import tensorflow as tf
@@ -276,61 +277,116 @@ def plex(res):
 
 class GenDims(NodeFunc):
     """
+    Yield one or more sets of dimensions for {sig}.  If sig is a single index,
+    each set will be an integer list of rank {rank_idx}.  If {yield_scalar}, an
+    additional integer will be yielded, which represents a rank-agnostic, broadcasted
+    dimension.
 
+    {func} is expected to yield one or more items.  Each item is either: a (lo, hi) pair,
+    if {sig} is a single index, or a tuple ((lo, hi), (lo, hi), ...), with one member for
+    each index in {sig}.
+
+    GenDims ensures that each set of dimensions total number of elements (the product)
+    does not exceed {max_prod}. 
+
+    func is called as list(func(*input_dims, *pars)) to collect all of its yields.
+    It is called once per component in the rank of {rank_idx}.
     """
-    def __init__(self, name, func, rank_idx, yield_scalar, max_prod, pars):
-        super().__init__(name)
-        """
-        func(*inputs, *extra_vals, max_val) yields a list of ints or a list of
-        tuples
-        """
+    def __init__(self, sig, func, rank_idx, yield_scalar, max_prod, pars):
+        super().__init__(sig)
         self.func = func
         self.rank_idx = rank_idx
         self.yield_scalar = yield_scalar
         self.max_prod = max_prod
         self.pars = pars
+        self.num_indexes = len(sig)
 
-    def max_result(self, vals):
-        return max(np.prod(v) if isinstance(v, tuple) else v for v in vals)
+    def range_under_size(self, idx_ranges):
+        # generate a tuple of dims between idx_ranges, with prod() <= total
+        # each element of idx_ranges represents a component of an index.
+        idx_ranges = tuple((1 if lo is None else lo, 1000000000 if hi is None else hi)
+            for lo, hi in idx_ranges)
+        run = np.prod([lo for lo, _ in idx_ranges])
+        dims = []
+        for lo, hi in idx_ranges:
+            run //= lo
+            ub = self.max_prod // run
+            d = randint(lo, min(hi, ub))
+            run *= d
+            dims.append(d)
+        return dims
+
+    def gen_dims(self, gens):
+        # gens is one generator per component of the dims.  total of RANK(rank_idx)
+        # generate the next batch of dims.  if single index, an integer list
+        # if multiple index, a tuple of integer lists
+        comp_ranges = tuple(next(g) for g in gens)
+        if self.num_indexes == 1:
+            yield self.range_under_size(comp_ranges) 
+        else:
+            dims_list = []
+            for idx_range in list(zip(*comp_ranges)):
+                dims = self.range_under_size(idx_range)
+                dims_list.append(dims)
+            yield tuple(dims_list)
+
+    def gen_dims_scalar(self, gen):
+        comp_range = next(gen)
+        dims = self.range_under_size([comp_range])
+        if self.num_indexes == 1:
+            yield dims[0]
+        else:
+            yield tuple(d[0] for d in dims)
 
     def __call__(self, kwnode, *input_dims):
         index_ranks = kwnode[INDEX_RANKS]
+
         if self.yield_scalar:
-            yield from self.func(*input_dims, *self.pars, self.max_prod)
+            if not all(isinstance(d, int) for d in input_dims):
+                raise SchemaError(
+                    f'{type(self).__name__}: yield_scalar flag only supported '
+                    f'for integer index inputs'
+                )
+            gen = self.func(*input_dims, *self.pars)
+            yield from self.gen_dims_scalar(gen)
 
         rank = index_ranks[self.rank_idx]
-        res = []
-        max_val = self.max_prod
-        for r in range(rank):
-            ins = tuple(d[r] if isinstance(d, list) else d for d in input_dims)
-            vals = list(self.func(*ins, *self.pars, max_val))
-            res.append(vals)
-            max_item = self.max_result(vals)
-            max_val //= max_item
-        pres = plex(res)
-        yield from pres 
+        gens = []
+        for comp in range(rank):
+            ins = tuple(d[comp] if isinstance(d, list) else d for d in input_dims)
+            gen = self.func(*ins, *self.pars)
+            gens.append(gen)
+        
+        yield from self.gen_dims(gens)
 
 class CompDims(NodeFunc):
     """
     Wrap a dims computation, performing scalar broadcasting as necessary
     """
-    def __init__(self, name, func, tfunc, rank_idx, arg_names):
+    def __init__(self, op, name, func, tfunc, rank_idx, arg_names):
         super().__init__(name)
+        self.op = op
         self.func = func
         self.tfunc = tfunc
         self.rank_idx = rank_idx
         self.arg_names = arg_names
 
     def __call__(self, kwnode, *input_dims):
+        # every arg_name will extract an oparg
         arg_vals = tuple(kwnode[k] for k in self.arg_names)
-        index_ranks = kwnode[INDEX_RANKS]
-        rank = index_ranks[self.rank_idx]
-        result = []
-        for r in range(rank):
-            ins = tuple(d[r] if isinstance(d, list) else d for d in input_dims)
-            res = self.func(*ins, *arg_vals)
-            result.append(res)
-        yield result
+        if self.op.comp_dims_mode:
+            index_ranks = kwnode[INDEX_RANKS]
+            rank = index_ranks[self.rank_idx]
+            result = []
+            for r in range(rank):
+                ins = tuple(d if isinstance(d, int) else d[r] for d in
+                        input_dims)
+                res = self.func(*ins, *arg_vals)
+                result.append(res)
+            yield result
+        else:
+            templ = self.tfunc(*input_dims, *arg_vals)
+            yield templ
 
 class DimsInput(NodeFunc):
     # A dummy node for supplying input to the Dims graph via set_cached()
@@ -463,10 +519,24 @@ class ArgIndels(GenFunc):
 class ArgMutations(GenFunc):
     """
     Compute dimensions of all indices given index_ranks using the schema's
-    generative dims_graph.
+    generative dims_graph.  Yield arg_shapes, a map of arg => shape.  For single-index
+    argument signatures, shape may be an integer, indicating rank-agnostic broadcasting
+    shape.  Otherwise, shape is an integer list.
     """
     def __init__(self, op):
         super().__init__(op)
+
+    def sig_shape(self, sig, index_dims, index_ranks):
+        if len(sig) == 1:
+            return copy(index_dims[sig])
+        else:
+            shape = []
+            for idx in sig:
+                dims = index_dims[idx]
+                if isinstance(dims, int):
+                    dims = [dims] * index_ranks[idx]
+                shape.extend(dims)
+        return shape
 
     def __call__(self, arg_indels, index_ranks, sigs, **comp):
         # yield negative dims version
@@ -474,18 +544,21 @@ class ArgMutations(GenFunc):
         for arg, sig in sigs.items():
             arg_ranks[arg] = sum(index_ranks[idx] for idx in sig)
 
-        dims_input = { INDEX_RANKS: index_ranks, **comp } 
+        dims_input = { n: oa.value() for n, oa in comp.items() }
+        dims_input[INDEX_RANKS] = index_ranks
         self.op.dims_input_node.set_cached(dims_input)
         all_nodes = set(self.op.dims_graph.values())
         live_nodes = all_nodes.difference([self.op.dims_input_node])
-        index_dims_list = fgraph.gen_graph_values(live_nodes, live_nodes)
-        # index_dims_list = compute_dims(self.op, arg_ranks, index_ranks, sigs, False, **comp)
-        for index_dims in index_dims_list:
-            neg_arg_shapes = {}
-            for arg, sig in sigs.items():
-                shape = [ dim for idx in sig for dim in index_dims[idx] ]
-                neg_arg_shapes[arg] = shape
-            yield neg_arg_shapes
+        index_gen = fgraph.gen_graph_iterate(live_nodes)
+        index_dims_list = []
+        for tup_map in index_gen:
+            dims_map = {}
+            for sig, tup in tup_map.items():
+                if len(sig) == 1:
+                    dims_map[sig] = tup
+                else:
+                    dims_map.update(dict(zip(sig, tup)))
+            index_dims_list.append(dims_map)
 
         mut_arg_ranks = {}
         for arg, sig in sigs.items():
@@ -502,18 +575,19 @@ class ArgMutations(GenFunc):
                     mut_arg_ranks[arg] -= size
 
         # incorporate the indel
-        max_dimsize = get_max_dimsize(self.op.target_nelem, mut_arg_ranks)
-        index_dims_list = compute_dims(self.op, mut_arg_ranks, index_ranks,
-                sigs, True, **comp)
+        # max_dimsize = get_max_dimsize(self.op.target_nelem, mut_arg_ranks)
+        max_dimsize = 2 # very conservative, so that an insertion of 2 can only
+        # increase memory by a factor of 4
         assert len(index_dims_list) > 0
 
         for index_dims in index_dims_list:
             num_yielded = 0
             arg_shapes = {}
             for arg, sig in sigs.items():
-                shape = [ dim for idx in sig for dim in index_dims[idx] ]
+                shape = self.sig_shape(sig, index_dims, index_ranks)
                 indel = arg_indels.get(arg, None)
-                if indel is not None:
+                # if shape is int, it is broadcastable and cannot be indel'ed
+                if indel is not None and isinstance(shape, list):
                     kind, rest = indel[0], indel[1:]
                     if kind == Indel.Insert:
                         pos, size = rest
@@ -528,21 +602,22 @@ class ArgMutations(GenFunc):
             num_yielded += 1
 
             # generate point mutations
+            max_mut_size = 5 
             with self.reserve_edit(1) as avail:
                 if not avail:
                     return
                 for arg, shape in arg_shapes.items():
                     if num_yielded == self.op.max_yield_count:
                         break
-                    if len(shape) == 0:
+                    if isinstance(shape, int) or len(shape) == 0:
                         continue
                     i = choice(range(len(shape)))
                     old_val = shape[i]
-                    new_val, alt_val = sample(range(1, max_dimsize), 2)
+                    new_val, alt_val = sample(range(1, max_mut_size), 2)
                     val = new_val if new_val != shape[i] else alt_val
                     shape[i] = val
-                    copy = { k: list(v) for k, v in arg_shapes.items() }
-                    yield copy
+                    mut_shape = { k: copy(v) for k, v in arg_shapes.items() }
+                    yield mut_shape
                     num_yielded += 1
                     shape[i] = old_val
 

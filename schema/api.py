@@ -83,6 +83,7 @@ class SchemaApi(object):
         # TODO: enable setting this
         self.max_search_dist = 4
         self.show_graph_calls = False
+        self.comp_dims_mode = True
 
         # used by IndexDims and ArgShapes to compute index dimensions 
         self.target_nelem = 1e6
@@ -101,7 +102,6 @@ class SchemaApi(object):
         self.gen_graph = {} # idx => node, for generating inventory
         self.inf_graph = {}
         self.dims_graph = {}
-        # self.dims_graph = base.CompDimsGraph(self)
 
         # These will be set to ge.ObservedValue nodes
         self.obs_dtypes = None
@@ -437,7 +437,7 @@ class SchemaApi(object):
                 self.obs_shapes) 
 
         cons_obj = nf.IndexConstraints(self)
-        cons_inode = G.add_node(cons_obj, idx_usage_inode)
+        cons_inode = G.add_node(cons_obj, idx_usage_inode, self.obs_args)
 
         report_obj = nf.Report(self)
         self.report_inode = G.add_node(report_obj, self.dtypes, cons_inode)
@@ -728,9 +728,9 @@ class SchemaApi(object):
 
     def gen_dims_func(self, out_sig, func, in_sig, max_prod, do_scalar, *pars):
         """
-        Calls func(*in_dims, max_val, *pars), which yields one or more
-        results.  Each result is either a single integer, if out_sig is a
-        single index, or a tuple with len(out_sig) members.
+        Calls func(*in_dims, *pars), which yields one or more
+        results.  Each result is either a tuple (lo, hi), if out_sig is a
+        single index, or a tuple of such tuples, one for each index in out_sig 
 
         Multiplexes the call rank times, where rank is determined as the
         run-time rank of the indices in in_sig.
@@ -753,8 +753,8 @@ class SchemaApi(object):
         Generate dimensions of {out_idx} of appropriate rank such that the
         product is in [1, max_prod]
         """
-        def gen(max_val):
-            yield choice(range(1, max_val+1))
+        def gen():
+            yield 1, None
         self.gen_dims_func(out_idx, gen, '', max_prod, False)
 
     def comp_dims(self, out_idx, func, tfunc, in_sig, *arg_names):
@@ -776,6 +776,7 @@ class SchemaApi(object):
                 f'Must be equal.')
 
         mut_gnode = self._gen_node(ge.ArgMutations)
+
         for arg_name in arg_names:
             if arg_name not in self.arg_order:
                 raise SchemaError(
@@ -786,9 +787,11 @@ class SchemaApi(object):
                 arg_gnode = self.arg_gen_nodes[arg_name]
                 mut_gnode.maybe_append_parent_sn(arg_gnode)
 
-        cdims = ge.CompDims(out_idx, func, tfunc, pri_idx_out, arg_names) 
+        cdims = ge.CompDims(self, out_idx, func, tfunc, pri_idx_out, arg_names) 
         G.set_registry(self.dims_graph)
         G.add_node_sn(cdims, self.dims_input_node, *parents)
+
+
 
 
     # TODO: add validation to restrict extra_args to prevent graph cycles

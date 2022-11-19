@@ -2,9 +2,12 @@ import itertools
 import copy
 import numpy as np
 from contextlib import contextmanager
+from collections import namedtuple
 from .fgraph import NodeFunc
 from .base import ALL_DTYPES, INDEX_RANKS
+from . import generators as ge
 from . import base
+from . import fgraph
 from . import oparg
 
 """
@@ -201,6 +204,8 @@ class IndexUsage(ReportNodeFunc):
             if avail:
                 yield shape_edit
 
+Formula = namedtuple('Formula', ['dims', 'olc_path', 'desc_path', 'dims_path'])
+
 class IndexConstraints(ReportNodeFunc):
     """
     Add results of evaluating the index constraints onto the shape_edit object
@@ -209,35 +214,101 @@ class IndexConstraints(ReportNodeFunc):
         super().__init__(op)
         self.cons = op.index_preds
 
-    def __call__(self, shape_edit, **comp):
+    def get_comp_order(self):
+        comp_nodes = [ n for n in self.op.dims_graph.values() if 
+                isinstance(n.func, ge.CompDims) ]
+        comp_order = [ c.sub_name for c in comp_nodes ]
+        return comp_order
+
+    def init_dims_graph(self, idx_info):
+        # initialize input nodes
+        for sig, node in self.op.dims_graph.items():
+            if node == self.op.dims_input_node:
+                continue
+            elif all(idx in idx_info for idx in sig):
+                if len(sig) == 1:
+                    val = idx_info[sig]
+                else:
+                    val = tuple(idx_info[idx] for idx in sig)
+                node.set_cached(val)
+            else:
+                pass
+
+    def get_template(self, idx_info):
+        """
+        Compute right-hand-side formulas using idx_info, which is a map of
+        idx => info.  info may be one of:
+        - index one-letter code, e.g.  'i'
+        - snake-cased description, e.g. 'input_spatial'
+        - string representation of dimensions, e.g. '[2,4,6]'
+
+        Return [formula, ...], where 
+        """
+        self.op.comp_dims_mode = False
+        self.init_dims_graph(idx_info)
+        comp_order = self.get_comp_order()
+        comp_nodes = [ self.op.dims_graph[idx] for idx in comp_order ]
+        gen = fgraph.gen_graph_iterate(comp_nodes)
+        items = list(gen)
+        assert len(items) == 1, 'Internal Error with comp graph'
+        templ_map = items[0]
+        templ_list = [ templ_map[idx] for idx in comp_order ]
+        self.op.comp_dims_mode = True
+        return templ_list 
+
+    def get_comp_dims(self, index_dims):
+        """
+        Compute dims from input index dims
+        """
+        self.op.comp_dims_mode = True
+        self.init_dims_graph(index_dims)
+        comp_order = self.get_comp_order()
+        comp_nodes = [ self.op.dims_graph[idx] for idx in comp_order ]
+        gen = fgraph.gen_graph_iterate(comp_nodes)
+        comp_dims_list = list(gen)
+        assert len(comp_dims_list) == 1, 'Internal Error with comp graph'
+        comp_dims = comp_dims_list[0]
+        return comp_dims
+
+    def __call__(self, shape_edit, obs_args):
         if shape_edit.cost() != 0:
             yield shape_edit
             return
 
         # each usage should have a single entry
         index_ranks = shape_edit.index_ranks
-        dims_input = { INDEX_RANKS: index_ranks, **comp } 
+        dims_input = dict(obs_args)
+        dims_input[INDEX_RANKS] = index_ranks
         self.op.dims_input_node.set_cached(dims_input)
+
         input_dims = shape_edit.get_input_dims()
-        all_nodes = list(self.op.dims_graph.values())
-        res_nodes = [] 
-        for sig, node in self.op.dims_graph.items():
-            if node == self.op.dims_input_node:
-                continue
-            elif all(idx in input_dims for idx in sig):
-                val = (input_dims[idx] for idx in sig)
-                if len(val) == 1:
-                    val = val[0]
-                node.set_cached(val)
-            else:
-                res_nodes.append(node)
-        comp_dims_list = fgraph.gen_graph_values(all_nodes, res_nodes)
-        assert len(comp_dims_list) == 1, 'Internal Error with comp graph'
-        comp_dims = comp_dims_list[0]
-        # comp_dims = self.op.dims_graph.dims(input_dims, **comp)
+        comp_dims = self.get_comp_dims(input_dims)
         shape_edit.add_comp_dims(comp_dims)
 
-        index_templ = self.op.dims_graph.templates(input_dims, **comp) 
+        idx_codes = {} # e.g. 'i'
+        idx_descs = {} # e.g. 'input_spatial'
+        idx_sdims = {} # e.g. '[2,3,5]'
+        all_dims = { **input_dims, **comp_dims }
+        for idx, dims in all_dims.items():
+            idx_codes[idx] = idx
+            idx_descs[idx] = base.snake_case(self.op.index[idx].desc)
+            idx_sdims[idx] = repr(dims)
+        
+        frm_codes = self.get_template(idx_codes)
+        frm_descs = self.get_template(idx_descs)
+        frm_sdims = self.get_template(idx_sdims)
+
+        comp_order = self.get_comp_order() 
+        # frm_codes = [ f'{idx_codes[idx]} = {frm}' for idx, frm in zip(
+        index_templ = {}
+        for p, idx in enumerate(comp_order):
+            code_path = idx_codes[idx] + ' = ' + frm_codes[p]
+            desc_path = idx_descs[idx] + ' = ' + frm_descs[p]
+            dims_path = idx_sdims[idx] + ' = ' + frm_sdims[p]
+            dims = comp_dims[idx] 
+            index_templ[idx] = Formula(dims, code_path, desc_path, dims_path)
+        
+        # index_templ = self.op.dims_graph.templates(input_dims, **comp) 
         index_dims = { **input_dims, **comp_dims }
 
         for pred in self.cons.preds:

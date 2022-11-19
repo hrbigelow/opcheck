@@ -408,11 +408,11 @@ def all_values(*nodes):
     subgraph of {nodes} and all of their ancestors
     """
     ancestors = get_ancestors(*nodes)
-    config = gen_graph_iterate(*ancestors)
+    config = gen_graph_iterate(ancestors)
     results = [ tuple(c[n.name] for n in nodes) for c in config ]
     return results
 
-def gen_graph_iterate(*nodes):
+def gen_graph_iterate(nodes):
     """
     Produce all possible settings of the graph nodes as a generator of map
     items.  Each map item is node.name => val

@@ -39,7 +39,7 @@ def init_schema(op):
     op.gen_dims_func('d', gen_stride_dil, '', 10, True) 
     op.comp_dims('p', filter_pad, filter_pad_t, 'fd') 
     op.gen_dims_func('i', gen_split, 'p', 1000, False)  
-    op.gen_dims_func('jk', gen_divis_by, '', 100, False, 1)
+    op.gen_dims_func('jk', gen_divis_by, '', 100, False, 1, 10)
 
     def odims(i, p, s, padding):
         if padding == 'VALID':
