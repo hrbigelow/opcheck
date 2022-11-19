@@ -791,8 +791,10 @@ class SchemaApi(object):
         G.set_registry(self.dims_graph)
         G.add_node_sn(cdims, self.dims_input_node, *parents)
 
-
-
+        # add the non-negativity constraint
+        nn = flib.PredAbove(0)
+        nn_templ = flib.PredAboveTempl(0)
+        self.add_index_predicate(f'{out_idx} >= 0', nn, nn_templ, out_idx) 
 
     # TODO: add validation to restrict extra_args to prevent graph cycles
     def computed_index(self, out_idx, func, tfunc, in_sig, *extra_args):

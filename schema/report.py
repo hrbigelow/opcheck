@@ -402,7 +402,6 @@ def _idx_constraint_msg(op, fix):
         return None
 
     pred = fix.shape.index_pred_error
-    findexes = fix.shape.findexes
     templ_args = [ f'{op.index[idx].desc}' for idx in pred.indices ]
 
     items = []
@@ -416,20 +415,17 @@ def _idx_constraint_msg(op, fix):
 
     notice = f'Shape constraint violation:  {values_msg}.  {constraint_msg}'
 
-    # show the compute path of all dimensions so the user can trace it back.
-    # there will be one-letter-code, description, and dimensions. 
-    paths = []
-    for findex in findexes:
-        desc_msg = '\n'.join(p for p in findex.desc_path)
-        dims_msg = '\n'.join(p for p in findex.dims_path)
-        path =  f'Formula:    {desc_msg}\n'
-        path += f'Values :    {dims_msg}'
-        paths.append(path)
-
-    if len(paths) == 0:
+    # show all formulas preceding and up to any of pred.indices
+    formulas = fix.shape.formulas
+    if len(formulas) == 0:
         path_msg = None
     else:
-        path_msg = '\n\n'.join(paths)
+        desc_msg = '\n'.join(frm.desc_path for frm in formulas)
+        code_msg = '\n'.join(frm.code_path for frm in formulas)
+        dims_msg = '\n'.join(frm.dims_path for frm in formulas)
+        path_msg =  f'Long formula\n{desc_msg}\n\n'
+        path_msg += f'Short formula\n{code_msg}\n\n'
+        path_msg += f'Dimensions\n{dims_msg}'
 
     main = list(filter(None, (notice, path_msg)))
     return '\n\n'.join(main)

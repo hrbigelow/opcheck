@@ -32,9 +32,9 @@ def init_schema(op):
     op.arg_shape_bcast_list('dilations', 'd')
     op.arg_unchecked('name')
 
-    op.gen_dims('b', 500)
-    op.gen_dims('l', 100)
-    op.gen_dims('f', 500)
+    op.gen_dims('b', 100)
+    op.gen_dims('l', 30)
+    op.gen_dims('f', 100)
     op.gen_dims_func('s', gen_stride_dil, '', 10, True) 
     op.gen_dims_func('d', gen_stride_dil, '', 10, True) 
     op.comp_dims('p', filter_pad, filter_pad_t, 'fd') 
@@ -54,9 +54,8 @@ def init_schema(op):
         else:
             tem = f'ceil({i} / {s})' 
         return tem
+
     op.comp_dims('o', odims, odims_t, 'ips', 'padding')
-
-
 
     op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))
     op.equate_dtypes('filters', 'input')

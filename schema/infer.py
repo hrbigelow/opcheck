@@ -204,7 +204,7 @@ class IndexUsage(ReportNodeFunc):
             if avail:
                 yield shape_edit
 
-Formula = namedtuple('Formula', ['dims', 'olc_path', 'desc_path', 'dims_path'])
+Formula = namedtuple('Formula', ['dims', 'code_path', 'desc_path', 'dims_path'])
 
 class IndexConstraints(ReportNodeFunc):
     """
@@ -292,23 +292,22 @@ class IndexConstraints(ReportNodeFunc):
         for idx, dims in all_dims.items():
             idx_codes[idx] = idx
             idx_descs[idx] = base.snake_case(self.op.index[idx].desc)
-            idx_sdims[idx] = repr(dims)
+            idx_sdims[idx] = base.dims_string(dims)
         
         frm_codes = self.get_template(idx_codes)
         frm_descs = self.get_template(idx_descs)
         frm_sdims = self.get_template(idx_sdims)
 
         comp_order = self.get_comp_order() 
-        # frm_codes = [ f'{idx_codes[idx]} = {frm}' for idx, frm in zip(
-        index_templ = {}
+        formulas = {}
         for p, idx in enumerate(comp_order):
             code_path = idx_codes[idx] + ' = ' + frm_codes[p]
             desc_path = idx_descs[idx] + ' = ' + frm_descs[p]
             dims_path = idx_sdims[idx] + ' = ' + frm_sdims[p]
             dims = comp_dims[idx] 
-            index_templ[idx] = Formula(dims, code_path, desc_path, dims_path)
+            formulas[idx] = Formula(dims, code_path, desc_path, dims_path)
         
-        # index_templ = self.op.dims_graph.templates(input_dims, **comp) 
+        # formulas = self.op.dims_graph.templates(input_dims, **comp) 
         index_dims = { **input_dims, **comp_dims }
 
         for pred in self.cons.preds:
@@ -316,22 +315,17 @@ class IndexConstraints(ReportNodeFunc):
             # happen when the predicate only applies to specific layouts
             if not all(idx in index_dims for idx in pred.indices):
                 continue
-
-            # get any predicate involved indices that also have templates
-            pred_templ = []
-            pred_input_dims = []
-            for idx in pred.indices:
-                templ = index_templ.get(idx, None)
-                if templ is None:
-                    dims = np.array(index_dims[idx])
-                else:
-                    dims = np.array(templ.dims)
-                    pred_templ.append(templ)
-                pred_input_dims.append(dims)
-
-            if not pred.pred_func(*pred_input_dims):
-                shape_edit.add_constraint_error(pred, pred_templ)
-                break
+            pred_input_dims = [ index_dims[idx] for idx in pred.indices ]
+            npin = tuple(np.array(i) for i in pred_input_dims)
+            if not pred.pred_func(*npin):
+                # collect the predecessor formulas
+                comp_order = self.get_comp_order()
+                en = enumerate(comp_order)
+                max_pos = max((p for p, i in en if i in pred.indices), default=-1)
+                source_formulas = []
+                for idx in comp_order[:max_pos+1]:
+                    source_formulas.append(formulas[idx])
+                shape_edit.add_constraint_error(pred, source_formulas)
 
         with self.reserve_edit(shape_edit.cost()) as avail:
             if avail:

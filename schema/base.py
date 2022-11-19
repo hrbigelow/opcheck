@@ -26,6 +26,12 @@ ALL_DTYPES = (
 def snake_case(phrase):
     return phrase.replace(' ', '_')
 
+def dims_string(dims):
+    if isinstance(dims, tuple):
+        return repr(list(dims))
+    else:
+        return repr(dims)
+
 class ShapeKind(enum.Enum):
     """
     For describing the kind of input that defines a shape
@@ -45,7 +51,7 @@ class ShapeEdit(object):
         self.usage_map = {}       # idx => (dims => [arg1, arg2, ...]) 
         self.layout = layout
         self.index_pred_error = None
-        self.findexes = None
+        self.formulas = None
         self.comp_dims = None
 
     def __repr__(self):
@@ -65,12 +71,12 @@ class ShapeEdit(object):
     def add_comp_dims(self, comp_dims):
         self.comp_dims = comp_dims
 
-    def add_constraint_error(self, pred, findexes):
-        # predicate {pred}, which accepts {findexes} as arguments has been
+    def add_constraint_error(self, pred, formulas):
+        # predicate {pred}, which accepts {formulas} as arguments has been
         # violated with the imputed {index_dims}.  This function is only called
         # if there are no index usage errors
         self.index_pred_error = pred
-        self.findexes = findexes
+        self.formulas = formulas
 
     def indel_cost(self):
         # this assumes that each indel incurs an additional downstream cost of

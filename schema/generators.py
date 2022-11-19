@@ -382,6 +382,8 @@ class CompDims(NodeFunc):
                 ins = tuple(d if isinstance(d, int) else d[r] for d in
                         input_dims)
                 res = self.func(*ins, *arg_vals)
+                if isinstance(res, tuple):
+                    res = list(res)
                 result.append(res)
             yield result
         else:
