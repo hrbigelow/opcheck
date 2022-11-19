@@ -9,9 +9,9 @@ def init_schema(op):
     op.add_index('p', 'padded filter spatial', 'i')
     op.add_index('s', 'strides', 'i')
     op.add_index('d', 'dilations', 'i')
-    op.add_index('k', 'input channel', (1, 1))
-    op.add_index('j', 'output filter', 'k')
-    op.add_index('l', 'output channel', 'k')
+    op.add_index('k', 'input channel', 1)
+    op.add_index('j', 'output filter', 1)
+    op.add_index('l', 'output channel', 1)
     op.add_index('o', 'output spatial', 'i')
 
     formats = {
@@ -35,11 +35,12 @@ def init_schema(op):
     op.gen_dims('b', 100)
     op.gen_dims('l', 30)
     op.gen_dims('f', 100)
+    op.gen_dims('j', 30)
     op.gen_dims_func('s', gen_stride_dil, '', 10, True) 
     op.gen_dims_func('d', gen_stride_dil, '', 10, True) 
     op.comp_dims('p', filter_pad, filter_pad_t, 'fd') 
     op.gen_dims_func('i', gen_split, 'p', 1000, False)  
-    op.gen_dims_func('jk', gen_divis_by, '', 100, False, 1, 10)
+    op.gen_dims_func('k', gen_divis_by, 'j', 300, False, 300)
 
     def odims(i, p, s, padding):
         if padding == 'VALID':

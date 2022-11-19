@@ -390,69 +390,6 @@ class Inventory(NodeFunc):
         else:
             return False, fixes
 
-"""
-class IndexDimsConstraint(NodeFunc):
-    # Constrains the dimensions of {indices} by applying the predicate function
-    # {status_func}, called as status_func(Index1, Index2, ...) where each Index
-    # object is an flib.Index object derived from one of the indices.
-    def __init__(self, name, status_func):
-        super().__init__(name)
-        self.func = status_func 
-
-    def __call__(self, ranks, arg_sigs, shapes, op, **kwargs):
-        shapes_list = []
-        indices = []
-        for idx, dims in kwargs.items():
-            ind = Index(idx, op.index[idx], np.array(dims))
-            shapes_list.append(ind)
-            indices.append(idx)
-        status = self.func(*shapes_list)
-        if isinstance(status, Success):
-            return True, status
-        else:
-            # The constraint was violated.  The explanatory message must now
-            # include descriptions of any computed dims, either directly or
-            # indirectly used by the constraint
-            formula_texts = []
-            dimension_texts = []
-            ancestor_inds = list(indices)
-            for idx, ind in zip(indices, shapes_list):
-                tem = op.comp_dims_templates.get(idx, None)
-                if tem is None:
-                    continue
-                _, (ftxts, dtxts, ainds) = tem.value()
-                desc = op.index[idx].replace(' ', '_')
-                formula_texts.extend(ftxts)
-                dimension_texts.extend(dtxts)
-                ancestor_inds.extend(ainds)
-
-            # apply broadcasting rules to each index
-            index_highlight = {}
-            for idx in ancestor_inds:
-                r = ranks[idx]
-                if r == 1:
-                    index_highlight[idx] = [True]
-                elif r == len(status.mask):
-                    index_highlight[idx] = status.mask
-                else:
-                    raise SchemaError(
-                        f'All source indices of computed indices must be '
-                        f'rank 1 or the same rank as the computed index. '
-                        )
-
-            # compile all texts into one message
-            pairs = zip(formula_texts, dimension_texts)
-            comp_dims_text = '\n\n'.join(f'{f}\n{d}\n' for f, d in pairs)
-            if comp_dims_text != '':
-                main_text = comp_dims_text + '\n' + status.text
-            else:
-                main_text = status.text
-            err = IndexConstraintError(index_highlight, main_text, ranks,
-                    arg_sigs, shapes)
-            return False, err
-        return valid, status
-"""
-
 class DataFormat(ReportNodeFunc):
     def __init__(self, formats, gen_node, arg_name):
         super().__init__(arg_name)

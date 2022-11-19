@@ -124,7 +124,6 @@ class SchemaApi(object):
         self.data_tensors = []
         self.shape_args = []
         self.dtype_rules = base.DTypeRules()
-        self.gen_indices = base.GenIndices()
         self.comp_dims_templates = {} # idx => PredNode with TemplateFunc
         self.index_preds = base.IndexPredicates()
         self.num_returns = 0
@@ -614,7 +613,14 @@ class SchemaApi(object):
             if primary_idx not in self.index:
                 raise SchemaError(f'Source index \'{primary_idx}\' is not '
                         f'a registered index')
-            elif self.index[primary_idx].pri_idx != primary_idx:
+            pri_ind = self.index[primary_idx]
+            if pri_ind.fixed_rank():
+                raise SchemaError(
+                    f'Error declaring index \'{idx}\'. rank_cons = '
+                    f'\'{rank_cons}\' identifies a fixed-rank '
+                    f'index.  Only variable-rank indices can be used as '
+                    f'rank equality constraints.  Use rank_cons=1 instead')
+            elif pri_ind.pri_idx != primary_idx:
                 raise SchemaError(f'Source index \'{primary_idx}\' is not '
                         f'a primary index')
             else:
@@ -1299,7 +1305,6 @@ class SchemaApi(object):
             val = sum(ranks_list)
             return [([val],)]
 
-        self.gen_indices.add_generator(gen_single_index, dims_index, rank_sig)
         self.dims_graph.maybe_add_input_index(dims_index)
         self._add_definite_rank(rank_sig)
 
@@ -1331,24 +1336,6 @@ class SchemaApi(object):
         Custom status functions are found in the flib module.
         """
         self.index_preds.add(pred_name, status_func, templ_func, indices)
-
-    def add_index_generator(self, output_indices, gen_func, input_indices, 
-            *gen_args):
-        """
-        Registers {gen_func} with the schema to be used to generate
-        dimension combinations for {output_indices}, which is a string
-        consisting of individual index one-letter codes.
-
-        It is called as gen_func(input_ranks, *gen_args) and returns a list of
-        shape tuples.  The shapes in each shape tuple correspond with the
-        indices in output_indices.
-
-        input_ranks are the resolved ranks of input_indices
-
-        Custom generator function objects are found in the flib module.
-        """
-        self.gen_indices.add_generator(gen_func, output_indices, input_indices,
-                gen_args)
 
     # TODO: should I clone the graph, or simply set the parents to nodes in the
     # gen graph?

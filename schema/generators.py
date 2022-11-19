@@ -37,193 +37,6 @@ def get_max_dimsize(target_nelem, arg_ranks):
     # print(arg_ranks, dimsize)
     return dimsize
 
-def comp_index_clusters(op):
-    """
-    Produce a list of clusters of computed indices.  Each cluster itself is a
-    list.  cluster assignment is based on single-linkage clustering.  Two
-    computed indices are linked iff they share an input index
-    """
-    graph = op.dims_graph
-    comp_idxs = graph.computed_indexes()
-    input_idxs = graph.input_indexes()
-    nidx = len(input_idxs)
-    adj = np.identity(nidx).astype(np.bool)
-    for cidx in comp_idxs:
-        inputs = graph.get_index_inputs(cidx)
-        if len(inputs) == 0:
-            continue
-        pos = [input_idxs.index(i) for i in inputs]
-        sp = pos[0]
-        for p in pos[1:]:
-            adj[sp,p] = True
-    while True:
-        nadj = np.matmul(adj, adj.transpose())
-        if np.all(nadj == adj):
-            break
-        adj = nadj
-    # iclust[p] = cluster, where p is the index into input_idxs
-    iclust = list(range(nidx))
-    for p in range(nidx):
-        # find position of first True
-        ft = adj[p].tolist().index(True)
-        cl = iclust[ft]
-        iclust[p] = cl
-
-    nclust = max(iclust) + 1
-    cclust = [[] for _ in range(nclust)]
-    for cidx in comp_idxs:
-        inputs = graph.get_index_inputs(cidx)
-        if len(inputs) == 0:
-            continue
-        p = input_idxs.index(inputs[0])
-        cl = iclust[p]
-        cclust[cl].append(cidx)
-    return cclust
-
-def less_lb(op, comp_dims, target_ival):
-    """
-    Returns True if any computed index values are less than the target range.
-    """
-    for cidx, dims in comp_dims.items():
-        lo = target_ival[cidx][0]
-        if any(d < lo for d in dims):
-            return True
-    return False
-
-def less_ub(op, comp_dims, target_ival):
-    """
-    Computes comp_idxs using input_dims.  Returns True if all computed index
-    values are <= target range
-    """
-    for cidx, dims in comp_dims.items():
-        hi = target_ival[cidx][1]
-        if any(hi < d for d in dims):
-            return False
-    # all dims are <= target range
-    return True
-
-def ival_bsearch(op, ranks, max_dimsize, comp_idxs, gen_dims, less_fn,
-        pos_mode, **comp):
-    """
-    Find the acceptable input range for all free index inputs 
-    """
-    graph = op.dims_graph
-    free_idxs = { i for c in comp_idxs for i in graph.get_index_inputs(c) if i
-            not in gen_dims }
-    ranges = {}
-    for idx in free_idxs:
-        rng = op.index[idx].dims_range()
-        lo = max(rng.start, 1)
-        hi = min(rng.stop - 1, max_dimsize)
-        ranges[idx] = [lo, hi]
-
-    free_dims = {}
-    target_ival = {}
-    for cidx in comp_idxs:
-        if pos_mode:
-            rng = op.index[cidx].dims_range()
-            lo = max(rng.start, 1)
-            hi = min(rng.stop - 1, max_dimsize)
-        else:
-            lo, hi = (-max_dimsize, -1)
-        target_ival[cidx] = (lo, hi)
-
-    while any(r[0] != r[1] for r in ranges.values()):
-        for fidx in free_idxs:
-            r = ranks[fidx]
-            lo, hi = ranges[fidx]
-            mid = (lo + hi) // 2
-            free_dims[fidx] = [mid] * r
-        input_dims = { **free_dims, **gen_dims }
-        all_comp_dims = graph.dims(input_dims, **comp)
-        comp_dims = { cidx: all_comp_dims[cidx] for cidx in comp_idxs }
-
-        is_less = less_fn(op, comp_dims, target_ival)
-        print('pos_mode: ', pos_mode, 
-                ', is_less: ', is_less, 
-                ', comp_dims: ', comp_dims,
-                ', target_ival: ', target_ival,
-                # ', gen_dims: ', gen_dims,
-                ', ranges: ', ranges)
-        for fidx in free_idxs:
-            lo, hi = ranges[fidx]
-            mid = (lo + hi) // 2
-            if is_less:
-                ranges[fidx][0] = mid + 1
-            else:
-                ranges[fidx][1] = mid
-
-    found = { idx: r[0] for idx, r in ranges.items() }
-    return found
-
-def compute_dims(op, mut_arg_ranks, index_ranks, arg_sigs, pos_mode, **comp):
-    """
-    Resolve a set of all index dims consistent with {index_ranks}.  First, any
-    indexes registered with add_index_generator or rank_dims_constraint will be
-    computed.  The system iterates until all computed index dims are
-    non-negative.
-    """
-    # results
-    final_dims_list = []
-    gen_dims_list = op.gen_indices(index_ranks)
-    clusters = comp_index_clusters(op)
-    max_dimsize = get_max_dimsize(op.target_nelem, mut_arg_ranks)
-
-    # [ (idx => dims), (idx => dims), ... ] 
-    # [ {'s': [1,1,1], 'd': [2,3,5]}, { 's': [2,3,1], 'd': [1,1,1] } ]
-    for gen_dims in gen_dims_list:
-        free_dims = {}
-        for cl in clusters:
-            # find the equal_range [lo, hi) such that any input values in this
-            # range yield outputs in the target range
-            lo = ival_bsearch(op, index_ranks, max_dimsize, cl, gen_dims,
-                    less_lb, pos_mode, **comp)
-            hi = ival_bsearch(op, index_ranks, max_dimsize, cl, gen_dims,
-                    less_ub, pos_mode, **comp)
-            print('lo: ', lo, ', hi: ', hi)
-            for fidx in lo.keys():
-                lb = lo[fidx]
-                ub = hi[fidx]
-                if lb == ub:
-                    free_dims[fidx] = None
-                    continue
-                r = index_ranks[fidx]
-                free_dims[fidx] = [randint(lb,ub) for _ in range(r)]
-        if any(fdims is None for fdims in free_dims.values()):
-            continue
-
-        input_dims = { **free_dims, **gen_dims }
-        comp_dims = op.dims_graph.dims(input_dims, **comp) 
-        final_dims = { **input_dims, **comp_dims }
-        print('final_dims: ', final_dims)
-
-        for idx, rank in index_ranks.items():
-            if idx not in final_dims:
-                rng = op.index[idx].dims_range()
-                lo = max(rng.start, 1)
-                hi = min(rng.stop - 1, max_dimsize)
-                final_dims[idx] = [randint(lo, hi) for _ in range(rank)] 
-        final_dims_list.append(final_dims)
-
-        # TODO: handle broadcasting logic
-        # apply the assumption that computed indexes are either
-        # component-wise or broadcasting.  secondly, assume that the
-        # computed index is monotonically increasing in the values of
-        # the input indices
-        """
-        for idx, rng in comp_ranges.items():
-            dims = comp_dims[idx]
-            if any(d not in rng for d in dims):
-                assert False, (
-                        f'Index {idx} had out-of-range dims {dims}. '
-                        f'valid range is {rng}')
-        """
-    print(final_dims_list)
-    return final_dims_list
-
-class Unused:
-    pass
-
 class Indel(enum.Enum):
     Insert = 0
     Delete = 1
@@ -256,25 +69,6 @@ class GenFunc(NodeFunc):
             if doit:
                 self.op.avail_test_edits += dist
 
-def plex(res):
-    """
-    convert a list of individual results into one multiplexed result.
-    rlist := [res, ...]
-    res   := [item, ...]
-    item  := int or (int, ...)
-    [[1, 2, 3], [4, 5, 6], [7, 8, 9]] => [[1, 4, 7], [2, 5, 8], [3, 6, 9]]
-
-    [[(1,5,3),(2,6,3)], [(6,8,3),(2,6,4)], [(9,5,3),(2,6,7)], [(5,1,0),(2,1,3)]] => 
-    [([1,6,9,5], [5,8,5,1], [3,3,3,0]), ([2,2,2,2], [6,6,6,1], [3,4,7,3])]
-    """
-    if len(res) == 0:
-        return res
-    item = res[0][0]
-    if isinstance(item, int):
-        return list(list(z) for z in zip(*res))
-    elif isinstance(item, tuple):
-        return [tuple(list(z) for z in zip(*c)) for c in zip(*res)]
-
 class GenDims(NodeFunc):
     """
     Yield one or more sets of dimensions for {sig}.  If sig is a single index,
@@ -304,8 +98,8 @@ class GenDims(NodeFunc):
     def range_under_size(self, idx_ranges):
         # generate a tuple of dims between idx_ranges, with prod() <= total
         # each element of idx_ranges represents a component of an index.
-        idx_ranges = tuple((1 if lo is None else lo, 1000000000 if hi is None else hi)
-            for lo, hi in idx_ranges)
+        idx_ranges = tuple((1 if lo is None else lo, int(1e10) if hi is None
+            else hi) for lo, hi in idx_ranges)
         run = np.prod([lo for lo, _ in idx_ranges])
         dims = []
         for lo, hi in idx_ranges:
@@ -317,9 +111,9 @@ class GenDims(NodeFunc):
         return dims
 
     def gen_dims(self, gens):
-        # gens is one generator per component of the dims.  total of RANK(rank_idx)
-        # generate the next batch of dims.  if single index, an integer list
-        # if multiple index, a tuple of integer lists
+        # gens is one generator per component of the dims.  total of
+        # RANK(rank_idx) generate the next batch of dims.  if single index, an
+        # integer list if multiple index, a tuple of integer lists
         comp_ranges = tuple(next(g) for g in gens)
         if self.num_indexes == 1:
             yield self.range_under_size(comp_ranges) 
