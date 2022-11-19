@@ -371,16 +371,25 @@ class CompDims(NodeFunc):
         self.rank_idx = rank_idx
         self.arg_names = arg_names
 
+    @staticmethod
+    def bcast_dim(dims, comp):
+        # get the component comp of dims
+        if isinstance(dims, int):
+            return dims
+        else:
+            if len(dims) == 1:
+                return dims[0]
+            else:
+                return dims[comp]
+
     def __call__(self, kwnode, *input_dims):
-        # every arg_name will extract an oparg
         arg_vals = tuple(kwnode[k] for k in self.arg_names)
         if self.op.comp_dims_mode:
             index_ranks = kwnode[INDEX_RANKS]
             rank = index_ranks[self.rank_idx]
             result = []
-            for r in range(rank):
-                ins = tuple(d if isinstance(d, int) else d[r] for d in
-                        input_dims)
+            for c in range(rank):
+                ins = tuple(self.bcast_dim(dims, c) for dims in input_dims)
                 res = self.func(*ins, *arg_vals)
                 if isinstance(res, tuple):
                     res = list(res)

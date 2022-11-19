@@ -25,18 +25,20 @@ def init_schema(op):
     op.return_tensor('bof', 'bfo', 'bgoc')
     op.valid_dtypes('input', ('int32', 'float32'))
 
-    op.add_index_generator('s', flib.gen_range, '', 2, 8)
-    # op.add_index_generator('is', flib.gen_blocked_sizes, 'i', 2, 8, 10, 100)
-    op.add_index_predicate('k % t == 0', flib.divis_by, flib.divis_by_templ, 'kt')
-
     sq, sqt = lambda s: s * s, lambda s: f'{s} * {s}'
     mul, mult = lambda a, b: a * b, lambda a, b: f'{a} * {b}'
     div, divt = lambda a, b: a // b, lambda a, b: f'{a} // {b}'
-    div4, div4t = lambda a: a // 4), lambda a: f'{a} // 4'
+    div4, div4t = lambda a: a // 4, lambda a: f'{a} // 4'
 
-    op.computed_index('o', mul, mult, 'is')
-    op.computed_index('t', sq, sqt, 's')
-    op.computed_index('f', div, divt, 'kt')
-    op.computed_index('g', div4, div4t, 'f')
-    op.computed_index('z', div4, div4t, 'k')
+    op.gen_dims('b', 100)
+    op.gen_dims('i', 500)
+    op.gen_dims_func('s', flib.gen_range, '', 100, False, 2, 8)
+    op.gen_dims_func('c', flib.gen_range, '', 4, False, 4, 4)
+    op.comp_dims('o', mul, mult, 'is')
+    op.comp_dims('t', sq, sqt, 's')
+    op.gen_dims_func('k', flib.gen_divis_by, 't', 100, False, 100)
+    op.comp_dims('z', div4, div4t, 'k')
+    op.comp_dims('f', div, divt, 'kt')
+    op.comp_dims('g', div4, div4t, 'f')
 
+    op.add_index_predicate('k % t == 0', flib.divis_by, flib.divis_by_t, 'kt')

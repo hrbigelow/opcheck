@@ -68,7 +68,7 @@ def init_schema(op):
     op.add_index_predicate('s-d exclusion', flib.not_both_over_one,
             flib.not_both_over_one_templ, 'sd')
 
-    op.add_index_predicate('k % j == 0', flib.divis_by, flib.divis_by_templ, 'kj')
+    op.add_index_predicate('k % j == 0', flib.divis_by, flib.divis_by_t, 'kj')
     
     op.return_tensor('blo', 'bol')
 

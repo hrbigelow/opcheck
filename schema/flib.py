@@ -2,7 +2,8 @@ import numpy as np
 import math
 from .error import *
 from numpy.random import randint
-from random import choice
+from random import choice, sample
+import random
 from collections import namedtuple
 
 """
@@ -26,6 +27,9 @@ def gen_split(mid):
     if mid > 0:
         yield 1, mid
     yield mid + 1, None 
+
+def gen_range(lo, hi):
+    yield lo, hi
 
 def ceildiv(a, b):
     return np.ceil(a / b).astype(int)
@@ -60,19 +64,24 @@ def divis_by(numer, denom):
     rem = numer % denom
     return np.all(rem == 0)
 
-def divis_by_templ(numer, denom):
-    return f'"{numer}" dimensions must be divisible by "{denom}" dimensions'
+def divis_by_t(numer, denom):
+    return f'"{numer}" must be divisible by "{denom}"'
 
-def gen_divis_by(lo, hi):
+def gen_divis_by(denom, max_val):
     """
     Generate a list of shape tuples.  Each tuple has two members.  Each member
     is rank 1.  The first member is divisible by the second.  Both are in range
     [lo, hi]
     """
-    q = randint(lo, hi+1)
-    mul = randint(1, hi // q + 1)
-    p = q * mul
-    yield ((p, p), (q, q))
+    max_mul = max_val // denom
+    mul = random.randint(1, max_mul)
+    val = denom * mul
+
+    # generate one fake value not equal to val
+    fake1, fake2 = sample(range(1, max_val+1), 2)
+    fake = fake1 if fake1 != val else fake2
+    yield val, val
+    yield fake, fake
 
 class PredAbove(object):
     """
@@ -122,13 +131,6 @@ def gen_not_both_over_one(ranks_list, lo, hi):
     tup2 = (randint(lo, hi+1, rank1).tolist(), [1] * rank2)
     combos = [tup1, tup2]
     return combos
-
-def gen_range(ranks_list, lo, hi):
-    """
-    Generate a list of one shape tuple, with shapes in range [lo, hi]
-    """
-    tup = tuple(randint(lo, hi+1, r).tolist() for r in ranks_list)
-    return [tup]
 
 def gen_blocked_sizes(ranks_list, block_lo, block_hi, input_lo, input_hi):
     """

@@ -43,6 +43,8 @@ class Index(object):
     idx, it means the instance itself is a primary index
     dims_range is 2-member tuple, each member an integer or None.
     None signifies no limit
+
+
     """
     def __init__(self, idx, desc, pri_idx, rank_range, dims_range):
         self.idx = idx
@@ -60,6 +62,9 @@ class Index(object):
 
     def primary(self):
         return self.idx == self.pri_idx
+
+    def fixed_rank(self):
+        return self.rank_range == (1, 1)
 
     def dims_range(self):
         min_dim = 0 if self.dims_min is None else self.dims_min
@@ -576,17 +581,17 @@ class SchemaApi(object):
         summary_fh.close()
 
     # ============ PUBLIC API ====================
-    def add_index(self, idx, description, constraint=None, dims_range=None):
+    def add_index(self, idx, description, rank_cons=None, dims_range=None):
         """
         Add index {idx} with {description} to the schema.  {idx} must be a
         single letter and can be referred to in later signatures.
 
-        {constraint} may be one of:
+        {rank_cons} may be one of:
 
         1. an integer pair tuple of (<min_rank>, <max_rank>) 
         2. a single integer - interpreted as (<rank>, <rank>)
-        2. the name of a previously registered index to equate the rank
-        3. None - a constraint will be placed downstream limiting these ranks
+        3. the name of a previously registered index to equate the rank
+        4. None - a constraint will be placed downstream limiting these ranks
 
         {dims_range} maybe be None or a pair of (integer or None)
         1. None - no restriction on the range of dimensions
@@ -604,8 +609,8 @@ class SchemaApi(object):
         if isinstance(dims_range, (int, type(None))):
             dims_range = (dims_range, dims_range)
         
-        if isinstance(constraint, str):
-            primary_idx = constraint
+        if isinstance(rank_cons, str):
+            primary_idx = rank_cons
             if primary_idx not in self.index:
                 raise SchemaError(f'Source index \'{primary_idx}\' is not '
                         f'a registered index')
@@ -628,11 +633,11 @@ class SchemaApi(object):
                 idx_inode = G.add_node_sn(iobj, ipa) 
                 ranks_inode.append_parent_sn(idx_inode)
 
-        elif isinstance(constraint, (tuple, int, type(None))):
-            if isinstance(constraint, int):
-                rank_range = (constraint, constraint)
+        elif isinstance(rank_cons, (tuple, int, type(None))):
+            if isinstance(rank_cons, int):
+                rank_range = (rank_cons, rank_cons)
             else:
-                rank_range = constraint
+                rank_range = rank_cons
 
             G.set_registry(self.gen_graph)
             index = Index(idx, description, idx, rank_range, dims_range)
@@ -674,7 +679,7 @@ class SchemaApi(object):
 
         else:
             raise SchemaError(
-                f'{type(self).__qualname__}: Got constraint \'{constraint}\''
+                f'{type(self).__qualname__}: Got constraint \'{rank_cons}\''
                 f' but expected either an index, None, or an integer pair.')
 
         min_val = self.index[idx].dims_min
@@ -717,14 +722,50 @@ class SchemaApi(object):
             nodes.append(pa)
         return nodes
 
-    def _get_primary_idx(self, sig):
-        pri = { self.index[idx].pri_idx for idx in sig }
+    def _get_indexes(self, sig):
+        inds = []
+        for idx in sig: 
+            ind = self.index.get(idx, None)
+            if ind is None:
+                raise SchemaError(
+                    f'Index \'{ind}\' found in signature \'{sig}\' is not a '
+                    f'registered index.  Register it first with add_index')
+            inds.append(ind)
+        return inds
+
+    def _get_bcast_idx(self, sig):
+        """
+        Gets a single representative primary index of the indices in sig, if
+        one exists among variable-rank indices.  If not, return None
+        """
+        inds = self._get_indexes(sig)
+        vinds = [ ind for ind in inds if not ind.fixed_rank() ]
+        if len(vinds) == 0:
+            return None
+
+        pri = { ind.pri_idx for ind in vinds }
+
         if len(pri) > 1:
             raise SchemaError(
                 f'More than one primary index found in sig \'{sig}\': '
                 ', '.join(pri)
                 )
-        return pri.pop() if len(pri) == 1 else None
+        pri_idx = pri.pop()
+        return pri_idx
+
+    def _get_rank_idx(self, in_sig, out_sig):
+        pri_idx_in = self._get_bcast_idx(in_sig)
+        pri_idx_out = self._get_bcast_idx(out_sig)
+        if pri_idx_in is None or pri_idx_in == pri_idx_out:
+            pri_idx = out_sig[0] if pri_idx_out is None else pri_idx_out
+        else:
+            raise SchemaError(
+                f'One or more variable rank indices is present both in '
+                f'in_sig \'{in_sig}\' and out_sig \'{out_sig}\', which do not '
+                f'have the same primary index.  All indices in in_sig must '
+                f'be fixed rank, or have the same primary index as those in '
+                f'out_sig')
+        return pri_idx
 
     def gen_dims_func(self, out_sig, func, in_sig, max_prod, do_scalar, *pars):
         """
@@ -732,20 +773,14 @@ class SchemaApi(object):
         results.  Each result is either a tuple (lo, hi), if out_sig is a
         single index, or a tuple of such tuples, one for each index in out_sig 
 
-        Multiplexes the call rank times, where rank is determined as the
-        run-time rank of the indices in in_sig.
+        Multiplexes the call over the broadcasted collection of components in
+        in_sig.  Broadcasting occurs if an index is integer or length-1 integer
+        list.
         """
-        parents = self._get_dims_nodes(in_sig)
-        pri_idx_in = self._get_primary_idx(in_sig)
-        pri_idx_out = self._get_primary_idx(out_sig)
-        if pri_idx_in is not None and pri_idx_in != pri_idx_out:
-            raise SchemaError(
-                f'Primary index for in_sig \'{in_sig}\' was {pri_idx_in} '
-                f'but primary index for out_sig \'{out_sig}\' was {pri_idx_out}. '
-                f'Must be equal.')
-
-        gdims = ge.GenDims(out_sig, func, pri_idx_out, do_scalar, max_prod, pars)
+        pri_idx = self._get_rank_idx(in_sig, out_sig)
+        gdims = ge.GenDims(out_sig, func, pri_idx, do_scalar, max_prod, pars)
         G.set_registry(self.dims_graph)
+        parents = self._get_dims_nodes(in_sig)
         G.add_node_sn(gdims, self.dims_input_node, *parents)
 
     def gen_dims(self, out_idx, max_prod):
@@ -763,18 +798,16 @@ class SchemaApi(object):
         func(*in_dims, *arg_vals), where in_dims are the run-time dimensions
         of indices in in_sig.
 
+        indexes in in_sig must be broadcast-compatible with out_idx.  
+
+        Option 1: in_sig indices and out_idx all have a constant rank of 1
+        Option 2: every variable-rank index in in_sig has the same primary
+        index as the primary index of out_idx.
+
         arg_names must be argument names registered with arg_option or
         arg_layout.
         """
-        parents = self._get_dims_nodes(in_sig)
-        pri_idx_in = self._get_primary_idx(in_sig)
-        pri_idx_out = self._get_primary_idx(out_idx)
-        if pri_idx_in != pri_idx_out:
-            raise SchemaError(
-                f'Primary index for in_sig \'{in_sig}\' was {pri_idx_in} '
-                f'but primary index for out_sig \'{out_idx}\' was {pri_idx_out}. '
-                f'Must be equal.')
-
+        pri_idx = self._get_rank_idx(in_sig, out_idx)
         mut_gnode = self._gen_node(ge.ArgMutations)
 
         for arg_name in arg_names:
@@ -787,67 +820,15 @@ class SchemaApi(object):
                 arg_gnode = self.arg_gen_nodes[arg_name]
                 mut_gnode.maybe_append_parent_sn(arg_gnode)
 
-        cdims = ge.CompDims(self, out_idx, func, tfunc, pri_idx_out, arg_names) 
+        cdims = ge.CompDims(self, out_idx, func, tfunc, pri_idx, arg_names) 
         G.set_registry(self.dims_graph)
+        parents = self._get_dims_nodes(in_sig)
         G.add_node_sn(cdims, self.dims_input_node, *parents)
 
         # add the non-negativity constraint
         nn = flib.PredAbove(0)
         nn_templ = flib.PredAboveTempl(0)
         self.add_index_predicate(f'{out_idx} >= 0', nn, nn_templ, out_idx) 
-
-    # TODO: add validation to restrict extra_args to prevent graph cycles
-    def computed_index(self, out_idx, func, tfunc, in_sig, *extra_args):
-        """
-        Registers {func} to compute the dimensions of {idx}.
-        Registers {tfunc} which produces a text string explaining how
-        the index is computed.
-
-        {extra_args} can be one of: LAYOUT or a parameter registered with
-        arg_option.  
-
-        The following calls are made:
-
-        func(*in_dims, *extra_vals)
-        (index_dims are the resolved dimensions of {in_sig})
-        (extra_vals are the runtime values of {extra_args})
-        """
-        if not all(idx in self.index for idx in in_sig):
-            raise SchemaError(
-                f'{type(self).__qualname__}: In schema \'{self.op_path}\'.\n'
-                f'Indices string \'{input_indexes}\' contains unregistered '
-                f'indices.\nRegistered indices are: {list(self.index.keys())}\n'
-                )
-
-        extra_node_names = []
-        arg_muts = self._gen_node(ge.ArgMutations)
-        cons_inode = self._inf_node(nf.IndexConstraints)
-
-        for arg in extra_args:
-            if arg == base.LAYOUT:
-                node = self._gen_node(ge.Layout, base.LAYOUT)
-            elif arg in self.arg_gen_nodes:
-                node = self.arg_gen_nodes[arg]
-            else:
-                raise SchemaError(
-                    f'did not understand extra_args value \'{arg}\'')
-            extra_node_names.append(node.name)
-            arg_muts.maybe_append_parent_sn(node)
-            cons_inode.maybe_append_parent_sn(node)
-
-        if comp_index in self.dims_graph.computed_indexes():
-            raise SchemaError(
-                f'{type(self).__qualname__}: index \'{comp_index}\' has '
-                f'already been registered as a computed index')
-        if comp_index in self.dims_graph.input_indexes():
-            raise SchemaError(
-                f'{type(self).__qualname__}: index \'{comp_index}\' has '
-                f'already been used as an input index for some computed '
-                f'index.  Calls to computed_index must be in dependency order')
-
-        self.dims_graph.add_comp_index(comp_index, comp_func, tem_func,
-                input_indexes, *extra_args)
-
 
     def limit_ranks(self, sig, min_val, max_val):
         """
