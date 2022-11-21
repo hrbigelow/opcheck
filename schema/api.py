@@ -679,7 +679,7 @@ class SchemaApi(object):
         pass
 
     def _get_dims_nodes(self, sig):
-        nodes = []
+        pa_names = set()
         graph = self.dims_graph
         for idx in sig:
             if idx not in self.index:
@@ -687,15 +687,16 @@ class SchemaApi(object):
                     f'Index \'{idx}\', found in sig \'{sig}\' is not '
                     f'yet registered with add_index')
 
-            pa = next((nd for name, nd in graph.items() if nd !=
+            pa_name = next((name for name, nd in graph.items() if nd !=
                 self.dims_input_node and idx in name), None)
-            if pa is None:
+            if pa_name is None:
                 raise SchemaError(
                     f'Index \'{idx}\' mentioned in sig \'{sig}\' has not '
                     f'yet been registered by a call to comp_dims, gen_dims or '
                     f'gen_dims_func.  Must be registered before it is used '
                     f'as input to another call')
-            nodes.append(pa)
+            pa_names.add(pa_name)
+        nodes = [ self.dims_graph[n] for n in pa_names ]
         return nodes
 
     def _get_indexes(self, sig):
@@ -771,7 +772,8 @@ class SchemaApi(object):
             raise SchemaError(f'gen_dims_func got error: {ex}')
 
         pri_idx = self._get_rank_idx(in_sig, out_sig)
-        gdims = ge.GenDims(out_sig, func, pri_idx, do_scalar, max_prod, pars)
+        gdims = ge.GenDims(out_sig, in_sig, func, pri_idx, do_scalar, max_prod,
+                pars)
         G.set_registry(self.dims_graph)
         parents = self._get_dims_nodes(in_sig)
         G.add_node_sn(gdims, self.dims_input_node, *parents)
@@ -815,7 +817,17 @@ class SchemaApi(object):
         arg_names must be argument names registered with arg_option or
         arg_layout.
         """
-        pri_idx = self._get_rank_idx(in_sig, out_idx)
+        return self._comp_dims(out_idx, func, tfunc, in_sig, False, *arg_names)
+
+    def comp_dims_cw(self, out_idx, func, tfunc, in_sig, *arg_names):
+        """
+        Same as comp_dims, except component-wise computation is performed.
+        That is, the individual dimensions of each index dimension are fed to
+        {func} one at a time to produce one output component.
+        """
+        return self._comp_dims(out_idx, func, tfunc, in_sig, True, *arg_names)
+
+    def _comp_dims(self, out_idx, func, tfunc, in_sig, cwise, *arg_names):
         mut_gnode = self._gen_node(ge.ArgMutations)
 
         for arg_name in arg_names:
@@ -833,7 +845,12 @@ class SchemaApi(object):
                     f'framework op argument, or the constant \'{base.LAYOUT}\''
                     f'Input arguments are: ' + '\, '.join(self.arg_order))
 
-        cdims = ge.CompDims(self, out_idx, func, tfunc, pri_idx, arg_names) 
+        if cwise:
+            pri_idx = self._get_rank_idx(in_sig, out_idx)
+        else:
+            pri_idx = None
+        cdims = ge.CompDims(self, out_idx, in_sig, cwise, func, tfunc, pri_idx,
+                arg_names) 
         G.set_registry(self.dims_graph)
         parents = self._get_dims_nodes(in_sig)
         G.add_node_sn(cdims, self.dims_input_node, *parents)
@@ -1242,19 +1259,27 @@ class SchemaApi(object):
         g_layout = self._gen_node(ge.Layout, base.LAYOUT)
         p_shape_map = self._pred_node(pr.ShapeMap)
 
+        sigmap_inode = self._inf_node(ge.SigMap)
+        layout_inode = self._inf_node(ge.Layout)
+
         for i, sig in enumerate(sigs):
             prefix = f'{arg_name}.{i}'
-
             # pr.ShapeMap -> pr.SliceShape
             shp_pobj = pr.SliceShape(arg_name, i)
             p_shp = P.add_node(shp_pobj, p_shape2d)
-            p_shape_map.append_parent(p_shp)
+            p_shape_map.append_parent_sn(p_shp)
 
             if isinstance(sig, str):
                 sig = [sig]
+            G.set_registry(self.gen_graph)
             g_sig_obj = ge.Sig(self, prefix, sig)
             g_sig = G.add_node(g_sig_obj, g_layout)
-            g_sig_map.append_parent(g_sig)
+            g_sig_map.append_parent_sn(g_sig)
+
+            G.set_registry(self.inf_graph)
+            sig_iobj = ge.Sig(self, prefix, sig)
+            sig_inode = G.add_node(sig_iobj, layout_inode)
+            sigmap_inode.append_parent_sn(sig_inode)
 
     def arg_rank(self, arg_name, sig):
         """

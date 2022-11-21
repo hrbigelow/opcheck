@@ -270,7 +270,7 @@ class ShapeTensor2D(ReportNodeFunc):
     def __call__(self, op):
         ten = op._get_arg(self.arg_name) 
         err = ErrorReport(self, ten)
-        if not instance(ten, tf.Tensor):
+        if not isinstance(ten, tf.Tensor):
             return False, err
         elif not ten.dtype.is_integer:
             return False, err

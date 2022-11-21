@@ -1,5 +1,6 @@
-from schema import flib
-from schema.flib import divis_by, divis_by_t
+import numpy as np
+from schema.predlib import divis_by, divis_by_t
+from schema.genlib import mod_padding
 
 def init_schema(op):
     op.add_index('b', 'batch', 1)
@@ -17,15 +18,15 @@ def init_schema(op):
     op.arg_shape_tensor2d('paddings', 's', 'e')
     op.arg_unchecked('name')
 
-    op.gen_dims('b', 100)
+    op.gen_dims('b', 50)
     op.gen_dims('i', 400)
     op.gen_dims('k', 50)
     op.gen_dims('r', 100)
 
-    op.gen_dims_func('se', flib.gen_mod_padding, 'ik', 100, False)
+    op.gen_dims_func('se', mod_padding, 'ik', 1e10, False, 100)
 
     # ensure that padded input is divisible by block size
-    op.add_index_predicate('pad_input_block', divis_by, divis_by_t, 'jk')
+    op.dims_pred_cw('pad_input_block', divis_by, divis_by_t, 'jk')
     op.valid_dtypes('input', ('int', 'uint', 'float', 'bfloat'))
 
     def jdims(s, e, i):
@@ -35,20 +36,20 @@ def init_schema(op):
         return f'{s} + {i} + {e}'
 
     def odims(padded, block_shape):
-        return flib.floordiv(padded, block_shape)
+        return padded // block_shape
 
     def odims_t(padded, block_shape):
         return f'{padded} // {block_shape}'
 
     def pdims(block_shape, batch):
-        block_elems = flib.reduce_prod(block_shape)
-        return block_elems * batch
+        elems = np.prod(block_shape)
+        return [elems * b for b in batch]
 
     def pdims_t(block_shape, batch):
         return f'product({block_shape}) * {batch}'
 
-    op.comp_dims('j', jdims, jdims_t, 'sei')
-    op.comp_dims('o', odims, odims_t, 'jk')
+    op.comp_dims_cw('j', jdims, jdims_t, 'sei')
+    op.comp_dims_cw('o', odims, odims_t, 'jk')
     op.comp_dims('p', pdims, pdims_t, 'kb')
 
     op.return_tensor('por')

@@ -39,7 +39,7 @@ def init_schema(op):
     op.gen_dims('j', 30)
     op.gen_dims_func('s', stride_dil, '', 10, True) 
     op.gen_dims_func('d', stride_dil, '', 10, True) 
-    op.comp_dims('p', filter_pad, filter_pad_t, 'fd') 
+    op.comp_dims_cw('p', filter_pad, filter_pad_t, 'fd') 
     op.gen_dims_func('i', below_above, 'p', 1000, False)  
     op.gen_dims_func('k', divis_by, 'j', 300, False, 300)
 
@@ -57,7 +57,7 @@ def init_schema(op):
             tem = f'ceil({i} / {s})' 
         return tem
 
-    op.comp_dims('o', odims, odims_t, 'ips', 'padding')
+    op.comp_dims_cw('o', odims, odims_t, 'ips', 'padding')
 
     op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))
     op.equate_dtypes('filters', 'input')

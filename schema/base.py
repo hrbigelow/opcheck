@@ -1,13 +1,9 @@
 import tensorflow as tf
 import numpy as np
-import itertools
 import enum
 import re
-from copy import copy
-from collections import namedtuple, defaultdict
-from .error import * 
-from .fgraph import FuncNode as F, NodeFunc
-from . import fgraph
+import random
+from .error import SchemaError
 
 LAYOUT = ':layout'
 SINGLE_FORMAT = ':single_format'
@@ -31,6 +27,59 @@ def dims_string(dims):
         return repr(list(dims))
     else:
         return repr(dims)
+
+def ungroup_dims(gr_dims_map):
+    # gr_dims_map is e.g. { 'bc': ([1,2], [2,3]), 'e': [5,6] }
+    dims_map = {}
+    for sig, dims in gr_dims_map.items():
+        if len(sig) == 1:
+            dims_map[sig] = dims
+        else:
+            dims_map.update(dict(zip(sig, dims)))
+    return dims_map
+
+def bcast_dim(dims, comp):
+    # get the component comp of dims
+    if isinstance(dims, int):
+        return dims
+    else:
+        if len(dims) == 1:
+            return dims[0]
+        else:
+            return dims[comp]
+
+def range_under_size(idx_ranges, max_prod):
+    """
+    generate a tuple of dims between idx_ranges, with prod() <= total
+    each element of idx_ranges represents a component of an index.
+    """
+    if len(idx_ranges) == 0:
+        return []
+
+    if any(lo > hi for lo, hi in idx_ranges):
+        raise SchemaError(f'range_under_size: invalid ranges: {idx_ranges}')
+
+    lows = [lo for lo, _ in idx_ranges]
+    ncomp = len(idx_ranges)
+    runs = [np.prod(lows[i+1:], dtype=int) for i in range(ncomp)]
+    if lows[0] * runs[0] > max_prod:
+        raise SchemaError(
+            f'range_under_size: idx_ranges {idx_ranges} '
+            f'cannot fit within maximum product {max_prod}')
+
+    cumul = 1
+    dims = []
+    for c, (lo, hi) in enumerate(idx_ranges):
+        used = cumul * runs[c]
+        if used == 0:
+            ub = 1e10
+        else:
+            ub = max_prod // used
+        d = random.randint(lo, min(hi, ub))
+        cumul *= d
+        dims.append(d)
+    return dims
+
 
 class ShapeKind(enum.Enum):
     """

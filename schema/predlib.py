@@ -1,6 +1,13 @@
 """
 A library of predicate functions (and their template counterparts) for use with
-the dims_pred API call
+the dims_pred API call, which are used in the base.IndexPredicate class.  There
+are two types of functions in this library:
+
+1. Predicates that will be called with individual components of index shapes
+2. Predicates that are called with the entire shapes.
+
+Note that the entire shape of an index can either be an integer list, or a
+single integer (representing a rank-agnostic shape)
 """
 import numpy as np
 

@@ -86,8 +86,10 @@ class GenDims(NodeFunc):
     func is called as list(func(*input_dims, *pars)) to collect all of its yields.
     It is called once per component in the rank of {rank_idx}.
     """
-    def __init__(self, sig, func, rank_idx, yield_scalar, max_prod, pars):
+    def __init__(self, sig, in_sig, func, rank_idx, yield_scalar, max_prod,
+            pars):
         super().__init__(sig)
+        self.in_sig = in_sig
         self.func = func
         self.rank_idx = rank_idx
         self.yield_scalar = yield_scalar
@@ -96,54 +98,37 @@ class GenDims(NodeFunc):
         self.num_indexes = len(sig)
 
     @staticmethod
-    def bcast_dim(dims, comp):
-        # get the component comp of dims
-        if isinstance(dims, int):
-            return dims
-        else:
-            if len(dims) == 1:
-                return dims[0]
-            else:
-                return dims[comp]
-
-    def range_under_size(self, idx_ranges):
-        # generate a tuple of dims between idx_ranges, with prod() <= total
-        # each element of idx_ranges represents a component of an index.
-        idx_ranges = tuple((1 if lo is None else lo, int(1e10) if hi is None
-            else hi) for lo, hi in idx_ranges)
-        run = np.prod([lo for lo, _ in idx_ranges])
-        dims = []
-        for lo, hi in idx_ranges:
-            run //= lo
-            ub = self.max_prod // run
-            d = randint(lo, min(hi, ub))
-            run *= d
-            dims.append(d)
-        return dims
+    def fill(gen):
+        lo, hi = next(gen)
+        lo = 0 if lo is None else lo
+        hi = int(1e10) if hi is None else hi
+        yield lo, hi
 
     def gen_dims(self, gens):
         # gens is one generator per component of the dims.  total of
         # RANK(rank_idx) generate the next batch of dims.  if single index, an
-        # integer list if multiple index, a tuple of integer lists
+        # integer list. if multiple index, a tuple of integer lists
         comp_ranges = tuple(next(g) for g in gens)
         if self.num_indexes == 1:
-            yield self.range_under_size(comp_ranges) 
+            yield base.range_under_size(comp_ranges, self.max_prod) 
         else:
             dims_list = []
             for idx_range in list(zip(*comp_ranges)):
-                dims = self.range_under_size(idx_range)
+                dims = base.range_under_size(idx_range, self.max_prod)
                 dims_list.append(dims)
             yield tuple(dims_list)
 
     def gen_dims_scalar(self, gen):
-        comp_range = next(gen)
-        dims = self.range_under_size([comp_range])
+        comp_range = next(gen) 
+        dims = base.range_under_size([comp_range], self.max_prod)
         if self.num_indexes == 1:
             yield dims[0]
         else:
             yield tuple(d[0] for d in dims)
 
-    def __call__(self, kwnode, *input_dims):
+    def __call__(self, kwnode, **grouped_dims_map):
+        dims_map = base.ungroup_dims(grouped_dims_map)
+        input_dims = [ dims_map[idx] for idx in self.in_sig ]
         index_ranks = kwnode[INDEX_RANKS]
 
         if self.yield_scalar:
@@ -153,14 +138,16 @@ class GenDims(NodeFunc):
                     f'for integer index inputs'
                 )
             gen = self.func(*input_dims, *self.pars)
-            yield from self.gen_dims_scalar(gen)
+            fgen = self.fill(gen)
+            yield from self.gen_dims_scalar(fgen)
 
         rank = index_ranks[self.rank_idx]
         gens = []
         for c in range(rank):
-            ins = tuple(self.bcast_dim(dims, c) for dims in input_dims)
+            ins = tuple(base.bcast_dim(dims, c) for dims in input_dims)
             gen = self.func(*ins, *self.pars)
-            gens.append(gen)
+            fgen = self.fill(gen)
+            gens.append(fgen)
         
         yield from self.gen_dims(gens)
 
@@ -168,38 +155,36 @@ class CompDims(NodeFunc):
     """
     Wrap a dims computation, performing scalar broadcasting as necessary
     """
-    def __init__(self, op, name, func, tfunc, rank_idx, arg_names):
-        super().__init__(name)
+    def __init__(self, op, idx, in_sig, cwise, func, tfunc, rank_idx,
+            arg_names):
+        super().__init__(idx)
         self.op = op
+        self.in_sig = in_sig
+        self.cwise = cwise
         self.func = func
         self.tfunc = tfunc
         self.rank_idx = rank_idx
         self.arg_names = arg_names
 
-    @staticmethod
-    def bcast_dim(dims, comp):
-        # get the component comp of dims
-        if isinstance(dims, int):
-            return dims
-        else:
-            if len(dims) == 1:
-                return dims[0]
-            else:
-                return dims[comp]
-
-    def __call__(self, kwnode, *input_dims):
+    def __call__(self, kwnode, **grouped_dims_map):
+        dims_map = base.ungroup_dims(grouped_dims_map)
+        input_dims = [ dims_map[idx] for idx in self.in_sig ]
         arg_vals = tuple(kwnode[k] for k in self.arg_names)
         if self.op.comp_dims_mode:
-            index_ranks = kwnode[INDEX_RANKS]
-            rank = index_ranks[self.rank_idx]
-            result = []
-            for c in range(rank):
-                ins = tuple(self.bcast_dim(dims, c) for dims in input_dims)
-                res = self.func(*ins, *arg_vals)
-                if isinstance(res, tuple):
-                    res = list(res)
-                result.append(res)
-            yield result
+            if self.cwise:
+                result = []
+                index_ranks = kwnode[INDEX_RANKS]
+                rank = index_ranks[self.rank_idx]
+                for c in range(rank):
+                    ins = tuple(base.bcast_dim(dims, c) for dims in input_dims)
+                    res = self.func(*ins, *arg_vals)
+                    if isinstance(res, tuple):
+                        res = list(res)
+                    result.append(res)
+                yield result
+            else:
+                result = self.func(*input_dims, *arg_vals)
+                yield result
         else:
             templ = self.tfunc(*input_dims, *arg_vals)
             yield templ
@@ -590,7 +575,7 @@ class ShapeTensor(NodeFunc):
         arg = oparg.ShapeTensorArg(shape)
         yield arg
 
-class ShapeTensor2D(GenFunc):
+class ShapeTensor2D(NodeFunc):
     """
     Generate a 2D tensor from dims and a list of signatures.  Since it is
     impossible to have input with non-rectangular shape, this node will produce

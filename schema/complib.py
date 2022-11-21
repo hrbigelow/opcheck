@@ -19,9 +19,6 @@ def filter_pad_t(filt, dilation):
 def ceildiv(a, b):
     return np.ceil(a / b).astype(int)
 
-def floordiv(a, b):
-    return a // b
-
 def mod(a, b):
     return np.mod(a, b)
 

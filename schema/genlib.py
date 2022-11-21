@@ -17,14 +17,19 @@ def below_above(mid):
 def interval(lo, hi):
     yield lo, hi
 
-def mod_padding(input, block):
-    # yield ranges for s and e such that (s + input + e) % block == 0
-    # also yield random ranges as well 
+def mod_padding(input, block, max_total_pad):
+    """
+    yield ranges for s and e such that (s + input + e) % block == 0
+    also yield random ranges as well.
+    max_total_pad must be >= largest possible block size
+    """
     rem = (block - (input % block)) % block
-    t = random.randint(0, 3)
-    x = t * block + rem
-    beg = random.randint(0, x)
-    end = x - beg
+    max_mul = max_total_pad - rem
+    max_t = max_mul // block
+    t = random.randint(0, max_t)
+    tot = t * block + rem
+    beg = random.randint(0, tot)
+    end = tot - beg
     yield ((beg, beg), (end, end))
     yield ((0, block), (0, block))
 
