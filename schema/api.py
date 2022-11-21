@@ -43,6 +43,8 @@ class Index(object):
         self.desc = desc
         self.pri_idx = pri_idx
         self.rank_range = rank_range
+        self.has_insig = False # set to True if appears in an input signature
+        self.dims_node_cls = None
 
     def __repr__(self):
         r =  f'{type(self).__qualname__}({self.idx}): {self.desc}, '
@@ -54,6 +56,9 @@ class Index(object):
 
     def fixed_rank(self):
         return self.rank_range == (1, 1)
+
+    def is_computed(self):
+        return self.dims_node_cls == ge.CompDims
 
     def dims_range(self):
         min_dim = 0 if self.dims_min is None else self.dims_min
@@ -463,6 +468,28 @@ class SchemaApi(object):
         if self.data_formats is None:
             self.arg_layout(None, None, None)
 
+        for ind in self.index.values():
+            if ind.dims_node_cls is None:
+                raise SchemaError(
+                    f'Index {ind.idx} has not been registered with either '
+                    f'gen_dims_* or comp_dims_* API calls.  All indexes '
+                    f'must be registered with one of these.')
+            if ind.is_computed():
+                if ind.has_insig:
+                    raise SchemaError(
+                        f'Index {ind.idx} is a computed index (registered '
+                        f'with comp_dims* API call) but also appears in one '
+                        f'or more input signatures.  Only non-computed indexes '
+                        f'can appear in input signatures.')
+            else:
+                if not ind.has_insig:
+                    raise SchemaError(
+                        f'Index {ind.idx} is a non-computed index '
+                        f'(registered with gen_dims* API call) but does not '
+                        f'appear in any input signature.  All non-computed '
+                        f'indexes must appear in at least one input '
+                        f'signature.')
+
         pred = set(self.pred_graph.values()).difference(self.return_nodes)
         self.predicate_nodes = pred
 
@@ -744,7 +771,8 @@ class SchemaApi(object):
                 f'out_sig')
         return pri_idx
 
-    def _gen_check_out_sig(self, out_sig):
+    def _check_out_sig(self, out_sig):
+        # check that all indexes are registered but not yet in the dims_graph
         for idx in out_sig:
             if idx not in self.index:
                 raise SchemaError(
@@ -767,9 +795,13 @@ class SchemaApi(object):
         list.
         """
         try:
-            self._gen_check_out_sig(out_sig)
+            self._check_out_sig(out_sig)
         except SchemaError as ex:
             raise SchemaError(f'gen_dims_func got error: {ex}')
+
+        for idx in out_sig:
+            ind = self.index[idx]
+            ind.dims_node_cls = ge.GenDims
 
         pri_idx = self._get_rank_idx(in_sig, out_sig)
         gdims = ge.GenDims(out_sig, in_sig, func, pri_idx, do_scalar, max_prod,
@@ -828,6 +860,7 @@ class SchemaApi(object):
         return self._comp_dims(out_idx, func, tfunc, in_sig, True, *arg_names)
 
     def _comp_dims(self, out_idx, func, tfunc, in_sig, cwise, *arg_names):
+        self._check_out_sig(out_idx)
         mut_gnode = self._gen_node(ge.ArgMutations)
 
         for arg_name in arg_names:
@@ -844,6 +877,9 @@ class SchemaApi(object):
                     f'name \'{arg_name}\' in arg_names must be either a '
                     f'framework op argument, or the constant \'{base.LAYOUT}\''
                     f'Input arguments are: ' + '\, '.join(self.arg_order))
+
+        ind = self.index[out_idx]
+        ind.dims_node_cls = ge.CompDims
 
         if cwise:
             pri_idx = self._get_rank_idx(in_sig, out_idx)
@@ -1068,6 +1104,11 @@ class SchemaApi(object):
         sigs_list must be a list of either 1 or num_layout elements.  If 1, it
         is implicitly broadcasted to num_layouts
         """
+        all_idxs = { idx for sig in sigs_list for idx in sig }
+        for idx in all_idxs:
+            ind = self.index[idx]
+            ind.has_insig = True
+
         sigs_list = self._check_sigs_layout(arg_name, sigs_list)
         P.set_registry(self.pred_graph)
 
@@ -1232,17 +1273,11 @@ class SchemaApi(object):
         layout 0: dims('b') = [1,3,5], dims('e') = [2,4,6] 
         layout 1: dims('b') = [2,4,6], dims('b') = [1,3,5]
         """
-        # created nodes
-        # pr.ShapeTensor2D, ge.ShapeTensor2D
-        # ge.Sig(i)
-        # pr.SliceShape(i)
+        all_idxs = { idx for sig in sigs for idx in sig }
+        for idx in all_idxs:
+            ind = self.index[idx]
+            ind.has_insig = True
 
-        # created edges
-        # pr.ShapeTensor2D -> pr.Schema
-        # ge.ShapeTensor2D -> ge.GetArgShapes
-        # pr.SliceShape(i) -> pr.ShapeTensor2D
-        # ge.Sig(i) -> ge.Layout
-        # ge.SigMap -> ge.Sig(i)
         P.set_registry(self.pred_graph)
         G.set_registry(self.gen_graph)
         schema = self._pred_node(pr.Schema)
