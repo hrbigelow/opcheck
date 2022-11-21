@@ -1,6 +1,7 @@
-from schema import flib, LAYOUT
-from schema.flib import filter_pad, filter_pad_t, gen_divis_by, gen_split
-from schema.flib import gen_stride_dil
+from schema import LAYOUT
+from schema.complib import filter_pad, filter_pad_t, ceildiv
+from schema.genlib import stride_dil, divis_by, below_above 
+from schema import predlib
 
 def init_schema(op):
     op.add_index('b', 'batch', (1,5))
@@ -36,17 +37,17 @@ def init_schema(op):
     op.gen_dims('l', 30)
     op.gen_dims('f', 100)
     op.gen_dims('j', 30)
-    op.gen_dims_func('s', gen_stride_dil, '', 10, True) 
-    op.gen_dims_func('d', gen_stride_dil, '', 10, True) 
+    op.gen_dims_func('s', stride_dil, '', 10, True) 
+    op.gen_dims_func('d', stride_dil, '', 10, True) 
     op.comp_dims('p', filter_pad, filter_pad_t, 'fd') 
-    op.gen_dims_func('i', gen_split, 'p', 1000, False)  
-    op.gen_dims_func('k', gen_divis_by, 'j', 300, False, 300)
+    op.gen_dims_func('i', below_above, 'p', 1000, False)  
+    op.gen_dims_func('k', divis_by, 'j', 300, False, 300)
 
     def odims(i, p, s, padding):
         if padding == 'VALID':
-            out = flib.ceildiv(i - p + 1, s)
+            out = ceildiv(i - p + 1, s)
         else:
-            out = flib.ceildiv(i, s)
+            out = ceildiv(i, s)
         return out
 
     def odims_t(i, p, s, padding):
@@ -60,16 +61,16 @@ def init_schema(op):
 
     op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))
     op.equate_dtypes('filters', 'input')
-
     op.exclude_combos('input', 'int32', 'i', (1,2), LAYOUT, 0)
     op.exclude_combos('input', 'int32', 'i', 3)
     op.exclude_combos('input', 'bfloat16', 'i', (1,2))
     op.exclude_combos('input', 'bfloat16', 'i', 3, LAYOUT, 0)
 
-    op.add_index_predicate('s-d exclusion', flib.not_both_over_one,
-            flib.not_both_over_one_templ, 'sd')
+    op.dims_pred('s-d exclusion', 
+            predlib.not_both_over_one,
+            predlib.not_both_over_one_templ, 'sd')
 
-    op.add_index_predicate('k % j == 0', flib.divis_by, flib.divis_by_t, 'kj')
+    op.dims_pred_cw('k % j == 0', predlib.divis_by, predlib.divis_by_t, 'kj')
     
     op.return_tensor('blo', 'bol')
 

@@ -1,12 +1,12 @@
 from schema import flib
 
 def init_schema(op):
-    op.add_index('b', 'batch', (1, 1))
+    op.add_index('b', 'batch', 1)
     op.add_index('i', 'input spatial', (1, 3))
     op.add_index('o', 'output spatial', 'i')
-    op.add_index('c', 'channel', (1, 1))
-    op.add_index('k', 'ksize', 'i')
-    op.add_index('s', 'strides', 'i')
+    op.add_index('c', 'channel', 1)
+    op.add_index('k', 'ksize', 1)
+    op.add_index('s', 'strides', 1)
 
     formats = {
             'NCW': (0, 1),
@@ -25,8 +25,13 @@ def init_schema(op):
     op.arg_option('padding', ('VALID', 'SAME'))
     op.arg_unchecked('name')
 
-    op.valid_dtypes('input', ('bfloat16', 'float',))
+    op.gen_dims('b', 100)
+    op.gen_dims('c', 50)
+    op.gen_dims('k', 10)
+    op.gen_dims('s', 100)
+    op.gen_dims_func('i', flib.gen_split, 'k', 1000, False)
 
+    op.valid_dtypes('input', ('bfloat16', 'float',))
     op.exclude_combos('input', ('float64', 'bfloat16'), 'i', 3)
 
     def odims(i, k, s, padding):
@@ -37,17 +42,14 @@ def init_schema(op):
             out = flib.ceildiv(i, s)
         return out
 
-    def odims_templ(i, k, s, padding):
+    def odims_t(i, k, s, padding):
         if padding == 'VALID':
             tem = f'ceil(({i} - {k} + 1) / {s}) (VALID padding)'
         else:
             tem = f'ceil({i} / {s}) (SAME padding)'
         return tem
 
-    op.add_index_generator('k', flib.gen_range, 'k', 1, 5)
-    op.add_index_generator('s', flib.gen_range, 's', 1, 5)
-
-    op.computed_index('o', odims, odims_templ, 'iks', 0, 'padding')
+    op.comp_dims('o', odims, odims_t, 'iks', 'padding')
 
     op.return_tensor('bco', 'boc')
 

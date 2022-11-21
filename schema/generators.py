@@ -95,6 +95,17 @@ class GenDims(NodeFunc):
         self.pars = pars
         self.num_indexes = len(sig)
 
+    @staticmethod
+    def bcast_dim(dims, comp):
+        # get the component comp of dims
+        if isinstance(dims, int):
+            return dims
+        else:
+            if len(dims) == 1:
+                return dims[0]
+            else:
+                return dims[comp]
+
     def range_under_size(self, idx_ranges):
         # generate a tuple of dims between idx_ranges, with prod() <= total
         # each element of idx_ranges represents a component of an index.
@@ -146,8 +157,8 @@ class GenDims(NodeFunc):
 
         rank = index_ranks[self.rank_idx]
         gens = []
-        for comp in range(rank):
-            ins = tuple(d[comp] if isinstance(d, list) else d for d in input_dims)
+        for c in range(rank):
+            ins = tuple(self.bcast_dim(dims, c) for dims in input_dims)
             gen = self.func(*ins, *self.pars)
             gens.append(gen)
         
@@ -202,8 +213,8 @@ class DimsInput(NodeFunc):
         return None
 
 class Layout(GenFunc):
-    def __init__(self, op, name):
-        super().__init__(op, name)
+    def __init__(self, op):
+        super().__init__(op, base.LAYOUT)
 
     def __call__(self):
         num_layouts = self.op.data_formats.num_layouts()
@@ -217,12 +228,12 @@ class Sig(GenFunc):
     Represent a set of signatures for argument {name} corresponding to the
     available layouts. 
     """
-    def __init__(self, op, name, options):
+    def __init__(self, op, name, sigs):
         super().__init__(op, name)
-        self.options = options
+        self.sigs = sigs
 
     def __call__(self, layout):
-        yield self.options[layout]
+        yield self.sigs[layout]
 
 class SigMap(GenFunc):
     """
@@ -349,7 +360,14 @@ class ArgMutations(GenFunc):
         for arg, sig in sigs.items():
             arg_ranks[arg] = sum(index_ranks[idx] for idx in sig)
 
-        dims_input = { n: oa.value() for n, oa in comp.items() }
+        dims_input = {}
+        for k, v in comp.items():
+            if k == base.LAYOUT:
+                val = v
+            else:
+                val = v.value()
+            dims_input[k] = val
+
         dims_input[INDEX_RANKS] = index_ranks
         self.op.dims_input_node.set_cached(dims_input)
         all_nodes = set(self.op.dims_graph.values())

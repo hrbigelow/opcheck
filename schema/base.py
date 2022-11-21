@@ -335,10 +335,10 @@ class DTypeRules(object):
         - one-letter index names registered in init_fields
         - the constant LAYOUT, if has_layout
 
-        val is one of:
+        val may be a scalar or a tuple of:
         - dtype string, such as 'int32' for data tensor fields
         - integer specifying a rank of an index field
-        - the LAYOUT field has an integer in [0, num_layouts), as defined
+        - the LAYOUT field,  an integer in [0, num_layouts), as defined
           by the call to arg_layout.
         """
         nitem = len(field_val_pairs)
@@ -479,21 +479,39 @@ class DataFormats(object):
                 f'\'{data_format}\'')
         return self.formats[data_format][1]
 
-Predicate = namedtuple('Predicate', ['name', 'pred_func', 'templ_func',
-    'indices'])
+class IndexPredicate(object):
+    def __init__(self, name, cwise, pfunc, pfunc_t, indices):
+        self.name = name
+        self.cwise = cwise
+        self.pfunc = pfunc
+        self.pfunc_t = pfunc_t
+        self.indices = indices
 
-class IndexPredicates(object):
-    """
-    Store all index predicate functions registered on the schema using
-    add_index_predicate
-    """
-    def __init__(self):
-        self.preds = [] 
-
-    def add(self, pred_name, status_func, templ_func, indices):
-        pred = Predicate(pred_name, status_func, templ_func, indices)
-        self.preds.append(pred)
-
+    def __call__(self, *dims):
+        """
+        Evaluate the predicate either component-wise or all at once
+        """
+        if self.cwise:
+            ranks = { len(d) for d in dims if isinstance(d, (list, tuple)) }
+            if len(ranks) > 1:
+                raise SchemaError(
+                    f'IndexPredicate is component-wise but input indices '
+                    f'{self.indices} have different ranks')
+            elif len(ranks) == 0:
+                return self.pfunc(*dims)
+            else:
+                rank = ranks.pop()
+                for c in range(rank):
+                    ins = tuple(d if isinstance(d, int) else d[c] for d in dims)
+                    if not self.pfunc(*ins):
+                        return False
+                return True
+        else:
+            try:
+                return self.pfunc(*dims)
+            except BaseException as ex:
+                raise SchemaError(f'IndexPredicate error in non-cw mode: {ex}')
+    
 class SumRangeConstraint(object):
     """
     Expresses the constraint RANK(sig) in [lo, hi].  When called, it provides a

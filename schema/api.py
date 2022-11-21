@@ -2,10 +2,7 @@ import traceback
 import inspect
 import sys, io, os
 import re
-import tensorflow as tf
-import numpy as np
 import itertools
-from collections import defaultdict
 from random import choice
 from . import predicates as pr
 from . import generators as ge
@@ -13,7 +10,6 @@ from . import infer as nf
 from . import report
 from . import base
 from . import fgraph
-from . import flib
 from .redirect import stderr_redirector
 from .error import *
 from .fgraph import PredNode as P, GenNode as G, FuncNode as F
@@ -41,23 +37,16 @@ class Index(object):
     Represents the central shape-bearing concept.
     pri_idx is the index whose rank this one is equated to.  Or, if pri_idx ==
     idx, it means the instance itself is a primary index
-    dims_range is 2-member tuple, each member an integer or None.
-    None signifies no limit
-
-
     """
-    def __init__(self, idx, desc, pri_idx, rank_range, dims_range):
+    def __init__(self, idx, desc, pri_idx, rank_range):
         self.idx = idx
         self.desc = desc
         self.pri_idx = pri_idx
         self.rank_range = rank_range
-        self.dims_min = dims_range[0]
-        self.dims_max = dims_range[1]
 
     def __repr__(self):
         r =  f'{type(self).__qualname__}({self.idx}): {self.desc}, '
         r += f'{self.pri_idx}, {self.rank_range}, '
-        r += f'{self.dims_min}-{self.dims_max}'
         return r
 
     def primary(self):
@@ -70,6 +59,17 @@ class Index(object):
         min_dim = 0 if self.dims_min is None else self.dims_min
         max_dim = 1000000 if self.dims_max is None else self.dims_max
         return range(min_dim, max_dim + 1)
+
+class Partial(object):
+    """
+    Curry extra_args at the end
+    """
+    def __init__(self, func, *extra_args):
+        self.func = func
+        self.extra_args = extra_args
+
+    def __call__(self, *args):
+        return self.func(*args, *self.extra_args)
 
 class SchemaApi(object):
     def __init__(self, op_path):
@@ -88,14 +88,9 @@ class SchemaApi(object):
         # TODO: enable setting this
         self.max_search_dist = 4
         self.show_graph_calls = False
-        self.comp_dims_mode = True
 
         # used by IndexDims and ArgShapes to compute index dimensions 
         self.target_nelem = 1e6
-
-        # indices which a change in rank always affects generated inputs.
-        # mutations to rank 1 for these indices are not accepted.
-        self.definite_rank_indices = set()
 
         # params is used to retrieve values during testing
         self.arg_order = None
@@ -124,8 +119,7 @@ class SchemaApi(object):
         self.data_tensors = []
         self.shape_args = []
         self.dtype_rules = base.DTypeRules()
-        self.comp_dims_templates = {} # idx => PredNode with TemplateFunc
-        self.index_preds = base.IndexPredicates()
+        self.index_preds = []
         self.num_returns = 0
         self.return_nodes = []
         self.return_tensors = []
@@ -452,7 +446,7 @@ class SchemaApi(object):
 
     def _init_gen_graph(self):
         G.set_registry(self.gen_graph)
-        layout_gobj = ge.Layout(self, base.LAYOUT)
+        layout_gobj = ge.Layout(self)
         layout = G.add_node(layout_gobj)
         index_ranks = G.add_node(ge.IndexRanks())
         impl_obj = ge.DTypesNotImpl(self)
@@ -465,7 +459,7 @@ class SchemaApi(object):
         self.args_gnode = G.add_node(ge.Args())
 
     def _finalize(self):
-        # self.dims_graph.finalize()
+        # check that every index appearing in an 
         if self.data_formats is None:
             self.arg_layout(None, None, None)
 
@@ -547,7 +541,7 @@ class SchemaApi(object):
             try:
                 with stderr_redirector(string_err):
                     self.wrapped_op(**arg_dict)
-            except OpGrindInternalError as ex:
+            except (SchemaError, OpGrindInternalError) as ex:
                 print(string_err.getvalue().decode('UTF-8'))
                 raise ex
             except BaseException as ex:
@@ -580,7 +574,7 @@ class SchemaApi(object):
         summary_fh.close()
 
     # ============ PUBLIC API ====================
-    def add_index(self, idx, description, rank_cons=None, dims_range=None):
+    def add_index(self, idx, description, rank_cons=None):
         """
         Add index {idx} with {description} to the schema.  {idx} must be a
         single letter and can be referred to in later signatures.
@@ -591,13 +585,6 @@ class SchemaApi(object):
         2. a single integer - interpreted as (<rank>, <rank>)
         3. the name of a previously registered index to equate the rank
         4. None - a constraint will be placed downstream limiting these ranks
-
-        {dims_range} maybe be None or a pair of (integer or None)
-        1. None - no restriction on the range of dimensions
-        2. (int, None)  low bounded
-        3. (None, None) high bounded
-        4. (int, int) low and high bounded
-        5. int - used for both low and high bound
         """
         if idx in self.index:
             raise SchemaError(f'Index \'{idx}\' already registered') 
@@ -605,9 +592,6 @@ class SchemaApi(object):
         ranks_gnode = self._gen_node(ge.IndexRanks)
         ranks_inode = self._inf_node(ge.IndexRanks) # same class
 
-        if isinstance(dims_range, (int, type(None))):
-            dims_range = (dims_range, dims_range)
-        
         if isinstance(rank_cons, str):
             primary_idx = rank_cons
             if primary_idx not in self.index:
@@ -624,7 +608,7 @@ class SchemaApi(object):
                 raise SchemaError(f'Source index \'{primary_idx}\' is not '
                         f'a primary index')
             else:
-                index = Index(idx, description, primary_idx, None, dims_range)
+                index = Index(idx, description, primary_idx, None)
                 self.index[idx] = index
 
                 G.set_registry(self.gen_graph)
@@ -646,7 +630,7 @@ class SchemaApi(object):
                 rank_range = rank_cons
 
             G.set_registry(self.gen_graph)
-            index = Index(idx, description, idx, rank_range, dims_range)
+            index = Index(idx, description, idx, rank_range)
             self.index[idx] = index
 
             idx_gobj = ge.RankRange(self, idx)
@@ -687,20 +671,6 @@ class SchemaApi(object):
             raise SchemaError(
                 f'{type(self).__qualname__}: Got constraint \'{rank_cons}\''
                 f' but expected either an index, None, or an integer pair.')
-
-        min_val = self.index[idx].dims_min
-        if min_val is not None:
-            min_val_pred = flib.PredAbove(min_val)
-            min_val_templ = flib.PredAboveTempl(min_val)
-            name = f'{idx} >= {min_val}'
-            self.add_index_predicate(name, min_val_pred, min_val_templ, idx)  
-
-        max_val = self.index[idx].dims_max
-        if max_val is not None:
-            max_val_pred = flib.PredBelow(max_val)
-            max_val_templ = flib.PredBelowTempl(max_val)
-            name = f'{idx} >= {max_val}'
-            self.add_index_predicate(name, max_val_pred, max_val_templ, idx)  
 
     def arg_unchecked(self, arg_name):
         """
@@ -773,6 +743,18 @@ class SchemaApi(object):
                 f'out_sig')
         return pri_idx
 
+    def _gen_check_out_sig(self, out_sig):
+        for idx in out_sig:
+            if idx not in self.index:
+                raise SchemaError(
+                    f'idx \'{idx}\' is not yet registered with add_index')
+
+        if out_sig in self.dims_graph:
+            raise SchemaError(
+                f'out_sig \'{out_sig}\' is already registered in '
+                f'the dims_graph with one of the gen_dims_* or comp_dims '
+                f'API functions')
+
     def gen_dims_func(self, out_sig, func, in_sig, max_prod, do_scalar, *pars):
         """
         Calls func(*in_dims, *pars), which yields one or more
@@ -783,6 +765,11 @@ class SchemaApi(object):
         in_sig.  Broadcasting occurs if an index is integer or length-1 integer
         list.
         """
+        try:
+            self._gen_check_out_sig(out_sig)
+        except SchemaError as ex:
+            raise SchemaError(f'gen_dims_func got error: {ex}')
+
         pri_idx = self._get_rank_idx(in_sig, out_sig)
         gdims = ge.GenDims(out_sig, func, pri_idx, do_scalar, max_prod, pars)
         G.set_registry(self.dims_graph)
@@ -796,7 +783,22 @@ class SchemaApi(object):
         """
         def gen():
             yield 1, None
-        self.gen_dims_func(out_idx, gen, '', max_prod, False)
+        try:
+            self.gen_dims_func(out_idx, gen, '', max_prod, False)
+        except SchemaError as ex:
+            raise SchemaError(f'gen_dims got error {ex}')
+
+    def gen_dims_rng(self, out_idx, min_val, max_val):
+        """
+        Generate dimensions of {out_idx} of appropriate rank such that the
+        product is in [min_prod, max_prod]
+        """
+        def gen():
+            yield min_val, max_val
+        try:
+            self.gen_dims_func(out_idx, gen, '', int(1e10), False)
+        except SchemaError as ex:
+            raise SchemaError(f'gen_dims_rng got error {ex}')
 
     def comp_dims(self, out_idx, func, tfunc, in_sig, *arg_names):
         """
@@ -817,14 +819,19 @@ class SchemaApi(object):
         mut_gnode = self._gen_node(ge.ArgMutations)
 
         for arg_name in arg_names:
-            if arg_name not in self.arg_order:
-                raise SchemaError(
-                    f'name \'{arg_name}\' in arg_names is not found in the '
-                    f'framework op input arguments.  Input arguments are: '
-                    '\, '.join(self.arg_order))
-            else:
+            if arg_name == base.LAYOUT:
+                arg_gnode = self._gen_node(ge.Layout, base.LAYOUT) 
+                mut_gnode.maybe_append_parent_sn(arg_gnode)
+
+            elif arg_name in self.arg_order:
                 arg_gnode = self.arg_gen_nodes[arg_name]
                 mut_gnode.maybe_append_parent_sn(arg_gnode)
+
+            else:
+                raise SchemaError(
+                    f'name \'{arg_name}\' in arg_names must be either a '
+                    f'framework op argument, or the constant \'{base.LAYOUT}\''
+                    f'Input arguments are: ' + '\, '.join(self.arg_order))
 
         cdims = ge.CompDims(self, out_idx, func, tfunc, pri_idx, arg_names) 
         G.set_registry(self.dims_graph)
@@ -832,9 +839,7 @@ class SchemaApi(object):
         G.add_node_sn(cdims, self.dims_input_node, *parents)
 
         # add the non-negativity constraint
-        nn = flib.PredAbove(0)
-        nn_templ = flib.PredAboveTempl(0)
-        self.add_index_predicate(f'{out_idx} >= 0', nn, nn_templ, out_idx) 
+        self.dims_pred_rng(out_idx, 0, None) 
 
     def limit_ranks(self, sig, min_val, max_val):
         """
@@ -984,6 +989,12 @@ class SchemaApi(object):
         {layouts} is an array, where each element is a map of: rank => code
         The rank of {rank_idx} determines which layout is mapped.
         """
+        if formats is not None:
+            if not isinstance(formats, dict):
+                raise SchemaError(f'arg_layout: formats must be a dict')
+            if not all(isinstance(v, tuple) for v in formats.values()):
+                raise SchemaError(f'arg_layout: formats must be a dict with '
+                        f'tuple values')
         self.data_formats = base.DataFormats(arg_name, formats, rank_idx)
         
         # define the real arg 
@@ -1034,17 +1045,6 @@ class SchemaApi(object):
                 f'{len(sigs_list)} elements of \'sigs\' argument.')
         return sigs_list 
 
-    def _add_definite_rank(self, *sigs):
-        """
-        Add the indices in sigs to the set of so-called 'definite-rank
-        indices'.  Such an index has the property that a change in rank always
-        affects generated output.  Most indices have this property, but indices
-        exclusively registered with arg_shape_bcast_list do not.  This is
-        because such an index could produce the same output with rank != 1 and
-        rank 1, since any rank != 1 could be broadcasted.
-        """
-        self.definite_rank_indices.update(idx for sig in sigs for idx in sig)
-
     def _arg_shape_func(self, arg_name, sigs_list, shape_pnode, arg_gobj, kind): 
         """
         Backend function for arg_shape_* API functions.
@@ -1091,7 +1091,7 @@ class SchemaApi(object):
 
     def arg_tensor(self, arg_name, *sigs):
         """
-        Register {arg_name} as a tensor.  
+        Register {arg_name} as a data tensor.  
 
         sigs are all strings of signatures.  If len(sigs) == 1, then it
         specifies a static signature regardless of whether 'arg_layout' was
@@ -1113,7 +1113,6 @@ class SchemaApi(object):
         tensor_dtype_obj = pr.TensorDType(arg_name)
         dtype = P.add_node(tensor_dtype_obj, arg_p)
         dtypes.append_parent_sn(dtype)
-        self._add_definite_rank(*sigs)
         self.data_tensors.append(arg_name)
 
     def _arg_shape_list_base(self, arg_name, broadcast_mode=False, *sigs):
@@ -1148,10 +1147,9 @@ class SchemaApi(object):
         shape.  In contrast to arg_shape_bcast_list, here there is no
         broadcasting interpretation.
         """
-        self._add_definite_rank(*sigs)
         self._arg_shape_list_base(arg_name, False, *sigs)
 
-    def arg_shape_int(self, arg_name, index):
+    def arg_shape_int(self, arg_name, index, lo=None, hi=None):
         """
         Register {arg_name} as an integer parameter which defines the shape of
         an index.  The shape will be the broadcasted value of the argument if
@@ -1168,7 +1166,7 @@ class SchemaApi(object):
         schema = self._pred_node(pr.Schema)
         gen_obj = ge.ShapeInt(arg_name)
         ind = self.index[index]
-        pred_obj = pr.ShapeInt(arg_name, ind.dims_min, ind.dims_max)
+        pred_obj = pr.ShapeInt(arg_name, lo, hi)
         arg_p = P.add_node(pred_obj, schema)
         kind = ShapeKind.Int
         self._arg_shape_func(arg_name, (index,), arg_p, gen_obj, kind)
@@ -1185,7 +1183,6 @@ class SchemaApi(object):
         arg_p = P.add_node(pred_obj, schema)
         kind = ShapeKind.Tensor
         self._arg_shape_func(arg_name, sigs, arg_p, gen_obj, kind)
-        self._add_definite_rank(*sigs)
 
     def arg_shape_tensor2d(self, arg_name, *sigs):
         """
@@ -1239,7 +1236,7 @@ class SchemaApi(object):
         arg_shapes = self._gen_node(ge.ArgMutations)
         g_shape2d = G.add_node(shape2d_gobj, arg_shapes)
         self.arg_gen_nodes[arg_name] = g_shape2d
-        self.args_node.append_parent_sn(g_shape2d)
+        self.args_gnode.append_parent_sn(g_shape2d)
 
         g_sig_map = self._gen_node(ge.SigMap)
         g_layout = self._gen_node(ge.Layout, base.LAYOUT)
@@ -1258,7 +1255,6 @@ class SchemaApi(object):
             g_sig_obj = ge.Sig(self, prefix, sig)
             g_sig = G.add_node(g_sig_obj, g_layout)
             g_sig_map.append_parent(g_sig)
-        self._add_definite_rank(*sigs)
 
     def arg_rank(self, arg_name, sig):
         """
@@ -1289,25 +1285,12 @@ class SchemaApi(object):
             pri_idx = self.index[idx].pri_idx
             inode = self.inf_graph[pri_idx]
             inode.func.add_args_constraint(cons)
-        self._add_definite_rank(sig)
 
-    def rank_dims_constraint(self, constraint_name, get_dims, rank_sig,
-            dims_index, shape_arg):
+    def rank_dims_constraint(self, get_dims, rank_sig, shape_arg):
         """
-        Creates a constraint called {constraint_name} with the logic:
-        RANK(rank_sig) == get_dims(shape_arg).
-
-        Creates a generated index dimension:
-        DIMS(dims_index) <- RANK(rank_sig)
+        Creates a constraint called {constr_name} in the inference graph
+        with the logic: RANK(rank_sig) == get_dims(shape_arg)
         """
-        # 'sum' simply sums up the individual ranks of indices in rank_sig 
-        def gen_single_index(ranks_list):
-            val = sum(ranks_list)
-            return [([val],)]
-
-        self.dims_graph.maybe_add_input_index(dims_index)
-        self._add_definite_rank(rank_sig)
-
         # add the constraint to the inference graph 
         cons = base.ShapeFuncConstraint(rank_sig, get_dims, shape_arg)
         for idx in rank_sig:
@@ -1315,27 +1298,64 @@ class SchemaApi(object):
             inode = self.inf_graph[pri_idx]
             inode.func.add_shapes_constraint(cons)
 
-    def add_index_predicate(self, pred_name, status_func, templ_func, indices):
+    def dims_pred(self, pred_name, pfunc, pfunc_t, indices, *extra):
         """
-        Registers {status_func} with the schema to be used as an additional
+        Registers {pfunc} with the schema to be used as an additional
         predicate for {indexes} dimensions.
 
-        {templ_func} is a template function.  It is called with the index
+        {pfunc_t} is a template function.  It is called with the index
         descriptions of each index in indices, and returns a string
         interpolating them, which explains the predicate logic.
 
         {pred_name} is a name given to this custom predicate.  It may be used
         in error messages.
 
-        Called as status_func(*index_shapes), where index_shapes are the
-        resolved shapes of each index, in order, in {indices}.  They are
-        provided as numpy arrays.
-
-        status_func must return an instance of SchemaStatus
-
-        Custom status functions are found in the flib module.
+        Called as pfunc(*index_shapes, *extra), where index_shapes
+        are the resolved shapes of {indices}.  
         """
-        self.index_preds.add(pred_name, status_func, templ_func, indices)
+        if len(extra) > 0:
+            pfunc = Partial(pfunc, *extra)
+            pfunc_t = Partial(pfunc_t, *extra)
+
+        pred = base.IndexPredicate(pred_name, False, pfunc, pfunc_t, indices)
+        self.index_preds.append(pred)
+
+    def dims_pred_cw(self, pred_name, pfunc, pfunc_t, indices, *extra):
+        """
+        Like dims_pred, but pfunc is called 'component-wise'.  That is, it is
+        called once for each set of broadcasted index shapes.
+        """
+        if len(extra) > 0:
+            pfunc = Partial(pfunc, *extra)
+            pfunc_t = Partial(pfunc_t, *extra)
+
+        pred = base.IndexPredicate(pred_name, True, pfunc, pfunc_t, indices)
+        self.index_preds.append(pred)
+
+    def dims_pred_rng(self, idx, lo, hi):
+        """
+        Register a predicate to test that idx dims are in [lo, hi].  If lo or
+        hi are None, indicates no restriction.
+        """
+        if lo is None and hi is None:
+            raise SchemaError(
+                f'dims_pred_rng: error adding dims pred for {idx}.  '
+                f'at least one of lo or hi must be an integer')
+
+        leq = lambda v, m: v <= m
+        leq_t = lambda v, m: f'{v} must be <= {m}'
+        geq = lambda v, m: v >= m
+        geq_t = lambda v, m: f'{v} must be >= {m}'
+        betw = lambda v, lo, hi: lo <= v <= hi
+        betw_t = lambda v, lo, hi: f'{v} must be in [{lo}, {hi}]'
+
+        if lo is None:
+            self.dims_pred_cw(f'{idx} >= {lo}', leq, leq_t, idx, hi)  
+        elif hi is None:
+            self.dims_pred_cw(f'{idx} >= {lo}', geq, geq_t, idx, lo)  
+        else:
+            name = f'{idx} in [{lo}, {hi}]'
+            self.dims_pred_cw(name, betw, betw_t, idx, lo, hi) 
 
     # TODO: should I clone the graph, or simply set the parents to nodes in the
     # gen graph?

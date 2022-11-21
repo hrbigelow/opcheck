@@ -411,9 +411,9 @@ def _idx_constraint_msg(op, fix):
         item += dims_string(idx_dims)
         items.append(item)
     values_msg = grammar_list(items)
-    constraint_msg = pred.templ_func(*templ_args)
+    constraint_msg = pred.pfunc_t(*templ_args)
 
-    notice = f'Shape constraint violation:  {values_msg}.  {constraint_msg}'
+    notice = f'{values_msg}.  {constraint_msg}'
 
     # show all formulas preceding and up to any of pred.indices
     formulas = fix.shape.formulas
@@ -423,9 +423,8 @@ def _idx_constraint_msg(op, fix):
         desc_msg = '\n'.join(frm.desc_path for frm in formulas)
         code_msg = '\n'.join(frm.code_path for frm in formulas)
         dims_msg = '\n'.join(frm.dims_path for frm in formulas)
-        path_msg =  f'Long formula\n{desc_msg}\n\n'
-        path_msg += f'Short formula\n{code_msg}\n\n'
-        path_msg += f'Dimensions\n{dims_msg}'
+        path_msg = 'Dimensions computed as:\n'
+        path_msg += '\n\n'.join((desc_msg, code_msg, dims_msg))
 
     main = list(filter(None, (notice, path_msg)))
     return '\n\n'.join(main)

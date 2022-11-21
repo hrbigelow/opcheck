@@ -2,7 +2,7 @@ import importlib
 import inspect
 import traceback
 from schema import SchemaApi
-from schema.error import OpGrindInternalError, FrameworkError, Success
+from schema.error import OpGrindInternalError, FrameworkError
 from schema import fgraph
 from pprint import pprint
 

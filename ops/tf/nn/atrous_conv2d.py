@@ -1,13 +1,14 @@
 from schema import flib
+from schema.flib import gen_split
 
 def init_schema(op):
-    op.add_index('b', 'batch', (1, 10))
-    op.add_index('i', 'input spatial', (2, 2))
-    op.add_index('k', 'input channel', (1, 1))
+    op.add_index('b', 'batch', (1,10))
+    op.add_index('i', 'input spatial', 2)
+    op.add_index('k', 'input channel', 1)
     op.add_index('f', 'filter spatial', 'i')
-    op.add_index('l', 'output channel', (1, 1))
+    op.add_index('l', 'output channel', 1)
     op.add_index('o', 'output spatial', 'i')
-    op.add_index('r', 'rate', (1, 1)) 
+    op.add_index('r', 'rate', 1) 
 
     op.arg_tensor('value', 'bik')
     op.arg_tensor('filters', 'fkl')
@@ -15,11 +16,15 @@ def init_schema(op):
     op.arg_shape_int('rate', 'r')
     op.arg_unchecked('name')
 
+    op.gen_dims('b', 50)
+    op.gen_dims('k', 30)
+    op.gen_dims('f', 100)
+    op.gen_dims_func('i', gen_split, 'f', 300, False)  
+    op.gen_dims('l', 30)
+    op.gen_dims('r', 30)
+
     op.valid_dtypes('value', ('int32', 'float',))
     op.equate_dtypes('filters', 'value')
-
-    op.add_index_generator('f', flib.gen_range, 'f', 3, 10)
-    op.add_index_generator('r', flib.gen_range, 'r', 1, 8)
 
     def odims(i, f, r, padding):
         if padding == 'VALID':
@@ -28,14 +33,14 @@ def init_schema(op):
             out = i
         return out
 
-    def odims_templ(i, f, r, padding):
+    def odims_t(i, f, r, padding):
         if padding == 'VALID':
-            txt = f'{i} - ({f} - 1) * 2'
+            txt = f'{i} - ({f} - 1) * {r}  (padding VALID)'
         else:
-            txt = f'{i}'
+            txt = f'{i}  (padding SAME)'
         return txt
 
-    op.computed_index('o', odims, odims_templ, 'ifr', 1, 'padding')
+    op.comp_dims('o', odims, odims_t, 'ifr', 'padding')
     op.return_tensor('bol')
 
 

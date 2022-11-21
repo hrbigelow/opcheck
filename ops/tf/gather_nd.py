@@ -3,11 +3,18 @@ def init_schema(op):
     op.add_index('r', 'read location', (1, 7))
     op.add_index('w', 'write location')
     op.add_index('e', 'slice element')
-    op.add_index('c', 'read address component', (1, 1))
+    op.add_index('c', 'read address component', 1)
 
     # allowed rank combinations
     op.limit_ranks('bwc', 0, 10)
     op.limit_ranks('bre', 0, 10)
+
+    # generators
+    op.gen_dims('b', 500)
+    op.gen_dims('r', 100)
+    op.gen_dims('w', 100)
+    op.gen_dims('e', 100)
+    op.gen_dims('c', 8)
 
     # argument interpretations
     op.arg_tensor('indices', 'bwc')
@@ -24,7 +31,7 @@ def init_schema(op):
             return None
         else:
             return indices_shape[-1]
-    op.rank_dims_constraint('rank(r) == dims(c)', rankr, 'r', 'c', 'indices')
+    op.rank_dims_constraint(rankr, 'r', 'indices')
 
     # output shape prediction
     op.return_tensor('bwe')

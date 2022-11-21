@@ -4,6 +4,11 @@ def init_schema(op):
     op.add_index('c', 'write address component', (1, 1))
     op.add_index('w', 'write address', (1, 5))
 
+    op.gen_dims('r', 100)
+    op.gen_dims('e', 100)
+    op.gen_dims('c', 8)
+    op.gen_dims('w', 100)
+
     # op.limit_ranks('rc', 1, 10)
     # op.limit_ranks('re', 1, 10)
     # op.limit_ranks('we', 1, 10)
@@ -19,7 +24,7 @@ def init_schema(op):
             return None
         else:
             return indices_shape[-1]
-    op.rank_dims_constraint('rank(w) == dims(c)', rankw, 'w', 'c', 'indices')
+    op.rank_dims_constraint(rankw, 'w', 'indices')
 
     op.valid_dtypes('indices', ('int32+',))
     # op.valid_dtypes('updates', ('int32', 'float32'))

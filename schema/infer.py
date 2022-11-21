@@ -4,7 +4,7 @@ import numpy as np
 from contextlib import contextmanager
 from collections import namedtuple
 from .fgraph import NodeFunc
-from .base import ALL_DTYPES, INDEX_RANKS
+from .base import ALL_DTYPES, INDEX_RANKS, LAYOUT
 from . import generators as ge
 from . import base
 from . import fgraph
@@ -212,7 +212,7 @@ class IndexConstraints(ReportNodeFunc):
     """
     def __init__(self, op):
         super().__init__(op)
-        self.cons = op.index_preds
+        self.index_preds = op.index_preds
 
     def get_comp_order(self):
         comp_nodes = [ n for n in self.op.dims_graph.values() if 
@@ -276,9 +276,9 @@ class IndexConstraints(ReportNodeFunc):
             return
 
         # each usage should have a single entry
-        index_ranks = shape_edit.index_ranks
         dims_input = dict(obs_args)
-        dims_input[INDEX_RANKS] = index_ranks
+        dims_input[INDEX_RANKS] = shape_edit.index_ranks
+        dims_input[LAYOUT] = shape_edit.layout
         self.op.dims_input_node.set_cached(dims_input)
 
         input_dims = shape_edit.get_input_dims()
@@ -310,14 +310,13 @@ class IndexConstraints(ReportNodeFunc):
         # formulas = self.op.dims_graph.templates(input_dims, **comp) 
         index_dims = { **input_dims, **comp_dims }
 
-        for pred in self.cons.preds:
+        for pred in self.index_preds:
             # skip any predicates if any input indices are missing - this can
             # happen when the predicate only applies to specific layouts
             if not all(idx in index_dims for idx in pred.indices):
                 continue
             pred_input_dims = [ index_dims[idx] for idx in pred.indices ]
-            npin = tuple(np.array(i) for i in pred_input_dims)
-            if not pred.pred_func(*npin):
+            if not pred(*pred_input_dims):
                 # collect the predecessor formulas
                 comp_order = self.get_comp_order()
                 en = enumerate(comp_order)

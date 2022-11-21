@@ -292,7 +292,6 @@ class SliceShape(ReportNodeFunc):
     """
     def __init__(self, name, tup_index):
         super().__init__(f'{name}.{tup_index}')
-        self.gen_node = gen_node
         self.index = tup_index
 
     def __call__(self, shape_tup):

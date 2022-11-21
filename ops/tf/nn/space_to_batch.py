@@ -1,59 +1,55 @@
 from schema import flib
+from schema.flib import divis_by, divis_by_t
 
 def init_schema(op):
-    op.add_index('b', 'batch', 1, 1)
-    op.add_index('i', 'input spatial', 1, 3)
-    op.add_index('j', 'padded input spatial')
-    op.add_index('k', 'block shape')
-    op.add_index('r', 'remaining', 0, 8)
-    op.add_index('s', 'padding start')
-    op.add_index('e', 'padding end')
-    op.add_index('o', 'output spatial')
-    op.add_index('p', 'output batch', 1, 1)
-
-    op.equate_ranks('s', 'i')
-    op.equate_ranks('j', 'i')
-    op.equate_ranks('e', 'i')
-    op.equate_ranks('o', 'i')
-    op.equate_ranks('k', 'i')
+    op.add_index('b', 'batch', 1)
+    op.add_index('i', 'input spatial', (1,3))
+    op.add_index('j', 'padded input spatial', 'i')
+    op.add_index('k', 'block shape', 'i')
+    op.add_index('r', 'remaining', (0,8))
+    op.add_index('s', 'padding start', 'i')
+    op.add_index('e', 'padding end', 'i')
+    op.add_index('o', 'output spatial', 'i')
+    op.add_index('p', 'output batch', 1)
 
     op.arg_tensor('input', 'bir')
     op.arg_shape_tensor('block_shape', 'k')
     op.arg_shape_tensor2d('paddings', 's', 'e')
     op.arg_unchecked('name')
 
+    op.gen_dims('b', 100)
+    op.gen_dims('i', 400)
+    op.gen_dims('k', 50)
+    op.gen_dims('r', 100)
+
+    op.gen_dims_func('se', flib.gen_mod_padding, 'ik', 100, False)
+
     # ensure that padded input is divisible by block size
-    op.add_index_predicate('pad_input_block', flib.divis_by, 'jk')
-
-    # generates i, s, e, and k dimensions compatible with the predicate
-    op.add_index_generator('isek', flib.gen_pad_input_blocked, 'i', 3, 20)
-
+    op.add_index_predicate('pad_input_block', divis_by, divis_by_t, 'jk')
     op.valid_dtypes('input', ('int', 'uint', 'float', 'bfloat'))
 
     def jdims(s, e, i):
         return s + e + i
 
-    def jdims_txt(s, e, i):
+    def jdims_t(s, e, i):
         return f'{s} + {i} + {e}'
-
-    op.computed_index('j', jdims, jdims_txt, 'sei', 1)
 
     def odims(padded, block_shape):
         return flib.floordiv(padded, block_shape)
 
-    def odims_txt(padded, block_shape):
+    def odims_t(padded, block_shape):
         return f'{padded} // {block_shape}'
-
-    op.computed_index('o', odims, odims_txt, 'jk', 1)
 
     def pdims(block_shape, batch):
         block_elems = flib.reduce_prod(block_shape)
         return block_elems * batch
 
-    def pdims_txt(block_shape, batch):
+    def pdims_t(block_shape, batch):
         return f'product({block_shape}) * {batch}'
 
-    op.computed_index('p', pdims, pdims_txt, 'kb', 1)
+    op.comp_dims('j', jdims, jdims_t, 'sei')
+    op.comp_dims('o', odims, odims_t, 'jk')
+    op.comp_dims('p', pdims, pdims_t, 'kb')
 
     op.return_tensor('por')
 

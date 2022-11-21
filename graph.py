@@ -22,5 +22,3 @@ if __name__ == '__main__':
         opgrind.print_pred_graph(op_path, out_dir)
         opgrind.print_comp_dims_graph(op_path, out_dir)
 
-
-
