@@ -223,7 +223,7 @@ class IndexConstraints(ReportNodeFunc):
     def init_dims_graph(self, idx_info):
         # initialize input nodes
         for sig, node in self.op.dims_graph.items():
-            if node == self.op.dims_input_node:
+            if not isinstance(node.func, ge.GenDims):
                 continue
             elif all(idx in idx_info for idx in sig):
                 if len(sig) == 1:
@@ -276,10 +276,9 @@ class IndexConstraints(ReportNodeFunc):
             return
 
         # each usage should have a single entry
-        dims_input = dict(obs_args)
-        dims_input[INDEX_RANKS] = shape_edit.index_ranks
-        dims_input[LAYOUT] = shape_edit.layout
-        self.op.dims_input_node.set_cached(dims_input)
+        self.op.dims_graph_input.update(obs_args)
+        self.op.dims_graph_input[INDEX_RANKS] = shape_edit.index_ranks
+        self.op.dims_graph_input[LAYOUT] = shape_edit.layout
 
         input_dims = shape_edit.get_input_dims()
         comp_dims = self.get_comp_dims(input_dims)

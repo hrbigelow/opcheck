@@ -108,14 +108,20 @@ class SchemaApi(object):
         self.inf_graph = {}
         self.dims_graph = {}
 
+        # provides information for gr.DimsInput nodes
+        self.dims_graph_input = {}
+
         # These will be set to ge.ObservedValue nodes
         self.obs_dtypes = None
         self.obs_shapes = None
         self.obs_args = None
+
+        # used specifically for ge.DimsInput
+        self.obs_layout = None
+
         self.dtypes_gfilt = None 
         self.dtypes = None 
         self.predicate_nodes = None
-        self.data_format_gobj = None
         self.data_format_inode = None
 
         # Objects shared between graphs
@@ -154,6 +160,10 @@ class SchemaApi(object):
     def _inf_node(self, inf_class, name=None):
         name = fgraph.node_name(inf_class, name)
         return self.inf_graph.get(name, None)
+
+    def _dims_node(self, dims_class, name=None):
+        name = fgraph.node_name(dims_class, name)
+        return self.dims_graph.get(name, None)
 
     def _init_schema(self, framework_mod, framework_op, init_schema_func):
         # edges to create for the pred graph
@@ -328,6 +338,114 @@ class SchemaApi(object):
         tab, _ = tabulate(rows, '  ', left_align=True)
         return tab
 
+    def _schema_report(self):
+        """
+        Produce a standard format report showing all schema logic, as seen
+        in schema_report.txt.  
+        """
+        # Signatures section
+        sigs_node = self._gen_node(ge.SigMap)
+        layout_node = self._gen_node(ge.Layout, base.LAYOUT)
+        out_nodes = (sigs_node, layout_node)
+        ancs = fgraph.get_ancestors(*out_nodes)
+        gen = fgraph.gen_graph_values(ancs, out_nodes)
+        configs = list(gen)
+        rows = []
+        header = None
+        for sigs, layout in configs:
+            dfs = self.data_formats.layout_formats(layout)
+            if header is None:
+                header = self._shape_key_order(sigs.keys())
+                rows.append(header)
+            row = [ sigs[sk] for sk in header ]
+            rows.append(row)
+        table, _ = base.tabulate(rows, '  ')
+        signature = '\n'.join(table)
+        
+        # Index ranks section 
+        rows = []
+        for ind in self.index.values():
+            if ind.rank_range is None:
+                spec = f'rank({ind.idx}) = rank({ind.pri_idx})'
+            else:
+                lo, hi = ind.rank_range
+                if lo == hi:
+                    spec = f'rank({ind.idx}) = {lo}'
+                else:
+                    spec = f'rank({ind.idx}) in [{lo}, {hi}]'
+            doc = f'{ind.idx} = "{ind.desc}"'
+            rows.append([spec, doc])
+        table, _ = base.tabulate(rows, '     ')
+        index_ranks = '\n'.join(table)
+
+        # Computed dimensions section
+        for sig, node in self.dims_graph.items():
+            if not isinstance(node.func, ge.GenDims):
+                continue
+            info = tuple(base.snake_case(self.index[idx].desc) for idx in sig)
+            if len(info) == 1:
+                info = info[0]
+            node.set_cached(info)
+
+        all_nodes = self.dims_graph.values()
+        inp_nodes = [n for n in all_nodes if isinstance(n.func, ge.DimsInput)]
+        inp_nodes = [n for n in inp_nodes if n.sub_name != base.INDEX_RANKS]
+        comp_nodes = [n for n in all_nodes if isinstance(n.func, ge.CompDims)]
+        live_nodes = inp_nodes + comp_nodes
+        inp_names = [n.sub_name for n in inp_nodes]
+        gen_nodes = [n.func.gen_node for n in inp_nodes if n.func.gen_node is not None]
+        vals_list = fgraph.all_values(*gen_nodes)
+        self.comp_dims_mode = False
+        comp_formulas = {}
+        for vals in vals_list:
+            z = zip(inp_names, vals)
+            self.dims_graph_input = {n: v.value() for n, v in z}
+
+            for comp_node in comp_nodes:
+                fgen = fgraph.gen_graph_values(live_nodes, [comp_node])
+                formulas = list(fgen)
+                if len(formulas) != 1:
+                    raise SchemaError(
+                        f'Error: should get one result from comp graph')
+                formula = formulas[0][0]
+                idx = comp_node.used_name()
+                clist = comp_formulas.setdefault(idx, [])
+                clist.append(formula)
+        self.comp_dims_mode = True
+
+        formula_groups = []
+        for idx, clist in comp_formulas.items():
+            lhs = base.snake_case(self.index[idx].desc)
+            group = '\n'.join(f'{lhs} = {c}' for c in clist)
+            formula_groups.append(group)
+
+        computed_dims = '\n'.join(formula_groups)
+        
+        # DType Rules
+        drules = self.dtype_rules
+        dlines = []
+
+        for arg, valid_types in drules.indiv_rules.items(): 
+            typelist = ', '.join(valid_types)
+            dline = f'{arg}.dtype in ({typelist})'
+            dlines.append(dline)
+
+        for target, source in drules.equate_rules.items():
+            dline = f'{target}.dtype = {source}.dtype'
+            dlines.append(dline)
+
+        dtype_rules_msg = '\n'.join(dlines)
+
+        # Excluded dtype combos
+        finals = []
+        finals.append(f'Signatures\n\n{signature}')
+        finals.append(f'Index ranks\n\n{index_ranks}')
+        finals.append(f'Computed dimensions\n\n{computed_dims}')
+        finals.append(f'DType Rules\n\n{dtype_rules_msg}')
+
+        final = '\n\n\n'.join(finals)
+        return final
+
     def _report(self):
         if self.op_error is None:
             msg = None
@@ -445,10 +563,6 @@ class SchemaApi(object):
         report_obj = nf.Report(self)
         self.report_inode = G.add_node(report_obj, self.dtypes, cons_inode)
 
-    def _init_dims_graph(self):
-        G.set_registry(self.dims_graph)
-        self.dims_input_node = G.add_node(ge.DimsInput())
-
     def _init_gen_graph(self):
         G.set_registry(self.gen_graph)
         layout_gobj = ge.Layout(self)
@@ -462,6 +576,11 @@ class SchemaApi(object):
         arg_muts_obj = ge.ArgMutations(self)
         arg_muts = G.add_node(arg_muts_obj, arg_indels, index_ranks, sigs)
         self.args_gnode = G.add_node(ge.Args())
+
+    def _init_dims_graph(self):
+        G.set_registry(self.dims_graph)
+        dobj = ge.DimsInput(self, base.INDEX_RANKS)
+        G.add_node(dobj)
 
     def _finalize(self):
         # check that every index appearing in an 
@@ -706,16 +825,18 @@ class SchemaApi(object):
         pass
 
     def _get_dims_nodes(self, sig):
+        # get each dims_graph node holding each idx in sig
         pa_names = set()
-        graph = self.dims_graph
+        kinds = (ge.CompDims, ge.GenDims)
+        gvals = self.dims_graph.items()
+        gnames = [name for name, nd in gvals if isinstance(nd.func, kinds)]
         for idx in sig:
             if idx not in self.index:
                 raise SchemaError(
                     f'Index \'{idx}\', found in sig \'{sig}\' is not '
                     f'yet registered with add_index')
 
-            pa_name = next((name for name, nd in graph.items() if nd !=
-                self.dims_input_node and idx in name), None)
+            pa_name = next((name for name in gnames if idx in name), None)
             if pa_name is None:
                 raise SchemaError(
                     f'Index \'{idx}\' mentioned in sig \'{sig}\' has not '
@@ -808,7 +929,8 @@ class SchemaApi(object):
                 pars)
         G.set_registry(self.dims_graph)
         parents = self._get_dims_nodes(in_sig)
-        G.add_node_sn(gdims, self.dims_input_node, *parents)
+        ranks_dnode = self._dims_node(ge.DimsInput, base.INDEX_RANKS)
+        G.add_node_sn(gdims, ranks_dnode, *parents)
 
     def gen_dims(self, out_idx, max_prod):
         """
@@ -863,6 +985,10 @@ class SchemaApi(object):
         self._check_out_sig(out_idx)
         mut_gnode = self._gen_node(ge.ArgMutations)
 
+        G.set_registry(self.dims_graph)
+
+        arg_parents = []
+
         for arg_name in arg_names:
             if arg_name == base.LAYOUT:
                 arg_gnode = self._gen_node(ge.Layout, base.LAYOUT) 
@@ -878,6 +1004,12 @@ class SchemaApi(object):
                     f'framework op argument, or the constant \'{base.LAYOUT}\''
                     f'Input arguments are: ' + '\, '.join(self.arg_order))
 
+            dnode = self._dims_node(ge.DimsInput, arg_name)
+            if dnode is None:
+                dobj = ge.DimsInput(self, arg_name)
+                dnode = G.add_node(dobj)
+            arg_parents.append(dnode)
+
         ind = self.index[out_idx]
         ind.dims_node_cls = ge.CompDims
 
@@ -885,12 +1017,14 @@ class SchemaApi(object):
             pri_idx = self._get_rank_idx(in_sig, out_idx)
         else:
             pri_idx = None
-        cdims = ge.CompDims(self, out_idx, in_sig, cwise, func, tfunc, pri_idx,
-                arg_names) 
-        G.set_registry(self.dims_graph)
-        parents = self._get_dims_nodes(in_sig)
-        G.add_node_sn(cdims, self.dims_input_node, *parents)
 
+        nargs = len(arg_names)
+        ranks_dnode = self._dims_node(ge.DimsInput, base.INDEX_RANKS)
+        cdims = ge.CompDims(self, out_idx, in_sig, cwise, func, tfunc, pri_idx,
+                arg_names)
+        parents = self._get_dims_nodes(in_sig)
+        G.add_node_sn(cdims, ranks_dnode, *parents, *arg_parents)
+        
         # add the non-negativity constraint
         self.dims_pred_rng(out_idx, 0, None) 
 
@@ -1056,7 +1190,6 @@ class SchemaApi(object):
         ranks = self._gen_node(ge.IndexRanks)
         df_gobj = ge.DataFormat(self, self.data_formats, arg_name, rank_idx)
         df_gnode = G.add_node(df_gobj, ranks, layout) 
-        self.data_format_gobj = df_gobj
 
         G.set_registry(self.inf_graph)
         layout_inode = self._inf_node(nf.Layout)
@@ -1417,8 +1550,6 @@ class SchemaApi(object):
             name = f'{idx} in [{lo}, {hi}]'
             self.dims_pred_cw(name, betw, betw_t, idx, lo, hi) 
 
-    # TODO: should I clone the graph, or simply set the parents to nodes in the
-    # gen graph?
     def return_tensor(self, *sigs):
         """
         Append a return tensor to the list of expected return tensors.
@@ -1437,6 +1568,13 @@ class SchemaApi(object):
         G.set_registry(self.gen_graph)
 
         g_sig_obj = ge.Sig(self, ret_name, sigs_list)
+
+        G.set_registry(self.gen_graph)
+        sigmap_gnode = self._gen_node(ge.SigMap)
+        layout_gnode = self._gen_node(ge.Layout, base.LAYOUT)
+        sig_gobj = ge.Sig(self, ret_name, sigs_list)
+        sig_gnode = G.add_node(sig_gobj, layout_gnode)
+        sigmap_gnode.append_parent_sn(sig_gnode)
 
         G.set_registry(self.inf_graph)
         layout_inode = self._inf_node(ge.Layout)

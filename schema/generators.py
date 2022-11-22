@@ -126,10 +126,9 @@ class GenDims(NodeFunc):
         else:
             yield tuple(d[0] for d in dims)
 
-    def __call__(self, kwnode, **grouped_dims_map):
+    def __call__(self, index_ranks, **grouped_dims_map):
         dims_map = base.ungroup_dims(grouped_dims_map)
         input_dims = [ dims_map[idx] for idx in self.in_sig ]
-        index_ranks = kwnode[INDEX_RANKS]
 
         if self.yield_scalar:
             if not all(isinstance(d, int) for d in input_dims):
@@ -155,8 +154,7 @@ class CompDims(NodeFunc):
     """
     Wrap a dims computation, performing scalar broadcasting as necessary
     """
-    def __init__(self, op, idx, in_sig, cwise, func, tfunc, rank_idx,
-            arg_names):
+    def __init__(self, op, idx, in_sig, cwise, func, tfunc, rank_idx, arg_names):
         super().__init__(idx)
         self.op = op
         self.in_sig = in_sig
@@ -165,15 +163,18 @@ class CompDims(NodeFunc):
         self.tfunc = tfunc
         self.rank_idx = rank_idx
         self.arg_names = arg_names
+        self.nargs = len(arg_names)
 
-    def __call__(self, kwnode, **grouped_dims_map):
+    def __call__(self, index_ranks, **dims_and_args):
+        plist = [ (k,v) for k,v in dims_and_args.items() ]
+        rit = reversed([plist.pop() for _ in range(self.nargs)])
+        arg_vals = [v for _,v in rit]
+        grouped_dims_map = { k:v for k,v in plist }
         dims_map = base.ungroup_dims(grouped_dims_map)
         input_dims = [ dims_map[idx] for idx in self.in_sig ]
-        arg_vals = tuple(kwnode[k] for k in self.arg_names)
         if self.op.comp_dims_mode:
             if self.cwise:
                 result = []
-                index_ranks = kwnode[INDEX_RANKS]
                 rank = index_ranks[self.rank_idx]
                 for c in range(rank):
                     ins = tuple(base.bcast_dim(dims, c) for dims in input_dims)
@@ -187,15 +188,28 @@ class CompDims(NodeFunc):
                 yield result
         else:
             templ = self.tfunc(*input_dims, *arg_vals)
+            if self.nargs > 0:
+                z = zip(self.arg_names, arg_vals)
+                cfg = ', '.join(f'{arg} = {val}' for arg, val in z) 
+                templ += f'   [{cfg}]'
             yield templ
 
-class DimsInput(NodeFunc):
-    # A dummy node for supplying input to the Dims graph via set_cached()
-    def __init__(self):
-        super().__init__()
+class DimsInput(GenFunc):
+    """
+    Supply a value to the dims_graph via the schema.  name can be one of:
+    base.INDEX_RANKS, base.LAYOUT, or one of the arg_names
+    """
+    def __init__(self, op, name):
+        super().__init__(op, name)
+        if name == base.LAYOUT:
+            self.gen_node = self._gen_node(Layout, base.LAYOUT)
+        elif name == base.INDEX_RANKS:
+            self.gen_node = None
+        else:
+            self.gen_node = self.op.arg_gen_nodes[name]
 
     def __call__(self):
-        return None
+        yield self.op.dims_graph_input[self.sub_name] 
 
 class Layout(GenFunc):
     def __init__(self, op):
@@ -320,9 +334,9 @@ class ArgIndels(GenFunc):
 class ArgMutations(GenFunc):
     """
     Compute dimensions of all indices given index_ranks using the schema's
-    generative dims_graph.  Yield arg_shapes, a map of arg => shape.  For single-index
-    argument signatures, shape may be an integer, indicating rank-agnostic broadcasting
-    shape.  Otherwise, shape is an integer list.
+    generative dims_graph.  Yield arg_shapes, a map of arg => shape.  For
+    single-index argument signatures, shape may be an integer, indicating
+    rank-agnostic broadcasting shape.  Otherwise, shape is an integer list.
     """
     def __init__(self, op):
         super().__init__(op)
@@ -345,19 +359,18 @@ class ArgMutations(GenFunc):
         for arg, sig in sigs.items():
             arg_ranks[arg] = sum(index_ranks[idx] for idx in sig)
 
-        dims_input = {}
         for k, v in comp.items():
             if k == base.LAYOUT:
                 val = v
             else:
                 val = v.value()
-            dims_input[k] = val
+            self.op.dims_graph_input[k] = val
 
-        dims_input[INDEX_RANKS] = index_ranks
-        self.op.dims_input_node.set_cached(dims_input)
+        self.op.dims_graph_input[INDEX_RANKS] = index_ranks
         all_nodes = set(self.op.dims_graph.values())
-        live_nodes = all_nodes.difference([self.op.dims_input_node])
-        index_gen = fgraph.gen_graph_iterate(live_nodes)
+        dims_kinds = (GenDims, CompDims)
+        dims_nodes = [n for n in all_nodes if isinstance(n.func, dims_kinds)]
+        index_gen = fgraph.gen_graph_map(all_nodes, dims_nodes)
         index_dims_list = []
         for tup_map in index_gen:
             dims_map = {}

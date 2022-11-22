@@ -508,6 +508,15 @@ class DataFormats(object):
             return next((df for df, (l, r) in it if l == layout and (r is None
                 or r == rank)), None)
 
+    def layout_formats(self, layout):
+        """
+        Return all formats for a particular layout, in rank order
+        """
+        it = self.formats.items()
+        fmts = [ (df, r) for df, (l, r) in it if l == layout and df is not None]
+        fmts = sorted(fmts, key=lambda tup: tup[1])
+        return [ df for df, _ in fmts ]
+
     def layout(self, data_format):
         """
         Return the layout corresponding with this data format

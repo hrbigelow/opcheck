@@ -5,7 +5,6 @@ def init_schema(op):
     op.add_index('b', 'batch', 1)
     op.add_index('i', 'input spatial', 2)
     op.add_index('k', 'input channel', 1)
-    op.add_index('z', 'input channel / 4', 1)
     op.add_index('o', 'output spatial', 'i')
     op.add_index('f', 'output flattened', 1)
     op.add_index('c', 'vect c channel', 1)
@@ -21,7 +20,7 @@ def init_schema(op):
             }
 
     op.arg_layout('data_format', formats, 'i')
-    op.arg_tensor('input', 'bik', 'bki', 'bzic')
+    op.arg_tensor('input', 'bik', 'bki', 'bkic')
     op.arg_shape_int('block_size', 's') 
     op.arg_unchecked('name')
     op.return_tensor('bof', 'bfo', 'bfoc')
@@ -51,21 +50,20 @@ def init_schema(op):
         return f'{i} // {s}'
 
     op.comp_dims('o', odims, odims_t, 'is')
-    op.comp_dims('z', div4, div4t, 'k')
 
-    def fdims(z, c, t, k, layout):
+    def fdims(c, t, k, layout):
         if layout == 2:
-            flat = t * z * c
+            flat = t * k * c
         else:
             flat = t * flib.reduce_prod(k)
         return flat
 
-    def fdims_t(z, c, t, k, layout):
+    def fdims_t(c, t, k, layout):
         if layout == 2:
-            tmp = f'{t} * {z} * {c} (format NCHW_VECT_C)'
+            tmp = f'{t} * {k} * {c}'
         else:
             tmp = f'{t} * product({k})'
         return tmp
 
-    op.comp_dims('f', fdims, fdims_t, 'zctk', LAYOUT)
+    op.comp_dims('f', fdims, fdims_t, 'ctk', LAYOUT)
 

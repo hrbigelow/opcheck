@@ -11,5 +11,6 @@ if __name__ == '__main__':
     else:
         op_path = sys.argv[1]
         opgrind.register(op_path)
-        opgrind.explain(op_path)
+        # opgrind.explain(op_path)
+        opgrind.schema_report(op_path)
 

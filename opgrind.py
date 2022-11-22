@@ -118,6 +118,14 @@ def explain(op_path):
     print()
     print('\n'.join(info_table))
 
+def schema_report(op_path):
+    """
+    Produce a high level logical description of the op
+    """
+    op = _get_from_path(op_path)
+    rep = op._schema_report()
+    print(rep + '\n\n')
+
 def registered_ops():
     """
     List all framework ops registered with OpGrind

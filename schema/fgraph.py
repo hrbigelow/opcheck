@@ -412,6 +412,27 @@ def all_values(*nodes):
     results = [ tuple(c[n.name] for n in nodes) for c in config ]
     return results
 
+def gen_graph_iterate(nodes, report_nodes):
+    """
+    Generate all possible settings of {nodes}, yielding the values of the
+    subset of {report_nodes} as a name => value map
+    """
+    # print('gen_graph_iterate: ', ','.join(n.name for n in visited_nodes))
+    topo_nodes = _topo_sort(nodes)
+    val_map = {}
+    def gen_rec(i):
+        if i == len(topo_nodes):
+            yield dict(val_map)
+            return
+        node = topo_nodes[i]
+        values = node.values()
+        for val in values:
+            node.set_cached(val)
+            name = node.used_name()
+            val_map[name] = val
+            yield from gen_rec(i+1)
+    yield from gen_rec(0)
+
 def gen_graph_iterate(nodes):
     """
     Produce all possible settings of the graph nodes as a generator of map
@@ -433,36 +454,36 @@ def gen_graph_iterate(nodes):
             yield from gen_rec(i+1)
     yield from gen_rec(0)
 
-def gen_graph_values(live_nodes, result_nodes):
+def _gen_graph(live_nodes, result_nodes, yield_map, op=None):
     """
     Iterate over all settings of live_nodes.  For each setting, collect the
     current values of result_nodes (which must be a subset of live_nodes)
     and yield as a tuple
     """
     # map from li => ri
-    live_nodes = _topo_sort(live_nodes)
-    imap = [-1] * len(live_nodes)
-    op = None
-    for ln in live_nodes:
-        if hasattr(ln.func, 'op'):
-            op = ln.func.op
-            break
-    # assert op is not None
-
-    for ri, r in enumerate(result_nodes):
-        try:
-            li = live_nodes.index(r)
-            imap[li] = ri
-        except ValueError:
+    for rn in result_nodes:
+        if rn not in live_nodes:
             raise RuntimeError(
                 f'All nodes in result_nodes must be in live_nodes. Got '
-                f'result node \'{r.name}\'.  Available live_nodes are: '
+                f'result node \'{rn.name}\'.  Available live_nodes are: '
                 f'{", ".join(l.name for l in live_nodes)}')
 
+    live_nodes = _topo_sort(live_nodes)
+    imap = [-1] * len(live_nodes)
+
+    for ri, r in enumerate(result_nodes):
+        li = live_nodes.index(r)
+        imap[li] = ri
+
     result = [None] * len(result_nodes)
+    res_names = [r.used_name() for r in result_nodes]
+
     def gen_rec(i):
         if i == len(live_nodes):
-            yield tuple(result) 
+            if yield_map:
+                yield dict(zip(res_names, result))
+            else:
+                yield tuple(result) 
             return
         node = live_nodes[i]
         values = node.values()
@@ -490,6 +511,20 @@ def gen_graph_values(live_nodes, result_nodes):
                 print(' ' * (i+1) + f'{node.name}  (no values)')
 
     yield from gen_rec(0)
+
+def gen_graph_values(live_nodes, result_nodes, op=None):
+    """
+    Iterate over all configurations of live_nodes, reporting the tuple of
+    values of result_nodes, which must be a subset of live_nodes
+    """
+    return _gen_graph(live_nodes, result_nodes, False, op)
+
+def gen_graph_map(live_nodes, result_nodes, op=None):
+    """
+    Iterate over all configurations of live_nodes, reporting the map values of
+    result_nodes (node name => value), which must be a subset of live_nodes
+    """
+    return _gen_graph(live_nodes, result_nodes, True, op)
 
 def pred_graph_evaluate(*nodes):
     """
