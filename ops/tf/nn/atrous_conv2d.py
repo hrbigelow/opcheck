@@ -1,5 +1,4 @@
-from schema import flib
-from schema.flib import gen_split
+from schema import genlib
 
 def init_schema(op):
     op.add_index('b', 'batch', (1,10))
@@ -19,7 +18,7 @@ def init_schema(op):
     op.gen_dims('b', 50)
     op.gen_dims('k', 30)
     op.gen_dims('f', 100)
-    op.gen_dims_func('i', gen_split, 'f', 300, False)  
+    op.gen_dims_func('i', genlib.below_above, 'f', 300, False)  
     op.gen_dims('l', 30)
     op.gen_dims('r', 30)
 
@@ -35,12 +34,12 @@ def init_schema(op):
 
     def odims_t(i, f, r, padding):
         if padding == 'VALID':
-            txt = f'{i} - ({f} - 1) * {r}  (padding VALID)'
+            txt = f'{i} - ({f} - 1) * {r}'
         else:
-            txt = f'{i}  (padding SAME)'
+            txt = f'{i}'
         return txt
 
-    op.comp_dims('o', odims, odims_t, 'ifr', 'padding')
+    op.comp_dims_cw('o', odims, odims_t, 'ifr', 'padding')
     op.return_tensor('bol')
 
 

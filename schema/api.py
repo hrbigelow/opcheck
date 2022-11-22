@@ -10,6 +10,7 @@ from . import infer as nf
 from . import report
 from . import base
 from . import fgraph
+from .oparg import OpArg
 from .redirect import stderr_redirector
 from .error import *
 from .fgraph import PredNode as P, GenNode as G, FuncNode as F
@@ -338,12 +339,7 @@ class SchemaApi(object):
         tab, _ = tabulate(rows, '  ', left_align=True)
         return tab
 
-    def _schema_report(self):
-        """
-        Produce a standard format report showing all schema logic, as seen
-        in schema_report.txt.  
-        """
-        # Signatures section
+    def _signature_report(self):
         sigs_node = self._gen_node(ge.SigMap)
         layout_node = self._gen_node(ge.Layout, base.LAYOUT)
         out_nodes = (sigs_node, layout_node)
@@ -360,9 +356,10 @@ class SchemaApi(object):
             row = [ sigs[sk] for sk in header ]
             rows.append(row)
         table, _ = base.tabulate(rows, '  ')
-        signature = '\n'.join(table)
-        
-        # Index ranks section 
+        report = '\n'.join(table)
+        return report
+
+    def _index_ranks_report(self):
         rows = []
         for ind in self.index.values():
             if ind.rank_range is None:
@@ -376,9 +373,10 @@ class SchemaApi(object):
             doc = f'{ind.idx} = "{ind.desc}"'
             rows.append([spec, doc])
         table, _ = base.tabulate(rows, '     ')
-        index_ranks = '\n'.join(table)
+        report = '\n'.join(table)
+        return report 
 
-        # Computed dimensions section
+    def _comp_dims_report(self):
         for sig, node in self.dims_graph.items():
             if not isinstance(node.func, ge.GenDims):
                 continue
@@ -398,8 +396,10 @@ class SchemaApi(object):
         self.comp_dims_mode = False
         comp_formulas = {}
         for vals in vals_list:
-            z = zip(inp_names, vals)
-            self.dims_graph_input = {n: v.value() for n, v in z}
+            for name, val in zip(inp_names, vals):
+                if isinstance(val, OpArg):
+                    val = val.value()
+                self.dims_graph_input[name] = val
 
             for comp_node in comp_nodes:
                 fgen = fgraph.gen_graph_values(live_nodes, [comp_node])
@@ -419,9 +419,10 @@ class SchemaApi(object):
             group = '\n'.join(f'{lhs} = {c}' for c in clist)
             formula_groups.append(group)
 
-        computed_dims = '\n'.join(formula_groups)
-        
-        # DType Rules
+        report = '\n'.join(formula_groups)
+        return report
+
+    def _dtype_rules_report(self):
         drules = self.dtype_rules
         dlines = []
 
@@ -434,14 +435,28 @@ class SchemaApi(object):
             dline = f'{target}.dtype = {source}.dtype'
             dlines.append(dline)
 
-        dtype_rules_msg = '\n'.join(dlines)
+        report = '\n'.join(dlines)
+        return report
+
+    def _schema_report(self):
+        """
+        Produce a standard format report showing all schema logic, as seen
+        in schema_report.txt.  
+        """
+        signature = self._signature_report()
+        index_ranks = self._index_ranks_report()
+        computed_dims = self._comp_dims_report()
+        dtype_rules = self._dtype_rules_report()
+
+        # Computed dimensions section
+        # DType Rules
 
         # Excluded dtype combos
         finals = []
         finals.append(f'Signatures\n\n{signature}')
         finals.append(f'Index ranks\n\n{index_ranks}')
         finals.append(f'Computed dimensions\n\n{computed_dims}')
-        finals.append(f'DType Rules\n\n{dtype_rules_msg}')
+        finals.append(f'DType Rules\n\n{dtype_rules}')
 
         final = '\n\n\n'.join(finals)
         return final
@@ -687,7 +702,7 @@ class SchemaApi(object):
             try:
                 with stderr_redirector(string_err):
                     self.wrapped_op(**arg_dict)
-            except (SchemaError, OpGrindInternalError) as ex:
+            except SchemaError as ex:
                 print(string_err.getvalue().decode('UTF-8'))
                 raise ex
             except BaseException as ex:
@@ -853,7 +868,7 @@ class SchemaApi(object):
             ind = self.index.get(idx, None)
             if ind is None:
                 raise SchemaError(
-                    f'Index \'{ind}\' found in signature \'{sig}\' is not a '
+                    f'Index \'{idx}\' found in signature \'{sig}\' is not a '
                     f'registered index.  Register it first with add_index')
             inds.append(ind)
         return inds
@@ -1001,8 +1016,9 @@ class SchemaApi(object):
             else:
                 raise SchemaError(
                     f'name \'{arg_name}\' in arg_names must be either a '
-                    f'framework op argument, or the constant \'{base.LAYOUT}\''
-                    f'Input arguments are: ' + '\, '.join(self.arg_order))
+                    f'framework op argument, or the constant '
+                    f'\'{base.LAYOUT}\'.\n'
+                    f'Input arguments are: ' + ', '.join(self.arg_order))
 
             dnode = self._dims_node(ge.DimsInput, arg_name)
             if dnode is None:

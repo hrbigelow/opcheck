@@ -1,5 +1,6 @@
-from schema import flib, LAYOUT
-from schema.flib import divis_by, divis_by_t
+from schema import LAYOUT
+from schema import complib
+from schema.predlib import divis_by, divis_by_t
 
 def init_schema(op):
     op.add_index('b', 'batch', 1)
@@ -11,7 +12,7 @@ def init_schema(op):
     op.add_index('s', 'block size', 1)
     op.add_index('t', 'squared block size', 1)
 
-    op.add_index_predicate('i % s == 0', divis_by, divis_by_t, 'is')
+    op.dims_pred_cw('i % s == 0', divis_by, divis_by_t, 'is')
 
     formats = {
             'NHWC': (0, 2),
@@ -33,29 +34,23 @@ def init_schema(op):
     op.exclude_combos('input', 'complex', LAYOUT, 1)
     op.exclude_combos('input', 'complex128', LAYOUT, 2)
 
-    div4, div4t = lambda a: a // 4, lambda a: f'{a} // 4'
     sq, sqt = lambda s: s * s, lambda s: f'{s} * {s}'
+    odims, odims_t = lambda i, s: i // s, lambda i, s: f'{i} // {s}'
 
     op.gen_dims('i', 100)
     op.gen_dims_rng('s', 10, 100)
-    op.comp_dims('t', sq, sqt, 's')
+    op.comp_dims_cw('t', sq, sqt, 's')
     op.gen_dims('b', 100)
     op.gen_dims('k', 20)
     op.gen_dims_rng('c', 4, 4)
 
-    def odims(i, s):
-        return flib.floordiv(i, s)
-
-    def odims_t(i, s):
-        return f'{i} // {s}'
-
-    op.comp_dims('o', odims, odims_t, 'is')
+    op.comp_dims_cw('o', odims, odims_t, 'is')
 
     def fdims(c, t, k, layout):
         if layout == 2:
             flat = t * k * c
         else:
-            flat = t * flib.reduce_prod(k)
+            flat = t * complib.reduce_prod(k)
         return flat
 
     def fdims_t(c, t, k, layout):

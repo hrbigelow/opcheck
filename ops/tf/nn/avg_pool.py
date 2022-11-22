@@ -1,4 +1,4 @@
-from schema import flib
+from schema import genlib, complib
 
 def init_schema(op):
     op.add_index('b', 'batch', 1)
@@ -29,7 +29,7 @@ def init_schema(op):
     op.gen_dims('c', 50)
     op.gen_dims('k', 10)
     op.gen_dims('s', 100)
-    op.gen_dims_func('i', flib.gen_split, 'k', 1000, False)
+    op.gen_dims_func('i', genlib.below_above, 'k', 1000, False)
 
     op.valid_dtypes('input', ('bfloat16', 'float',))
     op.exclude_combos('input', ('float64', 'bfloat16'), 'i', 3)
@@ -37,9 +37,9 @@ def init_schema(op):
     def odims(i, k, s, padding):
         if padding == 'VALID':
             tmp = i - k + 1
-            out = flib.ceildiv(tmp, s)
+            out = complib.ceildiv(tmp, s)
         else:
-            out = flib.ceildiv(i, s)
+            out = complib.ceildiv(i, s)
         return out
 
     def odims_t(i, k, s, padding):
@@ -49,7 +49,7 @@ def init_schema(op):
             tem = f'ceil({i} / {s}) (SAME padding)'
         return tem
 
-    op.comp_dims('o', odims, odims_t, 'iks', 'padding')
+    op.comp_dims_cw('o', odims, odims_t, 'iks', 'padding')
 
     op.return_tensor('bco', 'boc')
 

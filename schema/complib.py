@@ -9,6 +9,7 @@ dimension (and possibly trailing custom arguments)
 an integer list.
 """
 import numpy as np
+import math
 
 def filter_pad(filt, dilation):
     return (filt - 1) * dilation + 1
@@ -17,11 +18,11 @@ def filter_pad_t(filt, dilation):
     return f'({filt} - 1) * {dilation} + 1'
 
 def ceildiv(a, b):
-    return np.ceil(a / b).astype(int)
+    return math.ceil(a / b)
 
 def mod(a, b):
-    return np.mod(a, b)
+    return a % b
 
 def reduce_prod(a):
-    return np.array([np.prod(a)])
+    return np.prod(a)
 

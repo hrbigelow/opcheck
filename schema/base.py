@@ -38,6 +38,12 @@ def ungroup_dims(gr_dims_map):
             dims_map.update(dict(zip(sig, dims)))
     return dims_map
 
+def broadcastable_to(dims_list, rank):
+    # check that each dims in dims_list is the same rank or rank agnostic
+    kinds = (tuple, list)
+    f = filter(lambda d: isinstance(d, kinds) and len(d) != 1, dims_list)
+    return all(len(d) == rank for d in f)
+
 def bcast_dim(dims, comp):
     # get the component comp of dims
     if isinstance(dims, int):

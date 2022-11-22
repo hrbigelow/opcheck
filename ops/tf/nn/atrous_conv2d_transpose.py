@@ -1,4 +1,4 @@
-from schema import flib
+from schema import genlib
 
 def init_schema(op):
     op.add_index('b', 'batch', (1, 10))
@@ -17,8 +17,12 @@ def init_schema(op):
     op.arg_unchecked('name')
     op.return_tensor('bol')
 
-    op.add_index_generator('f', flib.gen_range, 'f', 1, 8)
-    op.add_index_generator('r', flib.gen_range, 'r', 1, 8)
+    op.gen_dims('b', 100)
+    op.gen_dims('f', 100)
+    op.gen_dims_func('i', genlib.below_above, 'f', 1000, False)  
+    op.gen_dims('k', 30)
+    op.gen_dims('l', 30)
+    op.gen_dims('r', 30)
 
     def odims(i, f, r, padding):
         if padding == 'VALID':
@@ -27,14 +31,14 @@ def init_schema(op):
             out = i
         return out
 
-    def odims_templ(i, f, r, padding):
+    def odims_t(i, f, r, padding):
         if padding == 'VALID':
             txt = f'{i} - ({f} - 1) * 2'
         else:
             txt = f'{i}'
         return txt
 
-    op.computed_index('o', odims, odims_templ, 'ifr', 1, 'padding')
+    op.comp_dims_cw('o', odims, odims_t, 'ifr', 'padding')
 
     op.valid_dtypes('value', ('float',))
     op.equate_dtypes('filters', 'value')

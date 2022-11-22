@@ -1,4 +1,4 @@
-from schema.flib import gen_stride_dil
+from schema.genlib import stride_dil
 
 def init_schema(op):
     op.add_index('b', 'batch', 1)
@@ -34,8 +34,8 @@ def init_schema(op):
     op.gen_dims('c', 30)
     op.gen_dims_rng('z', 1, 1)
     op.gen_dims('l', 30)
-    op.gen_dims_func('s', gen_stride_dil, '', 30, True)
-    op.gen_dims_func('d', gen_stride_dil, '', 30, True)
+    op.gen_dims_func('s', stride_dil, '', 30, True)
+    op.gen_dims_func('d', stride_dil, '', 30, True)
 
     def pdims(c, k):
         return c * k
@@ -43,5 +43,5 @@ def init_schema(op):
     def pdims_t(c, k):
         return f'{c} * {k}'
 
-    op.comp_dims('p', pdims, pdims_t, 'ck')
+    op.comp_dims_cw('p', pdims, pdims_t, 'ck')
 

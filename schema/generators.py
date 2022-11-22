@@ -165,6 +165,14 @@ class CompDims(NodeFunc):
         self.arg_names = arg_names
         self.nargs = len(arg_names)
 
+    def safe_func(self, *args):
+        try:
+            return self.func(*args)
+        except BaseException as ex:
+            raise SchemaError(
+                f'The function registered for computed index {self.sub_name} '
+                f'failed on the call: func{args}\n{ex}')
+
     def __call__(self, index_ranks, **dims_and_args):
         plist = [ (k,v) for k,v in dims_and_args.items() ]
         rit = reversed([plist.pop() for _ in range(self.nargs)])
@@ -172,19 +180,24 @@ class CompDims(NodeFunc):
         grouped_dims_map = { k:v for k,v in plist }
         dims_map = base.ungroup_dims(grouped_dims_map)
         input_dims = [ dims_map[idx] for idx in self.in_sig ]
+        # check that it is rank-consistent
         if self.op.comp_dims_mode:
             if self.cwise:
                 result = []
                 rank = index_ranks[self.rank_idx]
+                if not base.broadcastable_to(input_dims, rank):
+                    raise OpGrindInternalError(
+                        f'non-broadcastable dims: {input_dims}, {self.in_sig}'
+                        f', {rank}')
                 for c in range(rank):
                     ins = tuple(base.bcast_dim(dims, c) for dims in input_dims)
-                    res = self.func(*ins, *arg_vals)
+                    res = self.safe_func(*ins, *arg_vals)
                     if isinstance(res, tuple):
                         res = list(res)
                     result.append(res)
                 yield result
             else:
-                result = self.func(*input_dims, *arg_vals)
+                result = self.safe_func(*input_dims, *arg_vals)
                 yield result
         else:
             templ = self.tfunc(*input_dims, *arg_vals)
@@ -202,11 +215,11 @@ class DimsInput(GenFunc):
     def __init__(self, op, name):
         super().__init__(op, name)
         if name == base.LAYOUT:
-            self.gen_node = self._gen_node(Layout, base.LAYOUT)
+            self.gen_node = op._gen_node(Layout, base.LAYOUT)
         elif name == base.INDEX_RANKS:
             self.gen_node = None
         else:
-            self.gen_node = self.op.arg_gen_nodes[name]
+            self.gen_node = op.arg_gen_nodes[name]
 
     def __call__(self):
         yield self.op.dims_graph_input[self.sub_name] 
