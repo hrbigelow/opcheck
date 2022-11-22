@@ -135,6 +135,7 @@ class SchemaApi(object):
         self.num_returns = 0
         self.return_nodes = []
         self.return_tensors = []
+        self.sum_range_constraints = []
 
         # None: success.  pr.ErrorReport or list of Fix objects is failure
         self.op_error = None  # None means success.
@@ -363,7 +364,10 @@ class SchemaApi(object):
         rows = []
         for ind in self.index.values():
             if ind.rank_range is None:
-                spec = f'rank({ind.idx}) = rank({ind.pri_idx})'
+                if ind.primary():
+                    spec = f'rank({ind.idx}) ---'
+                else:
+                    spec = f'rank({ind.idx}) = rank({ind.pri_idx})'
             else:
                 lo, hi = ind.rank_range
                 if lo == hi:
@@ -372,11 +376,34 @@ class SchemaApi(object):
                     spec = f'rank({ind.idx}) in [{lo}, {hi}]'
             doc = f'{ind.idx} = "{ind.desc}"'
             rows.append([spec, doc])
+
+        for cons in self.sum_range_constraints:
+            idxs = ','.join(cons.sig)
+            if cons.lo == cons.hi:
+                expr = f'= {cons.lo}'
+            else:
+                expr = f'in [{cons.lo}, {cons.hi}]'
+            spec = f'rank({idxs}) {expr}'
+            doc = 'sum-range constraint'
+            rows.append([spec, doc])
+
         table, _ = base.tabulate(rows, '     ')
         report = '\n'.join(table)
         return report 
 
     def _comp_dims_report(self):
+        all_nodes = self.dims_graph.values()
+        inp_nodes = [n for n in all_nodes if isinstance(n.func, ge.DimsInput)]
+        inp_nodes = [n for n in inp_nodes if n.sub_name != base.INDEX_RANKS]
+        comp_nodes = [n for n in all_nodes if isinstance(n.func, ge.CompDims)]
+
+        if len(comp_nodes) == 0:
+            return None
+
+        inp_names = [n.sub_name for n in inp_nodes]
+        gen_nodes = [n.func.gen_node for n in inp_nodes if n.func.gen_node is
+                not None]
+
         for sig, node in self.dims_graph.items():
             if not isinstance(node.func, ge.GenDims):
                 continue
@@ -385,13 +412,6 @@ class SchemaApi(object):
                 info = info[0]
             node.set_cached(info)
 
-        all_nodes = self.dims_graph.values()
-        inp_nodes = [n for n in all_nodes if isinstance(n.func, ge.DimsInput)]
-        inp_nodes = [n for n in inp_nodes if n.sub_name != base.INDEX_RANKS]
-        comp_nodes = [n for n in all_nodes if isinstance(n.func, ge.CompDims)]
-        live_nodes = inp_nodes + comp_nodes
-        inp_names = [n.sub_name for n in inp_nodes]
-        gen_nodes = [n.func.gen_node for n in inp_nodes if n.func.gen_node is not None]
         vals_list = fgraph.all_values(*gen_nodes)
         self.comp_dims_mode = False
         comp_formulas = {}
@@ -402,6 +422,13 @@ class SchemaApi(object):
                 self.dims_graph_input[name] = val
 
             for comp_node in comp_nodes:
+                # set values of all parents
+                for pa in comp_node.parents:
+                    if isinstance(pa.func, ge.CompDims):
+                        pidx = pa.func.idx
+                        info = base.snake_case(self.index[pidx].desc)
+                        pa.set_cached(info)
+                live_nodes = inp_nodes + [comp_node]
                 fgen = fgraph.gen_graph_values(live_nodes, [comp_node])
                 formulas = list(fgen)
                 if len(formulas) != 1:
@@ -409,33 +436,82 @@ class SchemaApi(object):
                         f'Error: should get one result from comp graph')
                 formula = formulas[0][0]
                 idx = comp_node.used_name()
-                clist = comp_formulas.setdefault(idx, [])
-                clist.append(formula)
+                cset = comp_formulas.setdefault(idx, set())
+                cset.add(formula)
         self.comp_dims_mode = True
 
         formula_groups = []
-        for idx, clist in comp_formulas.items():
+        for idx, cset in comp_formulas.items():
             lhs = base.snake_case(self.index[idx].desc)
-            group = '\n'.join(f'{lhs} = {c}' for c in clist)
+            group = '\n'.join(f'{lhs} = {c}' for c in cset)
             formula_groups.append(group)
 
         report = '\n'.join(formula_groups)
         return report
 
     def _dtype_rules_report(self):
-        drules = self.dtype_rules
-        dlines = []
-
-        for arg, valid_types in drules.indiv_rules.items(): 
+        lines = []
+        for arg, valid_types in self.dtype_rules.indiv_rules.items(): 
             typelist = ', '.join(valid_types)
-            dline = f'{arg}.dtype in ({typelist})'
-            dlines.append(dline)
+            line = f'{arg}.dtype in ({typelist})'
+            lines.append(line)
 
-        for target, source in drules.equate_rules.items():
-            dline = f'{target}.dtype = {source}.dtype'
-            dlines.append(dline)
+        for target, source in self.dtype_rules.equate_rules.items():
+            line = f'{target}.dtype = {source}.dtype'
+            lines.append(line)
 
-        report = '\n'.join(dlines)
+        report = '\n'.join(lines)
+        return report
+
+    def _dtype_combos_report(self):
+        if len(self.dtype_rules.combos) == 0:
+            return None
+
+        # find the union of all tensors and indexes.  if any rule includes
+        # layout, include that as well
+        exc_tensors = set()
+        exc_indexes = set()
+        exc_layout = False
+        for rule in self.dtype_rules.combos:
+            exc_tensors.update(rule.dtypes.keys())
+            exc_indexes.update(rule.ranks.keys())
+            exc_layout = exc_layout or (rule.layouts is not None)
+
+        # order the tensors 
+        exc_tensors = list(filter(lambda t: t in exc_tensors, self.arg_order))
+
+        header = [ f'{t}.dtype' for t in exc_tensors ]
+        header += [ f'rank({idx})' for idx in exc_indexes ]
+        if exc_layout:
+            header.append('layout')
+
+        rows = [header]
+        for rule in self.dtype_rules.combos:
+            row = []
+            for t in exc_tensors:
+                ex = rule.dtypes.get(t, None)
+                if ex is None:
+                    item = '*'
+                else:
+                    item = ', '.join(ex)
+                row.append(item)
+            for idx in exc_indexes:
+                ex = rule.ranks.get(idx, None)
+                if ex is None:
+                    item = '*'
+                else:
+                    item = ','.join(str(r) for r in ex)
+                row.append(item)
+            if exc_layout:
+                if rule.layouts is None:
+                    item = '*'
+                else:
+                    item = ','.join(str(l) for l in rule.layouts)
+                row.append(item)
+            rows.append(row)
+
+        table, _ = base.tabulate(rows, '  ')
+        report = '\n'.join(table)
         return report
 
     def _schema_report(self):
@@ -447,6 +523,7 @@ class SchemaApi(object):
         index_ranks = self._index_ranks_report()
         computed_dims = self._comp_dims_report()
         dtype_rules = self._dtype_rules_report()
+        combo_rules = self._dtype_combos_report()
 
         # Computed dimensions section
         # DType Rules
@@ -455,8 +532,14 @@ class SchemaApi(object):
         finals = []
         finals.append(f'Signatures\n\n{signature}')
         finals.append(f'Index ranks\n\n{index_ranks}')
-        finals.append(f'Computed dimensions\n\n{computed_dims}')
+
+        if computed_dims is not None:
+            finals.append(f'Computed dimensions\n\n{computed_dims}')
+
         finals.append(f'DType Rules\n\n{dtype_rules}')
+
+        if combo_rules is not None:
+            finals.append(f'Excluded DType Combos\n\n{combo_rules}')
 
         final = '\n\n\n'.join(finals)
         return final
@@ -1059,6 +1142,7 @@ class SchemaApi(object):
         # add constraint to each node in the sig
         pri_sig = ''.join(sorted(self.index[idx].pri_idx for idx in sig))
         cons = base.SumRangeConstraint(pri_sig, min_val, max_val)
+        self.sum_range_constraints.append(cons)
         for idx in sig:
             pri_idx = self.index[idx].pri_idx
             gnode = self.gen_graph[pri_idx]

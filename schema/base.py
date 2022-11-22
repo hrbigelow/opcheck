@@ -312,9 +312,10 @@ class ComboRule(object):
         # tensor => [excluded_dtype, ...]
         self.dtypes = None 
 
-        # idx => excluded_rank
+        # idx => [excluded_rank, ...] 
         self.ranks = None 
 
+        # set of excluded layouts
         self.layouts = None
 
     def __repr__(self):
@@ -330,9 +331,10 @@ class ComboRule(object):
             excluded.extend(dtypes)
 
     def exclude_rank(self, idx, *ranks):
-        self.ranks = {}
-        for rank in ranks:
-            self.ranks[idx] = rank
+        if self.ranks is None:
+            self.ranks = {}
+        exc_ranks = self.ranks.setdefault(idx, [])
+        exc_ranks.extend(ranks)
 
     def exclude_layout(self, *layouts):
         self.layouts = set()
@@ -347,9 +349,9 @@ class ComboRule(object):
                 if obs_dtype not in dtypes:
                     return False
         if self.ranks is not None:
-            for idx, rank in self.ranks.items():
+            for idx, ranks in self.ranks.items():
                 obs_rank = index_ranks[idx]
-                if obs_rank != rank:
+                if obs_rank not in ranks:
                     return False
         if self.layouts is not None:
             if layout not in self.layouts:

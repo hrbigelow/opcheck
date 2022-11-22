@@ -156,6 +156,7 @@ class CompDims(NodeFunc):
     """
     def __init__(self, op, idx, in_sig, cwise, func, tfunc, rank_idx, arg_names):
         super().__init__(idx)
+        self.idx = idx
         self.op = op
         self.in_sig = in_sig
         self.cwise = cwise

@@ -38,7 +38,7 @@ def init_schema(op):
             txt = f'{i}'
         return txt
 
-    op.comp_dims_cw('o', odims, odims_t, 'ifr', 'padding')
+    # op.comp_dims_cw('o', odims, odims_t, 'ifr', 'padding')
 
     op.valid_dtypes('value', ('float',))
     op.equate_dtypes('filters', 'value')

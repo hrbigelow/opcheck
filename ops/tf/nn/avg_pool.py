@@ -44,9 +44,9 @@ def init_schema(op):
 
     def odims_t(i, k, s, padding):
         if padding == 'VALID':
-            tem = f'ceil(({i} - {k} + 1) / {s}) (VALID padding)'
+            tem = f'ceil(({i} - {k} + 1) / {s})'
         else:
-            tem = f'ceil({i} / {s}) (SAME padding)'
+            tem = f'ceil({i} / {s})'
         return tem
 
     op.comp_dims_cw('o', odims, odims_t, 'iks', 'padding')

@@ -6,7 +6,7 @@ def init_schema(op):
     op.add_index('k', 'input channel', 1)
     op.add_index('d', 'depthwise spatial', 'i')
     op.add_index('c', 'channel multiplier', 1)
-    op.add_index('z', 'constant dimension', 2)
+    op.add_index('z', 'constant 1', 2)
     op.add_index('o', 'output spatial', 'i')
     op.add_index('l', 'output channel', 1)
     op.add_index('p', 'pointwise channel', 1)
