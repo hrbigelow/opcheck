@@ -2,7 +2,7 @@ import importlib
 import inspect
 import traceback
 from schema import SchemaApi
-from schema.error import OpGrindInternalError, FrameworkError
+from schema.error import OpCheckInternalError, FrameworkError
 from schema import fgraph
 from pprint import pprint
 
@@ -45,7 +45,7 @@ def deregister(*op_paths):
 
 def available_ops():
     """
-    List all ops available for registration with OpGrind.  Each op is defined
+    List all ops available for registration with OpCheck.  Each op is defined
     in a file in the ops/ directory.
     """
     from pkgutil import walk_packages
@@ -56,7 +56,7 @@ def available_ops():
 
 def _register_op(op_path):
     """
-    Wrap the framework operation at {op_path} for OpGrind checking.
+    Wrap the framework operation at {op_path} for OpCheck checking.
     """
     if op_path in REGISTRY:
         return
@@ -93,14 +93,14 @@ def _deregister_op(op_path):
 def _get_from_path(op_path):
     if op_path not in REGISTRY:
         raise RuntimeError(
-            f'Could not find an op named \'{op_path}\' in the OpGrind '
-            f'registry.  Use opgrind.inventory() to see available ops.')
+            f'Could not find an op named \'{op_path}\' in the OpCheck '
+            f'registry.  Use opcheck.inventory() to see available ops.')
     op = REGISTRY[op_path]
     return op
 
 def validate(op_path, out_dir, test_ids, skip_ids, dtype_err_quota):
     """
-    Run generated test configurations and confirm opgrind flags errors
+    Run generated test configurations and confirm opcheck flags errors
     appropriately, and does not flag errors where none exist.
     """
     op = _get_from_path(op_path)
@@ -128,7 +128,7 @@ def schema_report(op_path):
 
 def registered_ops():
     """
-    List all framework ops registered with OpGrind
+    List all framework ops registered with OpCheck
     """
     return list(REGISTRY.keys())
 

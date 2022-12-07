@@ -1,5 +1,5 @@
-class OpGrindInternalError(BaseException):
-    """A bug in OpGrind"""
+class OpCheckInternalError(BaseException):
+    """A bug in OpCheck"""
     def __init__(self, ex):
         self.ex = ex
 

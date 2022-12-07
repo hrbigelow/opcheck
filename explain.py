@@ -1,16 +1,16 @@
-import opgrind
+import opcheck
 import sys
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print('\nUsage: python explain.py <op>')
         print('\nAvailable Checked Operations:\n')
-        ops = opgrind.available_ops()
+        ops = opcheck.available_ops()
         print('\n'.join(ops))
         print()
     else:
         op_path = sys.argv[1]
-        opgrind.register(op_path)
-        # opgrind.explain(op_path)
-        opgrind.schema_report(op_path)
+        opcheck.register(op_path)
+        # opcheck.explain(op_path)
+        opcheck.schema_report(op_path)
 

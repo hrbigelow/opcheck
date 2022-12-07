@@ -187,7 +187,7 @@ class SchemaApi(object):
             try:
                 self.op_error = self._check_args(*args, **kwargs)
             except BaseException as ex:
-                raise OpGrindInternalError(ex)
+                raise OpCheckInternalError(ex)
             try:
                 ret_val = self.framework_op(**self.arguments)
             except BaseException as ex:
@@ -918,7 +918,7 @@ class SchemaApi(object):
 
     def arg_unchecked(self, arg_name):
         """
-        Declare {arg_name} to be an argument unchecked by OpGrind 
+        Declare {arg_name} to be an argument unchecked by OpCheck 
         """
         pass
 

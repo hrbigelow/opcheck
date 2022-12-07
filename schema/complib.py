@@ -26,3 +26,32 @@ def mod(a, b):
 def reduce_prod(a):
     return np.prod(a)
 
+def conv(input, pad_filter, stride, padding):
+    if padding == 'VALID':
+        out = ceildiv(input - pad_filter + 1, stride)
+    else:
+        out = ceildiv(input, stride)
+    return out
+
+def conv_t(input, pad_filter, stride, padding):
+    if padding == 'VALID':
+        tem = f'ceil(({input} - {pad_filter} + 1) / {stride})'
+    else:
+        tem = f'ceil({input} / {stride})' 
+    return tem
+
+# transpose conv output calculation
+def tconv(input, pad_filter, stride, padding):
+    if padding == 'VALID':
+        out = input - (pad_filter - 1) * stride
+    else:
+        out = input
+    return out
+
+def tconv_t(input, pad_filter, stride, padding):
+    if padding == 'VALID':
+        txt = f'{input} - ({pad_filter} - 1) * {stride}'
+    else:
+        txt = input
+    return txt
+

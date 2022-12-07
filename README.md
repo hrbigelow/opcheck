@@ -1,11 +1,11 @@
 
-# OpGrind - Better error messages for Tensor operations
+# OpCheck - Better error messages for Tensor operations
 
 ## Synopsis
 
 ```python
-import opgrind
-ops = opgrind.available_ops()
+import opcheck
+ops = opcheck.available_ops()
 print('\n'.join(op for op in ops))
 tf.gather_nd
 tf.nn.atrous_conv2d
@@ -21,27 +21,27 @@ tf.scatter_nd
 ...
 
 
-# Wrap framework functions to be checked by OpGrind
-opgrind.register('tf.nn.convolution', 'tf.gather_nd')
-# or opgrind.register() to load all available ops
+# Wrap framework functions to be checked by OpCheck
+opcheck.register('tf.nn.convolution', 'tf.gather_nd')
+# or opcheck.register() to load all available ops
 
 # Prints a symbolic list of all legal input tensor shapes, layouts, and dtypes
-opgrind.explain('tf.nn.convolution')
+opcheck.explain('tf.nn.convolution')
 ...
 
 # restore to original, unchecked framework function
-opgrind.deregister('tf.nn.convolution')
+opcheck.deregister('tf.nn.convolution')
 ```
 
-OpGrind is a wrapper around framework tensor operations which analyzes their
+OpCheck is a wrapper around framework tensor operations which analyzes their
 inputs.  If any inconsistency is found which would lead to an exception from
-the framework, OpGrind will print an error message that is easier to read.
+the framework, OpCheck will print an error message that is easier to read.
 Otherwise, it is silent, and simply passes the inputs through to the wrapped
 operation.
 
 ## How does it work?
 
-OpGrind understands tensor operations in terms of three lower level concepts.
+OpCheck understands tensor operations in terms of three lower level concepts.
 The lowest level is the notion of an 'index', which is a group of semantically
 related dimensions or other size-like quantities.  For example:
 
@@ -67,7 +67,7 @@ biiik  fffkl    sss      NDHWC        ddd        boool
 ```
 
 The explaination contains two sections.  The first section is a table listing
-all of the OpGrind 'indices', with a one-letter code and its longer
+all of the OpCheck 'indices', with a one-letter code and its longer
 description.  The second section shows a subset of shape-related arguments to
 the operation.  Each line shows a combination of valid 'signatures' for these
 arguments - for example, the first signature given for 'input' is 'bki'.  This

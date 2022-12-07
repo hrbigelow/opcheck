@@ -1,7 +1,7 @@
 from schema import LAYOUT
 from schema.complib import filter_pad, filter_pad_t, ceildiv
 from schema.genlib import stride_dil, divis_by, below_above 
-from schema import predlib
+from schema import predlib, complib
 
 def init_schema(op):
     op.add_index('b', 'batch', (1,5))
@@ -57,7 +57,7 @@ def init_schema(op):
             tem = f'ceil({i} / {s})' 
         return tem
 
-    op.comp_dims_cw('o', odims, odims_t, 'ips', 'padding')
+    op.comp_dims_cw('o', complib.conv, complib.conv_t, 'ips', 'padding')
 
     op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))
     op.equate_dtypes('filters', 'input')

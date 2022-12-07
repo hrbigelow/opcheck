@@ -47,7 +47,7 @@ class NoSuggestionsFound(ReportNodeFunc):
         super().__init__()
 
     def user_msg(self):
-        return 'OpGrind found no suggestions'
+        return 'OpCheck found no suggestions'
 
 class DataTensor(ReportNodeFunc):
     """
