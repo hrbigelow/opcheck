@@ -90,11 +90,15 @@ def _deregister_op(op_path):
     func_name = op_path.rsplit('.',1)[1]
     setattr(op.framework_mod, func_name, op.framework_op)
 
-def _get_from_path(op_path):
+def get(op_path):
+    """
+    Retrieve the op instance from the path given
+    """
     if op_path not in REGISTRY:
         raise RuntimeError(
             f'Could not find an op named \'{op_path}\' in the OpCheck '
-            f'registry.  Use opcheck.inventory() to see available ops.')
+            f'registry.  Use opcheck.inventory() to see available ops, '
+            f'and then register chosen ops with opcheck.register()')
     op = REGISTRY[op_path]
     return op
 
@@ -103,7 +107,7 @@ def validate(op_path, out_dir, test_ids, skip_ids, dtype_err_quota):
     Run generated test configurations and confirm opcheck flags errors
     appropriately, and does not flag errors where none exist.
     """
-    op = _get_from_path(op_path)
+    op = get(op_path)
     op._set_gen_error_quotas(dtype_err_quota)
     op._validate(out_dir, test_ids)
 
@@ -111,19 +115,19 @@ def explain(op_path):
     """
     Produce an explanation of the op
     """
-    op = _get_from_path(op_path)
+    op = get(op_path)
     index_table = op._index_inventory()
     info_table = op._inventory()
     print('\n'.join(index_table))
     print()
     print('\n'.join(info_table))
 
-def schema_report(op_path):
+def schema_report(op_path, include_inventory):
     """
     Produce a high level logical description of the op
     """
     op = _get_from_path(op_path)
-    rep = op._schema_report()
+    rep = op._schema_report(include_inventory)
     print(rep + '\n\n')
 
 def registered_ops():

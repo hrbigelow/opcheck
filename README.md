@@ -39,6 +39,7 @@ the framework, OpCheck will print an error message that is easier to read.
 Otherwise, it is silent, and simply passes the inputs through to the wrapped
 operation.
 
+
 ## How does it work?
 
 OpCheck understands tensor operations in terms of three lower level concepts.

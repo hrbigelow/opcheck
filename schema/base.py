@@ -309,13 +309,13 @@ def parse_dtype_expr(type_expr):
 
 class ComboRule(object):
     def __init__(self):
-        # tensor => [excluded_dtype, ...]
+        # tensor => [excluded_dtype, ...], None means all are excluded
         self.dtypes = None 
 
-        # idx => [excluded_rank, ...] 
+        # idx => [excluded_rank, ...], None means all are excluded 
         self.ranks = None 
 
-        # set of excluded layouts
+        # set of excluded layouts, None means all are excluded
         self.layouts = None
 
     def __repr__(self):

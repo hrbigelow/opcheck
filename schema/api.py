@@ -66,6 +66,9 @@ class Index(object):
         max_dim = 1000000 if self.dims_max is None else self.dims_max
         return range(min_dim, max_dim + 1)
 
+    def display_name(self, full=False):
+        return base.snake_case(self.desc) if full else  self.idx
+
 class Partial(object):
     """
     Curry extra_args at the end
@@ -290,23 +293,33 @@ class SchemaApi(object):
         Generate a usage inventory for the op.  Includes all combinations of
         input signatures, data format, dtypes
         """
-        ranks = self._gen_node(ge.IndexRanks)
-        sigs = self._gen_node(ge.SigMap)
-        dtypes = self.dtypes_filt
-        data_format = self._gen_node(ge.DataFormat)
-        out_nodes = (ranks, sigs, dtypes, data_format)
-        gen = fgraph.gen_graph_values(self.gen_live_nodes, out_nodes)
+        ranks_node = self._gen_node(ge.IndexRanks)
+        sigs_node = self._gen_node(ge.SigMap)
+        dtypes_node = self.dtypes_gfilt
+        df_arg = self.data_formats.arg_name # may be None
+        data_format_node = self._gen_node(ge.DataFormat, df_arg)
+        out_nodes = (ranks_node, sigs_node, dtypes_node, data_format_node)
+        live_nodes = self.gen_graph.values()
+        gen = fgraph.gen_graph_values(live_nodes, out_nodes)
 
         inventory = list(gen)
 
         # includes args and returns.  args may have a '.k' suffix
         all_sigs = inventory[0][1]
         shape_args = [ *all_sigs ]
-        if self.data_formats.configured:
+        if self.data_formats.arg_name is not None:
             shape_args.append(self.data_formats.arg_name)
         arg_order = self._shape_key_order(shape_args)
 
-        rows = [arg_order]
+        header = []
+        for arg in arg_order:
+            header.append(self._arg_shape_name(arg))
+            node = self.arg_gen_nodes.get(arg, None)
+            func = None if node is None else node.func
+            if isinstance(func, ge.DataTensor):
+                header.append(f'{arg}.dtype')
+
+        rows = [header]
         shape_types = (ge.DataTensor, ge.ShapeList, ge.ShapeInt, ge.ShapeTensor)
 
         for ranks, sigs, dtypes, data_format in inventory:
@@ -315,32 +328,36 @@ class SchemaApi(object):
                 node = self.arg_gen_nodes.get(arg, None)
                 func = None if node is None else node.func
                 if isinstance(func, ge.DataFormat): 
-                    row.append(cand_format)
-                elif isinstance(func, shape_types):
+                    row.append(data_format.value())
+                elif arg in sigs:
                     sig = sigs[arg]
                     inst = ''.join(s * ranks[s] for s in sig)
                     row.append(inst)
                 if isinstance(func, ge.DataTensor):
-                    dtype = dtypes[arg].name
+                    dtype = dtypes[arg]
                     row.append(dtype)
                 else:
                     pass
             rows.append(row)
 
-        table, _ = tabulate(rows, '  ', left_align=True)
+        table, _ = base.tabulate(rows, '  ', left_align=True)
         return table
 
-    def _index_inventory(self):
+    def index_inventory(self):
         """
         Generate a formatted report of the indices with their rank constraints
         """
         rows = []
         rows.append(['Index', 'Description'])
-        rows.extend([ix,desc] for ix,desc in self.index.items())
-        tab, _ = tabulate(rows, '  ', left_align=True)
-        return tab
+        rows.extend([ix,ind.desc] for ix, ind in self.index.items())
+        tab, _ = base.tabulate(rows, '  ', left_align=True)
+        return '\n'.join(tab)
 
-    def _signature_report(self):
+    def signature_report(self):
+        """
+        Display a table of available signature layouts for shaped
+        arguments
+        """
         sigs_node = self._gen_node(ge.SigMap)
         layout_node = self._gen_node(ge.Layout, base.LAYOUT)
         out_nodes = (sigs_node, layout_node)
@@ -348,37 +365,49 @@ class SchemaApi(object):
         gen = fgraph.gen_graph_values(ancs, out_nodes)
         configs = list(gen)
         rows = []
-        header = None
+        sigs_header = None
+        df_arg = self.data_formats.arg_name
+
         for sigs, layout in configs:
             dfs = self.data_formats.layout_formats(layout)
-            if header is None:
-                header = self._shape_key_order(sigs.keys())
-                rows.append(header)
-            row = [ sigs[sk] for sk in header ]
+            if sigs_header is None:
+                sigs_header = self._shape_key_order(sigs.keys())
+            row = [ sigs[sk] for sk in sigs_header ]
+            if df_arg is not None:
+                row.append(dfs)
             rows.append(row)
+        header = list(sigs_header)
+        if df_arg is not None:
+            header.append(df_arg)
+        rows.insert(0, header)
+        
         table, _ = base.tabulate(rows, '  ')
         report = '\n'.join(table)
         return report
 
-    def _index_ranks_report(self):
+    def index_ranks_report(self, use_full_names=False):
+        """
+        Display a table of index rank constraints
+        """
         rows = []
         for ind in self.index.values():
+            iname = ind.display_name(use_full_names) 
             if ind.rank_range is None:
                 if ind.primary():
-                    spec = f'rank({ind.idx}) ---'
+                    spec = f'rank({iname}) Unconstrained'
                 else:
-                    spec = f'rank({ind.idx}) = rank({ind.pri_idx})'
+                    pname = self.index[ind.pri_idx].display_name(use_full_names)
+                    spec = f'rank({iname}) = rank({pname})'
             else:
                 lo, hi = ind.rank_range
                 if lo == hi:
-                    spec = f'rank({ind.idx}) = {lo}'
+                    spec = f'rank({iname}) = {lo}'
                 else:
-                    spec = f'rank({ind.idx}) in [{lo}, {hi}]'
-            doc = f'{ind.idx} = "{ind.desc}"'
-            rows.append([spec, doc])
+                    spec = f'rank({iname}) in [{lo}, {hi}]'
+            rows.append([spec, ''])
 
         for cons in self.sum_range_constraints:
-            idxs = ','.join(cons.sig)
+            idxs = ','.join(get_name(self.index[idx]) for idx in cons.sig)
             if cons.lo == cons.hi:
                 expr = f'= {cons.lo}'
             else:
@@ -391,14 +420,17 @@ class SchemaApi(object):
         report = '\n'.join(table)
         return report 
 
-    def _comp_dims_report(self):
+    def comp_dims_report(self, use_full_names=False):
+        """
+        Show a listing of all computed index dimensions 
+        """
         all_nodes = self.dims_graph.values()
         inp_nodes = [n for n in all_nodes if isinstance(n.func, ge.DimsInput)]
         inp_nodes = [n for n in inp_nodes if n.sub_name != base.INDEX_RANKS]
         comp_nodes = [n for n in all_nodes if isinstance(n.func, ge.CompDims)]
 
         if len(comp_nodes) == 0:
-            return None
+            return ''
 
         inp_names = [n.sub_name for n in inp_nodes]
         gen_nodes = [n.func.gen_node for n in inp_nodes if n.func.gen_node is
@@ -407,7 +439,8 @@ class SchemaApi(object):
         for sig, node in self.dims_graph.items():
             if not isinstance(node.func, ge.GenDims):
                 continue
-            info = tuple(base.snake_case(self.index[idx].desc) for idx in sig)
+            info = tuple(self.index[idx].display_name(use_full_names) for idx
+                    in sig)
             if len(info) == 1:
                 info = info[0]
             node.set_cached(info)
@@ -426,7 +459,7 @@ class SchemaApi(object):
                 for pa in comp_node.parents:
                     if isinstance(pa.func, ge.CompDims):
                         pidx = pa.func.idx
-                        info = base.snake_case(self.index[pidx].desc)
+                        info = self.index[pidx].display_name(use_full_names)
                         pa.set_cached(info)
                 live_nodes = inp_nodes + [comp_node]
                 fgen = fgraph.gen_graph_values(live_nodes, [comp_node])
@@ -442,14 +475,18 @@ class SchemaApi(object):
 
         formula_groups = []
         for idx, cset in comp_formulas.items():
-            lhs = base.snake_case(self.index[idx].desc)
+            lhs = self.index[idx].display_name(use_full_names)
             group = '\n'.join(f'{lhs} = {c}' for c in cset)
             formula_groups.append(group)
 
         report = '\n'.join(formula_groups)
         return report
 
-    def _dtype_rules_report(self):
+    def dtype_rules_report(self):
+        """
+        Return a report of rules defining the set of all allowed tensor dtype
+        combinations
+        """
         lines = []
         for arg, valid_types in self.dtype_rules.indiv_rules.items(): 
             typelist = ', '.join(valid_types)
@@ -463,7 +500,11 @@ class SchemaApi(object):
         report = '\n'.join(lines)
         return report
 
-    def _dtype_combos_report(self):
+    def excluded_dtypes_report(self):
+        """
+        Return a report of the excluded (unimplemented) combinations of tensor
+        dtypes, ranks, and/or layouts
+        """
         if len(self.dtype_rules.combos) == 0:
             return None
 
@@ -473,8 +514,10 @@ class SchemaApi(object):
         exc_indexes = set()
         exc_layout = False
         for rule in self.dtype_rules.combos:
-            exc_tensors.update(rule.dtypes.keys())
-            exc_indexes.update(rule.ranks.keys())
+            if rule.dtypes is not None:
+                exc_tensors.update(rule.dtypes.keys())
+            if rule.ranks is not None:
+                exc_indexes.update(rule.ranks.keys())
             exc_layout = exc_layout or (rule.layouts is not None)
 
         # order the tensors 
@@ -514,16 +557,16 @@ class SchemaApi(object):
         report = '\n'.join(table)
         return report
 
-    def _schema_report(self):
+    def _schema_report(self, include_inventory=False):
         """
         Produce a standard format report showing all schema logic, as seen
         in schema_report.txt.  
         """
-        signature = self._signature_report()
-        index_ranks = self._index_ranks_report()
-        computed_dims = self._comp_dims_report()
-        dtype_rules = self._dtype_rules_report()
-        combo_rules = self._dtype_combos_report()
+        signature = self.signature_report()
+        index_ranks = self.index_ranks_report()
+        computed_dims = self.comp_dims_report()
+        dtype_rules = self.dtype_rules_report()
+        combo_rules = self.excluded_dtypes_report()
 
         # Computed dimensions section
         # DType Rules
@@ -540,6 +583,11 @@ class SchemaApi(object):
 
         if combo_rules is not None:
             finals.append(f'Excluded DType Combos\n\n{combo_rules}')
+
+        if include_inventory:
+            rows = self._inventory()
+            inventory = '\n'.join(rows)
+            finals.append(f'Inventory\n\n{inventory}')
 
         final = '\n\n\n'.join(finals)
         return final
@@ -721,7 +769,7 @@ class SchemaApi(object):
     def _prep_gen_tests(self):
         self.avail_test_edits = 1
 
-    def _generate_args(self):
+    def generate_args(self):
         self._prep_gen_tests()
 
         live_kinds = (
@@ -766,7 +814,7 @@ class SchemaApi(object):
         cats = [ 'TP', 'TN', 'FP', 'FN' ]
         stats = { k: 0 for k in cats }
 
-        op_args_gen = self._generate_args()
+        op_args_gen = self.generate_args()
         # print(f'Generated {len(op_args_list)} test cases')
 
         for test_num, op_args in enumerate(op_args_gen, 1):
