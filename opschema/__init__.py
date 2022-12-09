@@ -1,6 +1,7 @@
 import importlib
 import inspect
 from . import schema
+from . import ops
 
 REGISTRY = {}
 

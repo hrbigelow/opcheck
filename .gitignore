@@ -8,5 +8,7 @@ build/
 dist/
 opschema.egg-info/
 opschema/version.py
+.ipynb_checkpoints/
+
 
 
