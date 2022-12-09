@@ -2,9 +2,9 @@ import logging
 import io, os
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import tensorflow as tf
-from schema import runner
-from schema.error import OpCheckInternalError
-from schema.redirect import stderr_redirector
+from opcheck import runner
+from opcheck.error import OpCheckInternalError
+from opcheck.redirect import stderr_redirector
 import inspect
 
 import opcheck

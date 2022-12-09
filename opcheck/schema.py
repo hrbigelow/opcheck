@@ -1,3 +1,4 @@
+import tensorflow as tf
 import traceback
 import inspect
 import sys, io, os
@@ -80,7 +81,7 @@ class Partial(object):
     def __call__(self, *args):
         return self.func(*args, *self.extra_args)
 
-class SchemaApi(object):
+class OpSchema(object):
     def __init__(self, op_path):
         self.op_path = op_path
         self.index = {} # idx => Index
@@ -170,20 +171,26 @@ class SchemaApi(object):
         name = fgraph.node_name(dims_class, name)
         return self.dims_graph.get(name, None)
 
-    def _init_schema(self, framework_mod, framework_op, init_schema_func):
+    def _init(self, init_schema_func):
         # edges to create for the pred graph
-        self.framework_mod = framework_mod
-        self.framework_op = framework_op
+        self.framework_op = eval(self.op_path)
+        self.func_sig = inspect.signature(self.framework_op)
+        self.arg_order = list(self.func_sig.parameters.keys())
         self.pending_pred_edges = {} # node name -> [parent node name, ...]
         self.pending_index_edges = {} # node name -> [idx, idx, ...]
-        self.func_sig = inspect.signature(framework_op)
-        self.arg_order = list(self.func_sig.parameters.keys())
         self._init_pred_graph()
         self._init_inf_graph()
         self._init_gen_graph()
         self._init_dims_graph()
         init_schema_func(self)
         self._finalize()
+
+    def _wrapped(self):
+        """
+        Create and return a wrapped op
+        """
+        fw_mod = self.op_path.split('.', 1)[0]
+        self.framework_mod = eval(fw_mod) 
 
         def wrapped_op(*args, **kwargs):
             # executes during 'framework call phase'
@@ -407,7 +414,8 @@ class SchemaApi(object):
             rows.append([spec, ''])
 
         for cons in self.sum_range_constraints:
-            idxs = ','.join(get_name(self.index[idx]) for idx in cons.sig)
+            inds = (self.index[idx] for idx in cons.sig)
+            idxs = ','.join(ind.display_name(use_full_names) for ind in inds)
             if cons.lo == cons.hi:
                 expr = f'= {cons.lo}'
             else:
@@ -557,7 +565,7 @@ class SchemaApi(object):
         report = '\n'.join(table)
         return report
 
-    def _schema_report(self, include_inventory=False):
+    def schema_report(self, include_inventory=False):
         """
         Produce a standard format report showing all schema logic, as seen
         in schema_report.txt.  
@@ -1732,4 +1740,42 @@ class SchemaApi(object):
         sigmap_inode.append_parent_sn(sig_inode)
 
         self.num_returns += 1
+
+    def _dot_graph(self, nodes, out_file):
+        import graphviz
+        dot = graphviz.Digraph(graph_attr={'rankdir': 'LR'})
+        names = { n.name: n.name.replace(':', '_') for n in nodes }
+        for node in nodes:
+            is_arg = (node in self.arg_gen_nodes.values())
+            color = 'red' if is_arg else 'black'
+            dot.node(names[node.name], node.name, color=color)
+            vtype = node.vararg_type
+            for i, (pa,sn) in enumerate(zip(node.parents,
+                node.use_parent_subname)):
+                if i < node.num_named_pars:
+                    color = 'black'
+                elif vtype == fgraph.VarArgs.Positional:
+                    color = 'brown'
+                elif vtype == fgraph.VarArgs.Keyword:
+                    color = 'purple' if sn else 'blue'
+                else:
+                    color = 'black'
+                dot.edge(names[node.name], names[pa.name],
+                        _attributes={'color': color})
+        dot.render(out_file)
+        print(f'Wrote {out_file}.pdf')
+
+    def print_graphs(self, out_dir):
+        nodes = self.pred_graph.values()
+        stub = os.path.join(out_dir, self.op_path)
+        self._dot_graph(nodes, f'{stub}.pred')
+
+        nodes = self.gen_graph.values()
+        self._dot_graph(nodes, f'{stub}.gen')
+
+        nodes = self.inf_graph.values()
+        self._dot_graph(nodes, f'{stub}.inf')
+
+        nodes = self.dims_graph.values()
+        self._dot_graph(nodes, f'{stub}.comp_dims')
 

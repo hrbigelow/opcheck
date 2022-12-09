@@ -1,5 +1,5 @@
-from schema import genlib
-from schema.complib import filter_pad, filter_pad_t, tconv, tconv_t
+from opcheck import genlib
+from opcheck.complib import filter_pad, filter_pad_t, tconv, tconv_t
 
 def init_schema(op):
     op.add_index('b', 'batch', (1, 10))

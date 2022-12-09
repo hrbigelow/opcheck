@@ -1,7 +1,7 @@
-from schema import LAYOUT
-from schema.complib import filter_pad, filter_pad_t, ceildiv
-from schema.genlib import stride_dil, divis_by, below_above 
-from schema import predlib, complib
+from opcheck.base import LAYOUT
+from opcheck.complib import filter_pad, filter_pad_t, ceildiv
+from opcheck.genlib import stride_dil, divis_by, below_above 
+from opcheck import predlib, complib
 
 def init_schema(op):
     op.add_index('b', 'batch', (1,5))

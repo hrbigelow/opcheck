@@ -1,13 +1,13 @@
 import sys
 import os
-import opcheck
-from schema import fgraph
+from . import fgraph
+from . import register, get
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
         print('\nUsage: python graph.py <out_dir> <op>')
         print('\nAvailable Checked Operations:\n')
-        ops = opcheck.available_ops()
+        ops = available_ops()
         print('\n'.join(ops))
         print()
     else:
@@ -16,9 +16,7 @@ if __name__ == '__main__':
             raise RuntimeError(
                 f'Output directory \'{out_dir}\' does not exist')
         op_path = sys.argv[2]
-        opcheck.register(op_path)
-        opcheck.print_gen_graph(op_path, out_dir)
-        opcheck.print_inf_graph(op_path, out_dir)
-        opcheck.print_pred_graph(op_path, out_dir)
-        opcheck.print_comp_dims_graph(op_path, out_dir)
+        register(op_path)
+        op = get(op_path)
+        op.print_graphs(out_dir)
 

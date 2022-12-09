@@ -1,5 +1,5 @@
-from schema.predlib import divis_by, divis_by_t
-from schema import genlib
+from opcheck.predlib import divis_by, divis_by_t
+from opcheck import genlib
 
 def init_schema(op):
     op.add_index('b', 'batch', 1)

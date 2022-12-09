@@ -1,6 +1,6 @@
 import numpy as np
-from schema.predlib import divis_by, divis_by_t
-from schema.genlib import mod_padding
+from opcheck.predlib import divis_by, divis_by_t
+from opcheck.genlib import mod_padding
 
 def init_schema(op):
     op.add_index('b', 'batch', 1)

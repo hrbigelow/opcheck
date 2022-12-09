@@ -1,4 +1,4 @@
-from schema import genlib, complib
+from opcheck import genlib, complib
 
 def init_schema(op):
     op.add_index('b', 'batch', 1)

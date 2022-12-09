@@ -1,6 +1,6 @@
-from schema import LAYOUT
-from schema import complib
-from schema.predlib import divis_by, divis_by_t
+from opcheck.base import LAYOUT
+from opcheck import complib
+from opcheck.predlib import divis_by, divis_by_t
 
 def init_schema(op):
     op.add_index('b', 'batch', 1)
