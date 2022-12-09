@@ -1,7 +1,7 @@
 import importlib
 import inspect
 from . import schema
-from . import ops
+from . import ops as ops_mod
 
 REGISTRY = {}
 
@@ -46,8 +46,7 @@ def list_schemas():
     in a file in the ops/ directory.
     """
     from pkgutil import walk_packages
-    from . import ops
-    modinfos = list(walk_packages(ops.__path__, ops.__name__ + '.'))
+    modinfos = list(walk_packages(ops_mod.__path__, ops_mod.__name__ + '.'))
     op_paths = [mi.name.split('.',1)[1] for mi in modinfos if not mi.ispkg]
     return op_paths
 
