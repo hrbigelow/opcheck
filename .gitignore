@@ -4,4 +4,6 @@ __pycache__
 graphs
 notes.txt
 reports
+opschema/version.py
+
 
