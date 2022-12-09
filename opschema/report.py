@@ -281,7 +281,7 @@ class Report(object):
         table = self._template_table(fixes)
         index_defn = index_definitions(self.op)
         tail_msg = 'For the list of all valid configurations, use: '
-        tail_msg += f'opcheck.explain(\'{self.op.op_path}\')'
+        tail_msg += f'opschema.explain(\'{self.op.op_path}\')'
         final = f'{leader_msg}\n\n{table}\n\n{index_defn}\n\n{tail_msg}\n'
         return final
 

@@ -1,4 +1,3 @@
-import opcheck
 from . import available_ops, _init_op
 import sys
 

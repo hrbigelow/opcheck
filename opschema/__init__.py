@@ -41,7 +41,7 @@ def deregister(*op_paths):
 
 def list_schemas():
     """
-    List all ops available for registration with OpCheck.  Each op is defined
+    List all ops available for registration with OpSchema.  Each op is defined
     in a file in the ops/ directory.
     """
     from pkgutil import walk_packages
@@ -58,7 +58,7 @@ def _init_op(op_path):
 
 def _register(op_path):
     """
-    Wrap the framework operation at {op_path} for OpCheck checking.
+    Wrap the framework operation at {op_path} for OpSchema checking.
     """
     if op_path in REGISTRY:
         return
@@ -85,15 +85,15 @@ def get(op_path):
     """
     if op_path not in REGISTRY:
         raise RuntimeError(
-            f'Could not find an op named \'{op_path}\' in the OpCheck '
-            f'registry.  Use opcheck.inventory() to see available ops, '
-            f'and then register chosen ops with opcheck.register()')
+            f'Could not find an op named \'{op_path}\' in the OpSchema '
+            f'registry.  Use opschema.inventory() to see available ops, '
+            f'and then register chosen ops with opschema.register()')
     op = REGISTRY[op_path]
     return op
 
 def validate(op_path, out_dir, test_ids, skip_ids, dtype_err_quota):
     """
-    Run generated test configurations and confirm opcheck flags errors
+    Run generated test configurations and confirm opschema flags errors
     appropriately, and does not flag errors where none exist.
     """
     op = get(op_path)
@@ -102,7 +102,7 @@ def validate(op_path, out_dir, test_ids, skip_ids, dtype_err_quota):
 
 def list_registered():
     """
-    List all framework ops registered with OpCheck
+    List all framework ops registered with OpSchema
     """
     return list(REGISTRY.keys())
 

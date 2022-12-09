@@ -187,7 +187,7 @@ class CompDims(NodeFunc):
                 result = []
                 rank = index_ranks[self.rank_idx]
                 if not base.broadcastable_to(input_dims, rank):
-                    raise OpCheckInternalError(
+                    raise OpSchemaInternalError(
                         f'non-broadcastable dims: {input_dims}, {self.in_sig}'
                         f', {rank}')
                 for c in range(rank):

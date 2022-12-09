@@ -1,4 +1,4 @@
-from opcheck.genlib import stride_dil
+from opschema.genlib import stride_dil
 
 def init_schema(op):
     op.add_index('b', 'batch', 1)

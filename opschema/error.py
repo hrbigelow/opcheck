@@ -1,5 +1,5 @@
-class OpCheckInternalError(BaseException):
-    """A bug in OpCheck"""
+class OpSchemaInternalError(BaseException):
+    """A bug in OpSchema"""
     def __init__(self, ex):
         self.ex = ex
 

@@ -2,14 +2,14 @@ import logging
 import io, os
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import tensorflow as tf
-from opcheck import runner
-from opcheck.error import OpCheckInternalError
-from opcheck.redirect import stderr_redirector
+from opschema import runner
+from opschema.error import OpSchemaInternalError
+from opschema.redirect import stderr_redirector
 import inspect
 
-import opcheck
-opcheck.register('tf.nn.convolution')
-op = opcheck.REGISTRY['tf.nn.convolution']
+import opschema
+opschema.register('tf.nn.convolution')
+op = opschema.REGISTRY['tf.nn.convolution']
 
 if __name__ == '__main__':
 
@@ -27,7 +27,7 @@ if __name__ == '__main__':
             with stderr_redirector(string_err):
                 val = op.wrapped_op(**arg_dict)
             # print(f'num return elems: {np.prod(val.shape)}', flush=True)
-        except OpCheckInternalError as e:
+        except OpSchemaInternalError as e:
             print(string_err.getvalue().decode('UTF-8'))
             raise e
         except BaseException as e:
@@ -48,17 +48,17 @@ if __name__ == '__main__':
                 print('exception outside of tensorflow')
                 traceback.print_stack()
                 raise e
-        t.opcheck_errors = t.op.input_errors
+        t.opschema_errors = t.op.input_errors
         if t.op.framework_error is None:
             t.framework_error = t.op.framework_error
         else:
             t.framework_error = str(t.op.framework_error.ex)
 
         """
-        if len(t.opcheck_errors) == 0:
+        if len(t.opschema_errors) == 0:
             top_hit = ['No Hit found']
         else:
-            top_hit = t.opcheck_errors[0]
+            top_hit = t.opschema_errors[0]
         if top_hit != t.gen_errors:
             cat = 'FAIL'
         else:

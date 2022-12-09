@@ -197,7 +197,7 @@ class OpSchema(object):
             try:
                 self.op_error = self._check_args(*args, **kwargs)
             except BaseException as ex:
-                raise OpCheckInternalError(ex)
+                raise OpSchemaInternalError(ex)
             try:
                 ret_val = self.framework_op(**self.arguments)
             except BaseException as ex:
@@ -974,7 +974,7 @@ class OpSchema(object):
 
     def arg_unchecked(self, arg_name):
         """
-        Declare {arg_name} to be an argument unchecked by OpCheck 
+        Declare {arg_name} to be an argument unchecked by OpSchema 
         """
         pass
 
