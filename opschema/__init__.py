@@ -1,7 +1,7 @@
 import importlib
 import inspect
 from . import schema
-from . import ops as ops_mod
+from . import ops
 
 REGISTRY = {}
 
@@ -46,13 +46,13 @@ def list_schemas():
     in a file in the ops/ directory.
     """
     from pkgutil import walk_packages
-    modinfos = list(walk_packages(ops_mod.__path__, ops_mod.__name__ + '.'))
+    modinfos = list(walk_packages(ops.__path__, ops.__name__ + '.'))
     op_paths = [mi.name.split('.',1)[1] for mi in modinfos if not mi.ispkg]
     return op_paths
 
 def _init_op(op_path):
     op = schema.OpSchema(op_path)
-    schema_module = importlib.import_module(f'ops.{op_path}')
+    schema_module = importlib.import_module(f'.ops.{op_path}', __name__)
     op._init(schema_module.init_schema)
     return op
 
@@ -119,5 +119,5 @@ def explain(op_path, include_inventory=False):
     Print out a schematic representation of `op_path`
     """
     op = _init_op(op_path)
-    print(op.schema_report(include_inventory))
+    print(op.explain(include_inventory))
 

@@ -565,7 +565,7 @@ class OpSchema(object):
         report = '\n'.join(table)
         return report
 
-    def schema_report(self, include_inventory=False):
+    def explain(self, include_inventory=False):
         """
         Produce a standard format report showing all schema logic, as seen
         in schema_report.txt.  
