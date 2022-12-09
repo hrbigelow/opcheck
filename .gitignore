@@ -4,6 +4,9 @@ __pycache__
 graphs
 notes.txt
 reports
+build/
+dist/
+opschema.egg-info/
 opschema/version.py
 
 
