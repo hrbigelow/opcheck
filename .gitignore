@@ -6,6 +6,7 @@ notes.txt
 reports
 build/
 dist/
+inputs/
 opschema.egg-info/
 opschema/version.py
 .ipynb_checkpoints/

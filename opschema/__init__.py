@@ -7,7 +7,15 @@ REGISTRY = {}
 
 def register(*op_paths):
     """
-    Register each op in {op_paths}, or all available ops if {op_paths} is empty
+    For each op_path in `op_paths`, instantiates a schema.OpSchema instance
+    initialized to the op_path schema.  Wraps the TensorFlow op with it.
+    To retrieve the schema.OpSchema instance, use get(op_path).
+
+    Once a TensorFlow op is wrapped, opschema will do pre-call error checking
+    and issue detailed error messages based on violations of constraints
+    defined in the schema.
+
+    To see the constraints, use opschema.explain(op_path)
     """
     if len(op_paths) == 0:
         op_paths = list_schemas()
@@ -28,7 +36,7 @@ def register(*op_paths):
 
 def deregister(*op_paths):
     """
-    De-register each op in {op_paths}, restoring it back to its original
+    De-register each op in `op_paths`, restoring it back to its original
     un-checked state.
     """
     if len(op_paths) == 0:
@@ -42,15 +50,19 @@ def deregister(*op_paths):
 
 def list_schemas():
     """
-    List all ops available for registration with OpSchema.  Each op is defined
-    in a file in the ops/ directory.
+    List all op schemas available for opschema.register().  Each schema is
+    defined in a file in the ops/ directory.
     """
     from pkgutil import walk_packages
     modinfos = list(walk_packages(ops.__path__, ops.__name__ + '.'))
-    op_paths = [mi.name.split('.',1)[1] for mi in modinfos if not mi.ispkg]
+    op_paths = [mi.name.split('.',2)[2] for mi in modinfos if not mi.ispkg]
     return op_paths
 
-def _init_op(op_path):
+def init_op(op_path):
+    """
+    Returns an initialized schema.OpSchema for `op_path`, but does not wrap the
+    TensorFlow op with it.
+    """
     op = schema.OpSchema(op_path)
     schema_module = importlib.import_module(f'.ops.{op_path}', __name__)
     op._init(schema_module.init_schema)
@@ -58,19 +70,23 @@ def _init_op(op_path):
 
 def _register(op_path):
     """
-    Wrap the framework operation at {op_path} for OpSchema checking.
+    Instantiates an initialized schema.OpSchema for `op_path`, and wraps the
+    TensorFlow operation with it.
     """
     if op_path in REGISTRY:
         return
 
     import tensorflow as tf
     func_name = op_path.rsplit('.',1)[1]
-    op = _init_op(op_path)
+    op = init_op(op_path)
     wrapped_op = op._wrapped()
     setattr(tf, func_name, wrapped_op)
     REGISTRY[op_path] = op
 
 def _unregister(op_path):
+    """
+    Restore the TensorFlow op back to its original state
+    """
     op = REGISTRY.pop(op_path, None)
     if op is None:
         raise RuntimeError(
@@ -81,7 +97,7 @@ def _unregister(op_path):
 
 def get(op_path):
     """
-    Retrieve the op instance from the path given
+    Retrieve the schema.OpSchema instance registered to `op_path`
     """
     if op_path not in REGISTRY:
         raise RuntimeError(
@@ -95,14 +111,22 @@ def validate(op_path, out_dir, test_ids, skip_ids, dtype_err_quota):
     """
     Run generated test configurations and confirm opschema flags errors
     appropriately, and does not flag errors where none exist.
+
+    `test_ids`: str of comma-separated integers, or None
+    `skip_ids`: str of comma-separated integers, or None
+    `dtype_err_quota`: int, maximum number of dtype errors in generated tests
     """
+    if test_ids is None:
+        test_ids = set()
+    else:
+        test_ids = set(int(i) for i in test_ids.split(','))
     op = get(op_path)
     op._set_gen_error_quotas(dtype_err_quota)
-    op._validate(out_dir, test_ids)
+    op.validate(out_dir, test_ids)
 
 def list_registered():
     """
-    List all framework ops registered with OpSchema
+    List all registered ops.
     """
     return list(REGISTRY.keys())
 
@@ -111,13 +135,16 @@ def print_graphs(op_path, out_dir):
     Print pred_graph, gen_graph, comp_graph, and inv_graph of op to
     `out_dir` in pdf format
     """
-    op = _init_op(op_path)
+    op = init_op(op_path)
     op.print_graphs(out_dir)
 
 def explain(op_path, include_inventory=False):
     """
     Print out a schematic representation of `op_path`
     """
-    op = _init_op(op_path)
+    op = init_op(op_path)
     print(op.explain(include_inventory))
+
+def hello_world():
+    print('hello')
 

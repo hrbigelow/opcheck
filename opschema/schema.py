@@ -200,6 +200,8 @@ class OpSchema(object):
                 raise OpSchemaInternalError(ex)
             try:
                 ret_val = self.framework_op(**self.arguments)
+                self._check_return(ret_val)
+                return ret_val
             except BaseException as ex:
                 exc_str = str(ex)
                 mt = re.match('\{\{.+?\}\} (.+)', exc_str)
@@ -209,11 +211,9 @@ class OpSchema(object):
                     self.framework_exc_msg = mt.groups()[0]
                 raise ex
             finally:
-                self._check_return(ret_val)
                 msg = self._report()
                 if msg is not None:
                     print(msg, file=sys.stderr)
-                return ret_val
 
         self.wrapped_op = wrapped_op
         return wrapped_op
@@ -570,17 +570,17 @@ class OpSchema(object):
         Produce a standard format report showing all schema logic, as seen
         in schema_report.txt.  
         """
+        index_inv = self.index_inventory()
         signature = self.signature_report()
         index_ranks = self.index_ranks_report()
         computed_dims = self.comp_dims_report()
         dtype_rules = self.dtype_rules_report()
         combo_rules = self.excluded_dtypes_report()
 
-        # Computed dimensions section
-        # DType Rules
-
         # Excluded dtype combos
         finals = []
+        finals.append(f'Schema for {self.op_path}')
+        finals.append(f'Indexes\n\n{index_inv}')
         finals.append(f'Signatures\n\n{signature}')
         finals.append(f'Index ranks\n\n{index_ranks}')
 
@@ -597,7 +597,7 @@ class OpSchema(object):
             inventory = '\n'.join(rows)
             finals.append(f'Inventory\n\n{inventory}')
 
-        final = '\n\n\n'.join(finals)
+        final = '\n\n'.join(finals)
         return final
 
     def _report(self):
@@ -811,7 +811,7 @@ class OpSchema(object):
             # print(op_args)
             yield op_args[0] # extract tuple element
 
-    def _validate(self, out_dir, test_ids):
+    def validate(self, out_dir, test_ids):
         if not os.path.exists(out_dir):
             raise RuntimeError(
                 f'{type(self).__qualname__}: Could not open output path '
