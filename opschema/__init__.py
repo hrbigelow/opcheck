@@ -145,6 +145,3 @@ def explain(op_path, include_inventory=False):
     op = init_op(op_path)
     print(op.explain(include_inventory))
 
-def hello_world():
-    print('hello')
-

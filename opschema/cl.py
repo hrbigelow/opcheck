@@ -4,6 +4,11 @@ import sys
 import os
 import opschema
 
+def list_schemas():
+    print('Available Schemas in ops directory')
+    for op_path in opschema.list_schemas():
+        print(op_path)
+
 def gen_input(op_path, out_dir):
     op = opschema.init_op(op_path)
     inputs = list(op.generate_args())
@@ -35,7 +40,7 @@ def validate(op_path, out_dir, test_ids=None):
     op = opschema.get(op_path)
 
     if test_ids is None:
-        test_ids = set()
+        pass
     elif isinstance(test_ids, int):
         test_ids = {test_ids}
     else:
@@ -47,14 +52,19 @@ def explain(op_path, include_inventory=False):
 
 def main():
     cmd = sys.argv.pop(1)
-    if cmd == 'gen_input':
-        fire.Fire(gen_input)
-    elif cmd == 'test_op':
-        fire.Fire(test_op)
-    elif cmd == 'validate':
-        fire.Fire(validate)
-    elif cmd == 'explain':
-        fire.Fire(explain)
+    func_map = { 
+            'list': list_schemas,
+            'explain': explain,
+            'gen_input': gen_input,
+            'test_op': test_op,
+            'validate': validate
+            }
+    func = func_map.get(cmd, None)
+    if func is None:
+        avail = ', '.join(func_map.keys())
+        print(f'Couldn\'t understand subcommand \'{cmd}\'.  Use one of: {avail}')
+        return 1
+    fire.Fire(func)
 
 if __name__ == '__main__':
     main()
