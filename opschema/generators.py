@@ -9,7 +9,7 @@ import logging
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import numpy as np
 from random import randint, choice, sample
-from .fgraph import FuncNode as F, func_graph_evaluate, NodeFunc
+from .fgraph import FuncNode as F, NodeFunc
 from .base import ALL_DTYPES, INDEX_RANKS
 from .oparg import *
 from .error import *
@@ -152,7 +152,21 @@ class GenDims(NodeFunc):
 
 class CompDims(NodeFunc):
     """
-    Wrap a dims computation, performing scalar broadcasting as necessary
+    Represent computed dimensions.  Performs scalar broadcasting as necessary.
+    Works in four modes:  Dims, Code, SDims, and Snake, as determined by
+    self.op.comp_dims_mode
+
+    Dims are integers or integer lists
+    Olc is the one-letter-code of the index
+    SDims is string representation of the dims
+    Snake is the snake-cased description of the indices
+
+    In Dims mode, the nodes yield the computed dims.  In all other modes, they
+    yield a tuple of (lhs, rhs) representing the symbolic computation equation.
+
+    The reason for this is that, for generating equations, we need to use the
+    lhs as input to subsequent computations, and the rhs to display as the rhs
+    of the equation.
     """
     def __init__(self, op, idx, in_sig, cwise, func, tfunc, rank_idx, arg_names):
         super().__init__(idx)
@@ -174,39 +188,69 @@ class CompDims(NodeFunc):
                 f'The function registered for computed index {self.sub_name} '
                 f'failed on the call: func{args}\n{ex}')
 
+    def comp_cwise(self, index_ranks, input_dims, arg_vals):
+        result = []
+        rank = index_ranks[self.rank_idx]
+        if not base.broadcastable_to(input_dims, rank):
+            raise OpSchemaInternalError(
+                f'non-broadcastable dims: {input_dims}, {self.in_sig}'
+                f', {rank}')
+        for c in range(rank):
+            ins = tuple(base.bcast_dim(dims, c) for dims in input_dims)
+            res = self.safe_func(*ins, *arg_vals)
+            if isinstance(res, tuple):
+                res = list(res)
+            result.append(res)
+        return result
+
+    def comp(self, index_ranks, input_dims, arg_vals):
+        if self.cwise:
+            return self.comp_cwise(index_ranks, input_dims, arg_vals)
+        else:
+            return self.safe_func(*input_dims, *arg_vals)
+
+    def templ_string(self, input_dims, arg_vals):
+        templ = self.tfunc(*input_dims, *arg_vals)
+        if self.nargs > 0:
+            z = zip(self.arg_names, arg_vals)
+            cfg = ', '.join(f'{arg} = {val}' for arg, val in z) 
+            templ += f'   [{cfg}]'
+        return templ
+
     def __call__(self, index_ranks, **dims_and_args):
         plist = [ (k,v) for k,v in dims_and_args.items() ]
         rit = reversed([plist.pop() for _ in range(self.nargs)])
         arg_vals = [v for _,v in rit]
         grouped_dims_map = { k:v for k,v in plist }
         dims_map = base.ungroup_dims(grouped_dims_map)
-        input_dims = [ dims_map[idx] for idx in self.in_sig ]
         # check that it is rank-consistent
-        if self.op.comp_dims_mode:
-            if self.cwise:
-                result = []
-                rank = index_ranks[self.rank_idx]
-                if not base.broadcastable_to(input_dims, rank):
-                    raise OpSchemaInternalError(
-                        f'non-broadcastable dims: {input_dims}, {self.in_sig}'
-                        f', {rank}')
-                for c in range(rank):
-                    ins = tuple(base.bcast_dim(dims, c) for dims in input_dims)
-                    res = self.safe_func(*ins, *arg_vals)
-                    if isinstance(res, tuple):
-                        res = list(res)
-                    result.append(res)
-                yield result
-            else:
-                result = self.safe_func(*input_dims, *arg_vals)
-                yield result
+
+        if self.op.comp_dims_mode == base.CompDimsMode.Dims:
+            input_dims = [ dims_map[idx] for idx in self.in_sig ]
+            result = self.comp(index_ranks, input_dims, arg_vals)
+            yield result
+            return
+
+        if self.op.comp_dims_mode == base.CompDimsMode.StringDims:
+            # dims_map values hold tuples
+            input_dims = [ dims_map[idx][0] for idx in self.in_sig ]
+            lhs = self.comp(index_ranks, input_dims, arg_vals)
+            templ_inputs = [base.dims_string(dims) for dims in input_dims]
+
+        elif self.op.comp_dims_mode == base.CompDimsMode.OneLetterCode:
+            lhs = self.op.index[self.idx].display_name(False)
+            templ_inputs = self.in_sig
+
+        elif self.op.comp_dims_mode == base.CompDimsMode.SnakeCaseDesc:
+            lhs = self.op.index[self.idx].display_name(True)
+            templ_inputs = [
+                    self.op.index[idx].display_name(True) for idx in
+                    self.in_sig ]
+
         else:
-            templ = self.tfunc(*input_dims, *arg_vals)
-            if self.nargs > 0:
-                z = zip(self.arg_names, arg_vals)
-                cfg = ', '.join(f'{arg} = {val}' for arg, val in z) 
-                templ += f'   [{cfg}]'
-            yield templ
+            raise RuntimeError('op.comp_dims_mode has invalid value')
+        rhs = self.templ_string(templ_inputs, arg_vals)
+        yield lhs, rhs
 
 class DimsInput(GenFunc):
     """
@@ -384,6 +428,8 @@ class ArgMutations(GenFunc):
         all_nodes = set(self.op.dims_graph.values())
         dims_kinds = (GenDims, CompDims)
         dims_nodes = [n for n in all_nodes if isinstance(n.func, dims_kinds)]
+
+        self.op.comp_dims_mode = base.CompDimsMode.Dims
         index_gen = fgraph.gen_graph_map(all_nodes, dims_nodes)
         index_dims_list = []
         for tup_map in index_gen:

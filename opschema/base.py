@@ -19,6 +19,12 @@ ALL_DTYPES = (
         'complex64', 'complex128',
         )
 
+class CompDimsMode(enum.Enum):
+    Dims = 0
+    OneLetterCode = 1
+    SnakeCaseDesc = 2
+    StringDims = 3
+
 def snake_case(phrase):
     return phrase.replace(' ', '_')
 
@@ -85,7 +91,6 @@ def range_under_size(idx_ranges, max_prod):
         cumul *= d
         dims.append(d)
     return dims
-
 
 class ShapeKind(enum.Enum):
     """

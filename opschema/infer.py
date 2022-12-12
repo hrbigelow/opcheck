@@ -234,8 +234,10 @@ class IndexConstraints(ReportNodeFunc):
             else:
                 pass
 
-    def get_template(self, idx_info):
+    def get_template(self, comp_mode, index_dims):
         """
+        Get (lhs, rhs) pairs of each computed index.  `comp_mode` is one of 
+
         Compute right-hand-side formulas using idx_info, which is a map of
         idx => info.  info may be one of:
         - index one-letter code, e.g.  'i'
@@ -244,8 +246,9 @@ class IndexConstraints(ReportNodeFunc):
 
         Return [formula, ...], where 
         """
-        self.op.comp_dims_mode = False
-        self.init_dims_graph(idx_info)
+        self.op.comp_dims_mode = comp_mode
+        index_dims = { k: (v, None) for k, v in index_dims.items() }
+        self.init_dims_graph(index_dims)
         comp_order = self.get_comp_order()
         comp_nodes = [ self.op.dims_graph[idx] for idx in comp_order ]
         gen = fgraph.gen_graph_iterate(comp_nodes)
@@ -253,14 +256,13 @@ class IndexConstraints(ReportNodeFunc):
         assert len(items) == 1, 'Internal Error with comp graph'
         templ_map = items[0]
         templ_list = [ templ_map[idx] for idx in comp_order ]
-        self.op.comp_dims_mode = True
         return templ_list 
 
     def get_comp_dims(self, index_dims):
         """
         Compute dims from input index dims
         """
-        self.op.comp_dims_mode = True
+        self.op.comp_dims_mode = base.CompDimsMode.Dims 
         self.init_dims_graph(index_dims)
         comp_order = self.get_comp_order()
         comp_nodes = [ self.op.dims_graph[idx] for idx in comp_order ]
@@ -283,27 +285,18 @@ class IndexConstraints(ReportNodeFunc):
         input_dims = shape_edit.get_input_dims()
         comp_dims = self.get_comp_dims(input_dims)
         shape_edit.add_comp_dims(comp_dims)
-
-        idx_codes = {} # e.g. 'i'
-        idx_descs = {} # e.g. 'input_spatial'
-        idx_sdims = {} # e.g. '[2,3,5]'
-        all_dims = { **input_dims, **comp_dims }
-        for idx, dims in all_dims.items():
-            idx_codes[idx] = idx
-            idx_descs[idx] = base.snake_case(self.op.index[idx].desc)
-            idx_sdims[idx] = base.dims_string(dims)
         
-        frm_codes = self.get_template(idx_codes)
-        frm_descs = self.get_template(idx_descs)
-        frm_sdims = self.get_template(idx_sdims)
+        codes = self.get_template(base.CompDimsMode.OneLetterCode, input_dims)
+        descs = self.get_template(base.CompDimsMode.SnakeCaseDesc, input_dims)
+        sdims = self.get_template(base.CompDimsMode.StringDims, input_dims)
 
         comp_order = self.get_comp_order() 
         formulas = {}
         for p, idx in enumerate(comp_order):
-            code_path = idx_codes[idx] + ' = ' + frm_codes[p]
-            desc_path = idx_descs[idx] + ' = ' + frm_descs[p]
-            dims_path = idx_sdims[idx] + ' = ' + frm_sdims[p]
-            dims = comp_dims[idx] 
+            code_path = '{} = {}'.format(*codes[p])
+            desc_path = '{} = {}'.format(*descs[p])
+            dims_path = '{} = {}'.format(*sdims[p])
+            dims = sdims[p][0] 
             formulas[idx] = Formula(dims, code_path, desc_path, dims_path)
         
         # formulas = self.op.dims_graph.templates(input_dims, **comp) 

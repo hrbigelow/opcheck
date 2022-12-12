@@ -4,7 +4,7 @@ import tensorflow as tf
 from collections import defaultdict
 from .error import *
 from . import base, fgraph
-from .fgraph import NodeFunc, node_name, gen_graph_values
+from .fgraph import NodeFunc, node_name
 
 """
 A collection of fgraph.NodeFunc derived classes for use in fgraph.PredNodes.
@@ -367,7 +367,7 @@ class Inventory(NodeFunc):
         all_nodes = set(self.op.inf_graph.values())
         exc_nodes = (self.op.obs_shapes, self.op.obs_dtypes, self.op.obs_args)
         live_nodes = all_nodes.difference(exc_nodes)
-        for fix in gen_graph_values(live_nodes, (self.op.report_inode,)):
+        for fix in fgraph.gen_graph_values(live_nodes, (self.op.report_inode,)):
             fixes.append(fix[0]) 
 
         if self.op.avail_edits == 0:

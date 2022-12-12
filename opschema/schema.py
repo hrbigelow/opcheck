@@ -68,7 +68,7 @@ class Index(object):
         return range(min_dim, max_dim + 1)
 
     def display_name(self, full=False):
-        return base.snake_case(self.desc) if full else  self.idx
+        return base.snake_case(self.desc) if full else self.idx
 
 class Partial(object):
     """
@@ -90,7 +90,7 @@ class OpSchema(object):
         self.avail_edits = 0
         self.avail_test_edits = 0
         self.max_yield_count = 1000
-        self.comp_dims_mode = True
+        self.comp_dims_mode = None 
 
         # error quotas
         self.dtype_err_quota = 2
@@ -454,7 +454,8 @@ class OpSchema(object):
             node.set_cached(info)
 
         vals_list = fgraph.all_values(*gen_nodes)
-        self.comp_dims_mode = False
+        self.comp_dims_mode = False # TODO: fix all of this 
+        assert False
         comp_formulas = {}
         for vals in vals_list:
             for name, val in zip(inp_names, vals):
