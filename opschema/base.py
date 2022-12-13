@@ -3,7 +3,9 @@ import numpy as np
 import enum
 import re
 import random
+from collections import namedtuple
 from .error import SchemaError
+from . import fgraph
 
 LAYOUT = ':layout'
 SINGLE_FORMAT = ':single_format'
@@ -721,6 +723,90 @@ class Fix(object):
 
     def cost(self):
         return self.df.cost() + self.dtype.cost() + self.shape.cost()
+
+Formula = namedtuple('Formula', ['dims', 'code_path', 'desc_path', 'dims_path'])
+
+class RenderCompDims(object):
+    def __init__(self, op):
+        self.op = op
+
+    def set_inputs(self, obs_args, index_ranks, layout):
+        self.op.dims_graph_input.update(obs_args)
+        self.op.dims_graph_input[INDEX_RANKS] = dict(index_ranks)
+        self.op.dims_graph_input[LAYOUT] = layout
+
+    def init_dims_graph(self, idx_info):
+        # initialize input nodes
+        for node in self.op._gen_dims_nodes():
+            sig = node.sub_name
+            if all(idx in idx_info for idx in sig):
+                if len(sig) == 1:
+                    val = idx_info[sig]
+                else:
+                    val = tuple(idx_info[idx] for idx in sig)
+                node.set_cached(val)
+            else:
+                pass
+
+    def _run_comp_graph(self, comp_mode, inputs):
+        self.op.comp_dims_mode = comp_mode 
+        self.init_dims_graph(inputs)
+        comp_nodes = self.op._comp_dims_nodes()
+        comp_names = tuple(n.sub_name for n in comp_nodes)
+        input_nodes = self.op._dims_input_nodes()
+        gen = fgraph.gen_graph_iterate(comp_nodes + input_nodes)
+        result = list(gen)
+        assert len(result) == 1, 'Internal Error with comp graph'
+        dims_map = { idx: result[0][idx] for idx in comp_names }
+        return dims_map
+
+    def get_olc(self):
+        """
+        Get a map of idx => (olc, olc_formula)
+        olc is the one-letter-code of the computed index
+        olc_formula is a formula in terms of one-letter-codes
+        """
+        return self._run_comp_graph(CompDimsMode.OneLetterCode, {})
+
+    def get_snake(self):
+        """
+        Get a map of computed indexes of idx => (snake_index, snake_formula)
+        snake_index is the snake-cased description of an index
+        snake_formula is a formula for the computed index in terms of
+        snake_indexes
+        """
+        return self._run_comp_graph(CompDimsMode.SnakeCaseDesc, {})
+
+    def get_sdims(self, index_dims):
+        """
+        Get a map of computed indexes of idx => (dims, sdims_formula)
+        dims is the integer or integer list computed dimensions of idx
+        sdims_formula is a formula in terms of string representations of 
+        dimensions
+        """
+        left_dims = { idx: (dims, None) for idx, dims in index_dims.items() }
+        return self._run_comp_graph(CompDimsMode.StringDims, left_dims)
+
+    def get_dims(self, index_dims):
+        """
+        Get a map of computed indexes of idx => dims
+        """
+        return self._run_comp_graph(CompDimsMode.Dims, index_dims)
+
+    def formula_map(self, input_dims):
+        codes = self.get_olc()
+        descs = self.get_snake()
+        sdims = self.get_sdims(input_dims)
+        comp_nodes = self.op._comp_dims_nodes()
+        comp_names = [ n.sub_name for n in comp_nodes ]
+        formulas = {}
+        for idx in comp_names:
+            code_path = '{} = {}'.format(*codes[idx])
+            desc_path = '{} = {}'.format(*descs[idx])
+            dims_path = '{} = {}'.format(*sdims[idx])
+            dims = sdims[idx][0] 
+            formulas[idx] = Formula(dims, code_path, desc_path, dims_path)
+        return formulas
 
 # convert rows of arbitrary objects to tabular row strings
 def tabulate(rows, sep, left_align=True):

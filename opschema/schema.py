@@ -428,6 +428,27 @@ class OpSchema(object):
         report = '\n'.join(table)
         return report 
 
+    def _gen_dims_nodes(self):
+        nodes = []
+        for sig, node in self.dims_graph.items():
+            if isinstance(node.func, ge.GenDims):
+                nodes.append(node)
+        return nodes
+
+    def _comp_dims_nodes(self):
+        nodes = []
+        for node in fgraph._topo_sort(self.dims_graph.values()):
+            if isinstance(node.func, ge.CompDims):
+                nodes.append(node)
+        return nodes
+
+    def _dims_input_nodes(self):
+        nodes = []
+        for node in self.dims_graph.values():
+            if isinstance(node.func, ge.DimsInput):
+                nodes.append(node)
+        return nodes
+
     def comp_dims_report(self, use_full_names=False):
         """
         Show a listing of all computed index dimensions 
@@ -435,7 +456,7 @@ class OpSchema(object):
         all_nodes = self.dims_graph.values()
         inp_nodes = [n for n in all_nodes if isinstance(n.func, ge.DimsInput)]
         inp_nodes = [n for n in inp_nodes if n.sub_name != base.INDEX_RANKS]
-        comp_nodes = [n for n in all_nodes if isinstance(n.func, ge.CompDims)]
+        comp_nodes = self._comp_dims_nodes() 
 
         if len(comp_nodes) == 0:
             return ''
@@ -812,11 +833,13 @@ class OpSchema(object):
             # print(op_args)
             yield op_args[0] # extract tuple element
 
-    def validate(self, out_dir, test_ids):
+    def validate(self, out_dir, test_ids, skip_ids, dtype_err_quota):
         if not os.path.exists(out_dir):
             raise RuntimeError(
                 f'{type(self).__qualname__}: Could not open output path '
                 f'\'{out_dir}\' for report generation')
+
+        self._set_gen_error_quotas(dtype_err_quota)
 
         report_fh = open(os.path.join(out_dir, f'{self.op_path}.txt'), 'w')
         summary_fh = open(os.path.join(out_dir, f'{self.op_path}.sum.txt'), 'w')
@@ -826,14 +849,17 @@ class OpSchema(object):
         op_args_gen = self.generate_args()
         # print(f'Generated {len(op_args_list)} test cases')
 
-        for test_num, op_args in enumerate(op_args_gen, 1):
+        for test_id, op_args in enumerate(op_args_gen, 1):
+            if skip_ids is not None and test_id in skip_ids:
+                continue
+
             if test_ids is not None:
                 if len(test_ids) == 0:
                     break
-                if test_num not in test_ids:
+                if test_id not in test_ids:
                     continue
                 else:
-                    test_ids.remove(test_num)
+                    test_ids.remove(test_id)
 
             # print(op_args)
             # self.show_graph_calls = True
@@ -842,7 +868,7 @@ class OpSchema(object):
             try:
                 with stderr_redirector(string_err):
                     self.wrapped_op(**arg_dict)
-            except SchemaError as ex:
+            except (OpSchemaInternalError, SchemaError) as ex:
                 print(string_err.getvalue().decode('UTF-8'))
                 raise ex
             except BaseException as ex:
@@ -860,9 +886,9 @@ class OpSchema(object):
 
             stats[cat] += 1
             progress = '  '.join(f'{c}: {stats[c]:-5d}' for c in cats)
-            print(f'\rTest: {test_num:-5d}  {progress}', end='')
+            print(f'\rTest: {test_id:-5d}  {progress}', end='')
             arg_fields = '\t'.join(f'{k}:{v}' for k,v in op_args.items())
-            call = f'{test_num}\t{cat}\t{arg_fields}'
+            call = f'{test_id}\t{cat}\t{arg_fields}'
             print('\n\n', call, file=report_fh)
             print(f'Framework Msg\n{self.framework_exc_msg}\n', file=report_fh)
             print(self._report(), file=report_fh)

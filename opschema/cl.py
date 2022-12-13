@@ -3,6 +3,8 @@ import pickle
 import sys
 import os
 import opschema
+import random
+import numpy as np
 
 def list_schemas():
     print('Available Schemas in ops directory')
@@ -35,23 +37,26 @@ def test_op(op_path, out_dir, test_id):
                 sys.excepthook(*sys.exc_info())
             break
 
-def validate(op_path, out_dir, test_ids=None):
+def validate(op_path, out_dir, test_ids=None, skip_ids=None, dtype_err_quota=2):
     opschema.register(op_path)
     op = opschema.get(op_path)
 
-    if test_ids is None:
-        pass
-    elif isinstance(test_ids, int):
+    if isinstance(test_ids, int):
         test_ids = {test_ids}
-    else:
+    elif isinstance(test_ids, tuple):
         test_ids = set(test_ids)
-    op.validate(out_dir, test_ids)
+
+    if isinstance(skip_ids, int):
+        skip_ids = {skip_ids}
+    elif isinstance(skip_ids, tuple):
+        skip_ids = set(skip_ids)
+
+    return op.validate(out_dir, test_ids, skip_ids, dtype_err_quota)
 
 def explain(op_path, include_inventory=False):
     return opschema.explain(op_path, include_inventory)
 
 def main():
-    cmd = sys.argv.pop(1)
     func_map = { 
             'list': list_schemas,
             'explain': explain,
@@ -59,13 +64,10 @@ def main():
             'test_op': test_op,
             'validate': validate
             }
-    func = func_map.get(cmd, None)
-    if func is None:
-        avail = ', '.join(func_map.keys())
-        print(f'Couldn\'t understand subcommand \'{cmd}\'.  Use one of: {avail}')
-        return 1
-    fire.Fire(func)
+    fire.Fire(func_map)
 
 if __name__ == '__main__':
+    random.seed(192384938948348)
+    np.random.seed(982348)
     main()
 

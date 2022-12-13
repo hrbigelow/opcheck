@@ -2,7 +2,6 @@ import itertools
 import copy
 import numpy as np
 from contextlib import contextmanager
-from collections import namedtuple
 from .fgraph import NodeFunc
 from .base import ALL_DTYPES, INDEX_RANKS, LAYOUT
 from . import generators as ge
@@ -204,8 +203,6 @@ class IndexUsage(ReportNodeFunc):
             if avail:
                 yield shape_edit
 
-Formula = namedtuple('Formula', ['dims', 'code_path', 'desc_path', 'dims_path'])
-
 class IndexConstraints(ReportNodeFunc):
     """
     Add results of evaluating the index constraints onto the shape_edit object
@@ -213,64 +210,7 @@ class IndexConstraints(ReportNodeFunc):
     def __init__(self, op):
         super().__init__(op)
         self.index_preds = op.index_preds
-
-    def get_comp_order(self):
-        comp_nodes = [ n for n in self.op.dims_graph.values() if 
-                isinstance(n.func, ge.CompDims) ]
-        comp_order = [ c.sub_name for c in comp_nodes ]
-        return comp_order
-
-    def init_dims_graph(self, idx_info):
-        # initialize input nodes
-        for sig, node in self.op.dims_graph.items():
-            if not isinstance(node.func, ge.GenDims):
-                continue
-            elif all(idx in idx_info for idx in sig):
-                if len(sig) == 1:
-                    val = idx_info[sig]
-                else:
-                    val = tuple(idx_info[idx] for idx in sig)
-                node.set_cached(val)
-            else:
-                pass
-
-    def get_template(self, comp_mode, index_dims):
-        """
-        Get (lhs, rhs) pairs of each computed index.  `comp_mode` is one of 
-
-        Compute right-hand-side formulas using idx_info, which is a map of
-        idx => info.  info may be one of:
-        - index one-letter code, e.g.  'i'
-        - snake-cased description, e.g. 'input_spatial'
-        - string representation of dimensions, e.g. '[2,4,6]'
-
-        Return [formula, ...], where 
-        """
-        self.op.comp_dims_mode = comp_mode
-        index_dims = { k: (v, None) for k, v in index_dims.items() }
-        self.init_dims_graph(index_dims)
-        comp_order = self.get_comp_order()
-        comp_nodes = [ self.op.dims_graph[idx] for idx in comp_order ]
-        gen = fgraph.gen_graph_iterate(comp_nodes)
-        items = list(gen)
-        assert len(items) == 1, 'Internal Error with comp graph'
-        templ_map = items[0]
-        templ_list = [ templ_map[idx] for idx in comp_order ]
-        return templ_list 
-
-    def get_comp_dims(self, index_dims):
-        """
-        Compute dims from input index dims
-        """
-        self.op.comp_dims_mode = base.CompDimsMode.Dims 
-        self.init_dims_graph(index_dims)
-        comp_order = self.get_comp_order()
-        comp_nodes = [ self.op.dims_graph[idx] for idx in comp_order ]
-        gen = fgraph.gen_graph_iterate(comp_nodes)
-        comp_dims_list = list(gen)
-        assert len(comp_dims_list) == 1, 'Internal Error with comp graph'
-        comp_dims = comp_dims_list[0]
-        return comp_dims
+        self.render = base.RenderCompDims(op)
 
     def __call__(self, shape_edit, obs_args):
         if shape_edit.cost() != 0:
@@ -278,28 +218,14 @@ class IndexConstraints(ReportNodeFunc):
             return
 
         # each usage should have a single entry
-        self.op.dims_graph_input.update(obs_args)
-        self.op.dims_graph_input[INDEX_RANKS] = shape_edit.index_ranks
-        self.op.dims_graph_input[LAYOUT] = shape_edit.layout
+        self.render.set_inputs(obs_args, shape_edit.index_ranks,
+                shape_edit.layout)
 
         input_dims = shape_edit.get_input_dims()
-        comp_dims = self.get_comp_dims(input_dims)
+        comp_dims = self.render.get_dims(input_dims)
         shape_edit.add_comp_dims(comp_dims)
         
-        codes = self.get_template(base.CompDimsMode.OneLetterCode, input_dims)
-        descs = self.get_template(base.CompDimsMode.SnakeCaseDesc, input_dims)
-        sdims = self.get_template(base.CompDimsMode.StringDims, input_dims)
-
-        comp_order = self.get_comp_order() 
-        formulas = {}
-        for p, idx in enumerate(comp_order):
-            code_path = '{} = {}'.format(*codes[p])
-            desc_path = '{} = {}'.format(*descs[p])
-            dims_path = '{} = {}'.format(*sdims[p])
-            dims = sdims[p][0] 
-            formulas[idx] = Formula(dims, code_path, desc_path, dims_path)
-        
-        # formulas = self.op.dims_graph.templates(input_dims, **comp) 
+        formulas = self.render.formula_map(input_dims)
         index_dims = { **input_dims, **comp_dims }
 
         for pred in self.index_preds:
@@ -310,11 +236,12 @@ class IndexConstraints(ReportNodeFunc):
             pred_input_dims = [ index_dims[idx] for idx in pred.indices ]
             if not pred(*pred_input_dims):
                 # collect the predecessor formulas
-                comp_order = self.get_comp_order()
-                en = enumerate(comp_order)
+                comp_nodes = self.op._comp_dims_nodes()
+                comp_names = [ n.sub_name for n in comp_nodes ]
+                en = enumerate(comp_names)
                 max_pos = max((p for p, i in en if i in pred.indices), default=-1)
                 source_formulas = []
-                for idx in comp_order[:max_pos+1]:
+                for idx in comp_names[:max_pos+1]:
                     source_formulas.append(formulas[idx])
                 shape_edit.add_constraint_error(pred, source_formulas)
 
