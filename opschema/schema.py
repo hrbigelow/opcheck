@@ -453,63 +453,41 @@ class OpSchema(object):
         """
         Show a listing of all computed index dimensions 
         """
-        all_nodes = self.dims_graph.values()
-        inp_nodes = [n for n in all_nodes if isinstance(n.func, ge.DimsInput)]
-        inp_nodes = [n for n in inp_nodes if n.sub_name != base.INDEX_RANKS]
         comp_nodes = self._comp_dims_nodes() 
-
         if len(comp_nodes) == 0:
-            return ''
+            return 'None'
 
+        render = base.RenderCompDims(self)
+        inp_nodes = self._dims_input_nodes()
+        inp_nodes = [n for n in inp_nodes if n.sub_name != base.INDEX_RANKS]
         inp_names = [n.sub_name for n in inp_nodes]
+        self.dims_graph_input[base.INDEX_RANKS] = {}
+
+        # The generative nodes outside the comp_dims graph
         gen_nodes = [n.func.gen_node for n in inp_nodes if n.func.gen_node is
                 not None]
 
-        for sig, node in self.dims_graph.items():
-            if not isinstance(node.func, ge.GenDims):
-                continue
-            info = tuple(self.index[idx].display_name(use_full_names) for idx
-                    in sig)
-            if len(info) == 1:
-                info = info[0]
-            node.set_cached(info)
-
-        vals_list = fgraph.all_values(*gen_nodes)
-        self.comp_dims_mode = False # TODO: fix all of this 
-        assert False
         comp_formulas = {}
+        vals_list = fgraph.all_values(*gen_nodes)
         for vals in vals_list:
             for name, val in zip(inp_names, vals):
                 if isinstance(val, OpArg):
                     val = val.value()
                 self.dims_graph_input[name] = val
-
-            for comp_node in comp_nodes:
-                # set values of all parents
-                for pa in comp_node.parents:
-                    if isinstance(pa.func, ge.CompDims):
-                        pidx = pa.func.idx
-                        info = self.index[pidx].display_name(use_full_names)
-                        pa.set_cached(info)
-                live_nodes = inp_nodes + [comp_node]
-                fgen = fgraph.gen_graph_values(live_nodes, [comp_node])
-                formulas = list(fgen)
-                if len(formulas) != 1:
-                    raise SchemaError(
-                        f'Error: should get one result from comp graph')
-                formula = formulas[0][0]
-                idx = comp_node.used_name()
+            if use_full_names:
+                eq_map = render.get_snake()
+            else:
+                eq_map = render.get_olc()
+            for idx, (lhs, rhs) in eq_map.items():
                 cset = comp_formulas.setdefault(idx, set())
-                cset.add(formula)
-        self.comp_dims_mode = True
+                eqn = f'{lhs} = {rhs}'
+                cset.add(eqn)
 
-        formula_groups = []
+        formulas = []
         for idx, cset in comp_formulas.items():
-            lhs = self.index[idx].display_name(use_full_names)
-            group = '\n'.join(f'{lhs} = {c}' for c in cset)
-            formula_groups.append(group)
+            formulas.extend(cset)
 
-        report = '\n'.join(formula_groups)
+        report = '\n'.join(formulas)
         return report
 
     def dtype_rules_report(self):
@@ -595,7 +573,8 @@ class OpSchema(object):
         index_inv = self.index_inventory()
         signature = self.signature_report()
         index_ranks = self.index_ranks_report()
-        computed_dims = self.comp_dims_report()
+        computed_dims_snake = self.comp_dims_report(True)
+        computed_dims_olc = self.comp_dims_report(False)
         dtype_rules = self.dtype_rules_report()
         combo_rules = self.excluded_dtypes_report()
 
@@ -606,8 +585,8 @@ class OpSchema(object):
         finals.append(f'Signatures\n\n{signature}')
         finals.append(f'Index ranks\n\n{index_ranks}')
 
-        if computed_dims is not None:
-            finals.append(f'Computed dimensions\n\n{computed_dims}')
+        if computed_dims_snake is not None:
+            finals.append(f'Computed dimensions\n\n{computed_dims_snake}\n\n{computed_dims_olc}')
 
         finals.append(f'DType Rules\n\n{dtype_rules}')
 

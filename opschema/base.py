@@ -251,7 +251,7 @@ class DataFormatEdit(object):
         return s
 
     def cost(self):
-        return 0 if self.used == self.imputed else 1
+        return 0 if self.used == self.imputed else 2
         
 class DTypesEdit(object):
     def __init__(self, rule_kind, info):
@@ -749,6 +749,11 @@ class RenderCompDims(object):
                 pass
 
     def _run_comp_graph(self, comp_mode, inputs):
+        """
+        Produce a map of idx => (info, info_formula) for each computed index
+        `idx`.  info and info_formula are the lhs and rhs of an equation in
+        terms of of the formats specified by comp_mode, CompDimsMode enum.
+        """
         self.op.comp_dims_mode = comp_mode 
         self.init_dims_graph(inputs)
         comp_nodes = self.op._comp_dims_nodes()

@@ -218,6 +218,10 @@ class CompDims(NodeFunc):
         return templ
 
     def __call__(self, index_ranks, **dims_and_args):
+        """
+        Compute dims, producing a lhs and rhs representation of the equation.
+        For OneLetterCode and SnakeCaseDesc, index_ranks is ignored
+        """
         plist = [ (k,v) for k,v in dims_and_args.items() ]
         rit = reversed([plist.pop() for _ in range(self.nargs)])
         arg_vals = [v for _,v in rit]
