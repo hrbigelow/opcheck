@@ -24,7 +24,7 @@ def mod(a, b):
     return a % b
 
 def reduce_prod(a):
-    return np.prod(a)
+    return int(np.prod(a))
 
 def conv(input, pad_filter, stride, padding):
     if padding == 'VALID':

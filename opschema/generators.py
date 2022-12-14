@@ -225,9 +225,11 @@ class CompDims(NodeFunc):
         plist = [ (k,v) for k,v in dims_and_args.items() ]
         rit = reversed([plist.pop() for _ in range(self.nargs)])
         arg_vals = [v for _,v in rit]
-        grouped_dims_map = { k:v for k,v in plist }
-        dims_map = base.ungroup_dims(grouped_dims_map)
-        # check that it is rank-consistent
+
+        if self.op.comp_dims_mode in (base.CompDimsMode.Dims,
+                base.CompDimsMode.StringDims):
+            grouped_dims_map = { k:v for k,v in plist }
+            dims_map = base.ungroup_dims(grouped_dims_map)
 
         if self.op.comp_dims_mode == base.CompDimsMode.Dims:
             input_dims = [ dims_map[idx] for idx in self.in_sig ]
@@ -386,6 +388,8 @@ class ArgIndels(GenFunc):
                 yield { arg: (Indel.Insert, pos, 1) }
                 num_yielded += 1
                 if num_yielded == self.op.max_yield_count:
+                    break
+                if rank == 0:
                     break
                 pos = choice(range(rank))
                 yield { arg: (Indel.Delete, pos, pos+1) }

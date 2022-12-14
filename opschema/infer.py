@@ -221,7 +221,7 @@ class IndexConstraints(ReportNodeFunc):
         self.render.set_inputs(obs_args, shape_edit.index_ranks,
                 shape_edit.layout)
 
-        input_dims = shape_edit.get_input_dims()
+        input_dims = shape_edit.get_input_dims(use_scalars=True)
         comp_dims = self.render.get_dims(input_dims)
         shape_edit.add_comp_dims(comp_dims)
         

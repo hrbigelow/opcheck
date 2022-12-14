@@ -455,7 +455,7 @@ class OpSchema(object):
         """
         comp_nodes = self._comp_dims_nodes() 
         if len(comp_nodes) == 0:
-            return 'None'
+            return None
 
         render = base.RenderCompDims(self)
         inp_nodes = self._dims_input_nodes()
@@ -573,8 +573,8 @@ class OpSchema(object):
         index_inv = self.index_inventory()
         signature = self.signature_report()
         index_ranks = self.index_ranks_report()
-        computed_dims_snake = self.comp_dims_report(True)
-        computed_dims_olc = self.comp_dims_report(False)
+        comp_dims_snake = self.comp_dims_report(True)
+        comp_dims_olc = self.comp_dims_report(False)
         dtype_rules = self.dtype_rules_report()
         combo_rules = self.excluded_dtypes_report()
 
@@ -585,8 +585,10 @@ class OpSchema(object):
         finals.append(f'Signatures\n\n{signature}')
         finals.append(f'Index ranks\n\n{index_ranks}')
 
-        if computed_dims_snake is not None:
-            finals.append(f'Computed dimensions\n\n{computed_dims_snake}\n\n{computed_dims_olc}')
+        if comp_dims_snake is None:
+            finals.append(f'Computed dimensions\n\nNone')
+        else:
+            finals.append(f'Computed dimensions\n\n{comp_dims_snake}\n\n{comp_dims_olc}')
 
         finals.append(f'DType Rules\n\n{dtype_rules}')
 

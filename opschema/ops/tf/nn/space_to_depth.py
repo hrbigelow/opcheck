@@ -50,15 +50,15 @@ def init_schema(op):
         if layout == 2:
             flat = t * k * c
         else:
-            flat = t * complib.reduce_prod(k)
+            flat = t * k 
         return flat
 
     def fdims_t(c, t, k, layout):
         if layout == 2:
             tmp = f'{t} * {k} * {c}'
         else:
-            tmp = f'{t} * product({k})'
+            tmp = f'{t} * {k}'
         return tmp
 
-    op.comp_dims('f', fdims, fdims_t, 'ctk', LAYOUT)
+    op.comp_dims_cw('f', fdims, fdims_t, 'ctk', LAYOUT)
 

@@ -41,12 +41,12 @@ def init_schema(op):
     def odims_t(padded, block_shape):
         return f'{padded} // {block_shape}'
 
-    def pdims(block_shape, batch):
-        elems = np.prod(block_shape)
-        return [elems * b for b in batch]
+    def pdims(k, b):
+        elems = int(np.prod(k))
+        return [elems * b]
 
-    def pdims_t(block_shape, batch):
-        return f'product({block_shape}) * {batch}'
+    def pdims_t(k, b):
+        return f'product({k}) * {b}'
 
     op.comp_dims_cw('j', jdims, jdims_t, 'sei')
     op.comp_dims_cw('o', odims, odims_t, 'jk')

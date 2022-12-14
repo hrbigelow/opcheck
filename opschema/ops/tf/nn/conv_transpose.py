@@ -6,7 +6,7 @@ def init_schema(op):
     op.add_index('i', 'input spatial', (1,3))
     op.add_index('k', 'input channel', 1)
     op.add_index('f', 'filter spatial', 'i')
-    op.add_index('p', 'pad filter spatial', 'i')
+    # op.add_index('p', 'pad filter spatial', 'i')
     op.add_index('s', 'strides', 'i')
     op.add_index('d', 'dilations', 'i')
     op.add_index('l', 'output channel', 1)
@@ -28,9 +28,8 @@ def init_schema(op):
     op.gen_dims_func('d', genlib.stride_dil, '', 10, True) 
     op.gen_dims('k', 30)
     op.gen_dims('l', 30)
-
-    op.comp_dims_cw('p', filter_pad, filter_pad_t, 'fd')
-    op.comp_dims_cw('o', tconv, tconv_t, 'ips', 'padding')
+    op.gen_dims_rng('p', 0, 10)
+    op.gen_dims_func('o', 
 
     op.valid_dtypes('input', ('float',))
     op.equate_dtypes('filters', 'input')

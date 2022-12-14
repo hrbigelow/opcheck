@@ -7,17 +7,39 @@ Install from PyPI:
 
     pip install opschema
 
-## Motivation
+# Motivation
 
-TensorFlow Python ops give cryptic error messages. Often the
-exceptions arise from several stack levels down the TensorFlow codebase.
-Because of this, it is frequently not clear to the user what input constraints
-are violated and what should be done to correct the error.
+TensorFlow Python is a workhorse of the Machine Learning world used by many
+thousands of developers.  However, as an API, it is challenging.  Tensor ops
+are often highly polymorphic with intricate shape and other required
+relationships in inputs.  If these are not met, often the exception will arise
+from several stack levels down the codebase.  Because of this, it is
+frequently not clear to the user what input constraints are violated and what
+should be done to correct the error.
 
-This is particularly challenging for ops that are highly polymorphic in the
-combinations of shapes, data layouts and dtypes they accept. Documentation
-often does not fully describe the legal inputs to ops. Finding out whether a
-particular call is legal must be done by trial and error in many cases.
+Documentation very often does not fully describe the legal inputs to ops. Finding
+out whether a particular call is legal must be done by trial and error in many
+cases.
+
+In some cases, the API requires redundant information to be provided.  For
+example,
+[tf.nn.atrous_conv2d_transpose](https://www.tensorflow.org/api_docs/python/tf/nn/atrous_conv2d_transpose)
+and
+[tf.nn.conv_transpose](https://www.tensorflow.org/api_docs/python/tf/nn/conv_transpose)
+require an `output_shape` parameter which requires the user to restate the
+'batch' and 'out_channel' dimensions, and compute the out_height and out_width
+manually.  This is also the case with
+
+Many ops accept a `data_format` parameter which takes on values such as 'NCW',
+'NCHW', 'NCDHW', 'NWC', 'NHWC' and 'NDHWC'.  This parameter is really
+communicating the notion of a *layout* which is either *channel first* or
+*channel last*.  Which variety of `data_format` is needed is already
+communicated by the `filter` shape.  
+
+In fact, contraray to documentation, 
+[tf.nn.convolution](https://www.tensorflow.org/api_docs/python/tf/nn/convolution)
+actually does accept 'NWC', 'NCW' values for `data_format` for some 2D
+convolutions.
 
 # Introduction
 
@@ -49,33 +71,11 @@ To see the list of implemented schemas, use:
 
     python -m opschema.cl list
 
-or
-
-```python
-import opschema
-ops = opschema.list_schemas()
-print('\n'.join(op for op in ops))
-tf.gather_nd
-tf.nn.atrous_conv2d
-tf.nn.atrous_conv2d_transpose
-tf.nn.avg_pool
-tf.nn.bias_add
-tf.nn.convolution
-tf.nn.depth_to_space
-...
-```
-
 To print a human-readable representation of a schema, use one of:
 
     python -m opschema.cl explain tf.gather_nd
     python -m opschema.cl explain tf.gather_nd -i
     python -m opschema.cl explain tf.gather_nd --include_inventory
-
-or
-
-```python
-opschema.explain('tf.gather_nd', include_inventory=False)
-```
 
 Note that including the inventory may be very long for highly polymorphic ops.
 
@@ -102,24 +102,14 @@ otherwise unobtrusive to the functioning of an existing network.
 
 Run
 
-    python -m opschema.cl validate <op_path> <reports_dir> [id_list]
+    python -m opschema.cl validate OP_PATH REPORTS_DIR [TEST_IDS] [SKIP_IDS] [ERROR_QUOTA]
     # example
     python -m opschema.cl validate tf.nn.convolution reports
 
 The example produces files `reports/tf.nn.convolution.txt` and
-`reports/tf.nn.convolution.sum.txt`.  If id_list is given, there will be one
-entry for each id.  Otherwise, there is one entry for each input produced by
-`generate_args()`.  
+`reports/tf.nn.convolution.sum.txt`.  
 
 ## How does it work?
-
-To see a schema, run:
-
-    python -m opschema.cl explain <op_path> [--include_inventory]
-    # examples 
-    python -m opschema.cl explain tf.nn.convolution
-
-This provides a report in several sections, gradually explained below.
 
 `opschema` uses three abstractions to define the schema:  *index*, *signature*,
 and *layout*.

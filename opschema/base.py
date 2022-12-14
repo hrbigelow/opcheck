@@ -177,15 +177,29 @@ class ShapeEdit(object):
                 return off, off + rank 
             off += rank
 
-    def get_input_dims(self):
+    def get_input_dims(self, use_scalars=False):
         # return the imputed index dims, or raise an error if ambiguous
+        # if `use_scalars`, convert any length 1 dims to scalar if the
+        # index has a constant rank of 1
         if any(len(usage) > 1 for usage in self.usage_map.values()):
             raise RuntimeError(
                 f'{type(self).__qualname__}: ambiguous index usage')
         index_dims = {}
         for idx, usage in self.usage_map.items():
             assert len(usage) == 1, 'Index Usage should be length 1'
-            index_dims[idx] = next(iter(usage))
+            dims = next(iter(usage))
+            if isinstance(dims, int):
+                index_dims[idx] = dims
+                continue
+
+            if use_scalars and self.op.index[idx].fixed_rank():
+                if len(dims) != 1:
+                    raise RuntimeError(
+                        f'Index {idx} is fixed rank = 1 but found usage of '
+                        f'non-rank-1')
+                index_dims[idx] = dims[0]
+            else:
+                index_dims[idx] = dims
         return index_dims
 
     def maybe_get_index_dim(self, idx):
