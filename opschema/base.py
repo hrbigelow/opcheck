@@ -568,17 +568,22 @@ class DataFormats(object):
         return self.formats[data_format][1]
 
 class IndexPredicate(object):
-    def __init__(self, name, cwise, pfunc, pfunc_t, indices):
+    def __init__(self, name, cwise, pfunc, pfunc_t, indices, *arg_names):
         self.name = name
         self.cwise = cwise
         self.pfunc = pfunc
         self.pfunc_t = pfunc_t
         self.indices = indices
+        self.arg_names = arg_names
 
-    def __call__(self, *dims):
+    def __call__(self, *dims_argvals):
         """
         Evaluate the predicate either component-wise or all at once
         """
+        ninds = len(self.indices)
+        dims = dims_argvals[:ninds]
+        argvals = dims_argvals[ninds:]
+
         if self.cwise:
             ranks = { len(d) for d in dims if isinstance(d, (list, tuple)) }
             if len(ranks) > 1:
@@ -586,17 +591,17 @@ class IndexPredicate(object):
                     f'IndexPredicate is component-wise but input indices '
                     f'{self.indices} have different ranks')
             elif len(ranks) == 0:
-                return self.pfunc(*dims)
+                return self.pfunc(*dims, *argvals)
             else:
                 rank = ranks.pop()
                 for c in range(rank):
                     ins = tuple(d if isinstance(d, int) else d[c] for d in dims)
-                    if not self.pfunc(*ins):
+                    if not self.pfunc(*ins, *argvals):
                         return False
                 return True
         else:
             try:
-                return self.pfunc(*dims)
+                return self.pfunc(*dims, *argvals)
             except BaseException as ex:
                 raise SchemaError(f'IndexPredicate error in non-cw mode: {ex}')
     

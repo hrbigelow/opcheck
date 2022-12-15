@@ -2,7 +2,7 @@ from opschema import genlib
 from opschema.complib import dilate, dilate_t, tconv, tconv_t
 
 def init_schema(op):
-    op.add_index('b', 'batch', (1, 10))
+    op.add_index('b', 'batch', (1, 1))
     op.add_index('i', 'input spatial', (1,3))
     op.add_index('k', 'input channel', 1)
     op.add_index('j', 'strided input spatial', 'i')
@@ -38,11 +38,25 @@ def init_schema(op):
     # filter is dilated with 'dilations'
     op.comp_dims_cw('g', dilate, dilate_t, 'fd')
 
-    def odims_gen(j, g):
+    def odims_gen(rng, j, g):
         val = j + g - 1
         yield val, val
 
     op.gen_dims_func('o', odims_gen, 'jg', 1000, False)   
+
+    def oi_pred(o, j, g, padding):
+        if padding == 'VALID':
+            return (o - g + 1) == j
+        else:
+            return o == j
+
+    def oi_pred_t(o, j, g, padding):
+        if padding == 'VALID':
+            return f'({o} - {g} + 1) must equal {j}'
+        else:
+            return f'{o} must equal {j}'
+
+    op.dims_pred_cw('in-out-pred', oi_pred, oi_pred_t, 'ojg', 'padding')
 
     op.valid_dtypes('input', ('float',))
     op.equate_dtypes('filters', 'input')

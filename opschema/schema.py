@@ -1640,7 +1640,7 @@ class OpSchema(object):
             inode = self.inf_graph[pri_idx]
             inode.func.add_shapes_constraint(cons)
 
-    def dims_pred(self, pred_name, pfunc, pfunc_t, indices, *extra):
+    def dims_pred(self, pred_name, pfunc, pfunc_t, indices, *arg_names):
         """
         Registers {pfunc} with the schema to be used as an additional
         predicate for {indexes} dimensions.
@@ -1652,26 +1652,21 @@ class OpSchema(object):
         {pred_name} is a name given to this custom predicate.  It may be used
         in error messages.
 
-        Called as pfunc(*index_shapes, *extra), where index_shapes
-        are the resolved shapes of {indices}.  
+        Called as pfunc(*index_shapes, *argvals), where index_shapes
+        are the resolved shapes of `indices` and argvals are the resolved
+        values of `arg_names`.
         """
-        if len(extra) > 0:
-            pfunc = Partial(pfunc, *extra)
-            pfunc_t = Partial(pfunc_t, *extra)
-
-        pred = base.IndexPredicate(pred_name, False, pfunc, pfunc_t, indices)
+        pred = base.IndexPredicate(pred_name, False, pfunc, pfunc_t, indices,
+                *arg_names)
         self.index_preds.append(pred)
 
-    def dims_pred_cw(self, pred_name, pfunc, pfunc_t, indices, *extra):
+    def dims_pred_cw(self, pred_name, pfunc, pfunc_t, indices, *arg_names):
         """
         Like dims_pred, but pfunc is called 'component-wise'.  That is, it is
         called once for each set of broadcasted index shapes.
         """
-        if len(extra) > 0:
-            pfunc = Partial(pfunc, *extra)
-            pfunc_t = Partial(pfunc_t, *extra)
-
-        pred = base.IndexPredicate(pred_name, True, pfunc, pfunc_t, indices)
+        pred = base.IndexPredicate(pred_name, True, pfunc, pfunc_t, indices,
+                *arg_names)
         self.index_preds.append(pred)
 
     def dims_pred_rng(self, idx, lo, hi):
@@ -1691,13 +1686,22 @@ class OpSchema(object):
         betw = lambda v, lo, hi: lo <= v <= hi
         betw_t = lambda v, lo, hi: f'{v} must be in [{lo}, {hi}]'
 
+        leq = Partial(leq, hi)
+        leq_t = Partial(leq_t, hi)
+
+        geq = Partial(geq, lo)
+        geq_t = Partial(geq_t, lo)
+
+        betw = Partial(betw, lo, hi)
+        betw_t = Partial(betw_t, lo, hi)
+
         if lo is None:
-            self.dims_pred_cw(f'{idx} >= {lo}', leq, leq_t, idx, hi)  
+            self.dims_pred_cw(f'{idx} >= {lo}', leq, leq_t, idx)  
         elif hi is None:
-            self.dims_pred_cw(f'{idx} >= {lo}', geq, geq_t, idx, lo)  
+            self.dims_pred_cw(f'{idx} >= {lo}', geq, geq_t, idx)  
         else:
             name = f'{idx} in [{lo}, {hi}]'
-            self.dims_pred_cw(name, betw, betw_t, idx, lo, hi) 
+            self.dims_pred_cw(name, betw, betw_t, idx) 
 
     def return_tensor(self, *sigs):
         """

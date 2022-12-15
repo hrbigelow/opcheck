@@ -181,7 +181,7 @@ class Report(object):
             usage_items = [ f'=> {item}' for item in usage_msgs]
             items.extend(usage_items)
 
-            idx_cons_msg = _idx_constraint_msg(self.op, fix)
+            idx_cons_msg = _idx_constraint_msg(self.op, fix, self.obs_args)
             if idx_cons_msg is not None:
                 items.append(idx_cons_msg)
 
@@ -386,7 +386,7 @@ def dims_string(dims):
         s = ','.join('?' if d is None else str(d) for d in dims)
         return f'[{s}]'
 
-def _idx_constraint_msg(op, fix):
+def _idx_constraint_msg(op, fix, obs_args):
     """
     Called when index dimensions violate a constraint added with
     API function add_index_predicate.
@@ -411,7 +411,9 @@ def _idx_constraint_msg(op, fix):
         item += dims_string(idx_dims)
         items.append(item)
     values_msg = grammar_list(items)
-    constraint_msg = pred.pfunc_t(*templ_args)
+
+    argvals = tuple(obs_args[arg] for arg in pred.arg_names)
+    constraint_msg = pred.pfunc_t(*templ_args, *argvals)
 
     notice = f'{values_msg}.  {constraint_msg}'
 
