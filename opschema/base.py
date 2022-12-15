@@ -2,8 +2,7 @@ import tensorflow as tf
 import numpy as np
 import enum
 import re
-import random
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 from .error import SchemaError
 from . import fgraph
 
@@ -62,7 +61,7 @@ def bcast_dim(dims, comp):
         else:
             return dims[comp]
 
-def range_under_size(idx_ranges, max_prod):
+def range_under_size(idx_ranges, max_prod, rng):
     """
     generate a tuple of dims between idx_ranges, with prod() <= total
     each element of idx_ranges represents a component of an index.
@@ -89,7 +88,7 @@ def range_under_size(idx_ranges, max_prod):
             ub = 1e10
         else:
             ub = max_prod // used
-        d = random.randint(lo, min(hi, ub))
+        d = rng.randint(lo, min(hi, ub))
         cumul *= d
         dims.append(d)
     return dims
@@ -493,7 +492,9 @@ class DataFormats(object):
             self.formats = { SINGLE_FORMAT: (0, None) }
             self.rank_index = None
         else:
-            self.formats = formats
+            key_func = lambda t: '___' if t is None else t[0]
+            sorted_keys = sorted(formats.keys(), key=key_func)
+            self.formats = OrderedDict({k: formats[k] for k in sorted_keys})
             self.rank_index = rank_index
 
     def single(self):
@@ -529,20 +530,20 @@ class DataFormats(object):
         Return the data_format corresponding to the layout and rank
         combination.
         """
-        it = self.formats.items()
+        items = self.formats.items()
         rank = None if self.rank_index is None else ranks[self.rank_index]
         if rank is None:
-            return next((df for df, (l, _) in it if l == layout), None)
+            return next((df for df, (l, _) in items if l == layout), None)
         else:
-            return next((df for df, (l, r) in it if l == layout and (r is None
+            return next((df for df, (l, r) in items if l == layout and (r is None
                 or r == rank)), None)
 
     def layout_formats(self, layout):
         """
         Return all formats for a particular layout, in rank order
         """
-        it = self.formats.items()
-        fmts = [ (df, r) for df, (l, r) in it if l == layout and df is not None]
+        items = self.formats.items()
+        fmts = [ (df, r) for df, (l, r) in items if l == layout and df is not None]
         fmts = sorted(fmts, key=lambda tup: tup[1])
         return [ df for df, _ in fmts ]
 

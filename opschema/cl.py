@@ -56,18 +56,20 @@ def validate(op_path, out_dir, test_ids=None, skip_ids=None, max_dtype_err=2):
 def explain(op_path, include_inventory=False):
     return opschema.explain(op_path, include_inventory)
 
+def graph(op_path, out_dir):
+    opschema.print_graphs(op_path, out_dir)
+
 def main():
     func_map = { 
             'list': list_schemas,
             'explain': explain,
             'gen_input': gen_input,
             'test_op': test_op,
-            'validate': validate
+            'validate': validate,
+            'graph': graph
             }
     fire.Fire(func_map)
 
 if __name__ == '__main__':
-    random.seed(192384938948348)
-    np.random.seed(982348)
     main()
 

@@ -3,12 +3,6 @@ import math
 import enum
 from copy import copy
 from contextlib import contextmanager
-from collections import namedtuple
-import tensorflow as tf
-import logging
-logging.getLogger('tensorflow').setLevel(logging.ERROR)
-import numpy as np
-from random import randint, choice, sample
 from .fgraph import FuncNode as F, NodeFunc
 from .base import ALL_DTYPES, INDEX_RANKS
 from .oparg import *
@@ -86,9 +80,10 @@ class GenDims(NodeFunc):
     func is called as list(func(*input_dims, *pars)) to collect all of its yields.
     It is called once per component in the rank of {rank_idx}.
     """
-    def __init__(self, sig, in_sig, func, rank_idx, yield_scalar, max_prod,
+    def __init__(self, op, sig, in_sig, func, rank_idx, yield_scalar, max_prod,
             pars):
         super().__init__(sig)
+        self.op = op
         self.in_sig = in_sig
         self.func = func
         self.rank_idx = rank_idx
@@ -110,17 +105,20 @@ class GenDims(NodeFunc):
         # integer list. if multiple index, a tuple of integer lists
         comp_ranges = tuple(next(g) for g in gens)
         if self.num_indexes == 1:
-            yield base.range_under_size(comp_ranges, self.max_prod) 
+            yield base.range_under_size(comp_ranges, self.max_prod,
+                    self.op.gen_rng) 
         else:
             dims_list = []
             for idx_range in list(zip(*comp_ranges)):
-                dims = base.range_under_size(idx_range, self.max_prod)
+                dims = base.range_under_size(idx_range, self.max_prod,
+                        self.op.gen_rng)
                 dims_list.append(dims)
             yield tuple(dims_list)
 
     def gen_dims_scalar(self, gen):
         comp_range = next(gen) 
-        dims = base.range_under_size([comp_range], self.max_prod)
+        dims = base.range_under_size([comp_range], self.max_prod,
+                self.op.gen_rng)
         if self.num_indexes == 1:
             yield dims[0]
         else:
@@ -136,7 +134,7 @@ class GenDims(NodeFunc):
                     f'{type(self).__name__}: yield_scalar flag only supported '
                     f'for integer index inputs'
                 )
-            gen = self.func(*input_dims, *self.pars)
+            gen = self.func(self.op.gen_rng, *input_dims, *self.pars)
             fgen = self.fill(gen)
             yield from self.gen_dims_scalar(fgen)
 
@@ -144,7 +142,7 @@ class GenDims(NodeFunc):
         gens = []
         for c in range(rank):
             ins = tuple(base.bcast_dim(dims, c) for dims in input_dims)
-            gen = self.func(*ins, *self.pars)
+            gen = self.func(self.op.gen_rng, *ins, *self.pars)
             fgen = self.fill(gen)
             gens.append(fgen)
         
@@ -383,15 +381,15 @@ class ArgIndels(GenFunc):
         with self.reserve_edit(1) as avail:
             if not avail:
                 return
-            for arg, rank in arg_ranks.items():
-                pos = choice(range(rank+1))
+            for arg, rank in sorted(arg_ranks.items()):
+                pos = self.op.gen_rng.choice(range(rank+1))
                 yield { arg: (Indel.Insert, pos, 1) }
                 num_yielded += 1
                 if num_yielded == self.op.max_yield_count:
                     break
                 if rank == 0:
                     break
-                pos = choice(range(rank))
+                pos = self.op.gen_rng.choice(range(rank))
                 yield { arg: (Indel.Delete, pos, pos+1) }
                 num_yielded += 1
                 if num_yielded == self.op.max_yield_count:
@@ -472,7 +470,7 @@ class ArgMutations(GenFunc):
         for index_dims in index_dims_list:
             num_yielded = 0
             arg_shapes = {}
-            for arg, sig in sigs.items():
+            for arg, sig in sorted(sigs.items()):
                 shape = self.sig_shape(sig, index_dims, index_ranks)
                 indel = arg_indels.get(arg, None)
                 # if shape is int, it is broadcastable and cannot be indel'ed
@@ -480,7 +478,8 @@ class ArgMutations(GenFunc):
                     kind, rest = indel[0], indel[1:]
                     if kind == Indel.Insert:
                         pos, size = rest
-                        ins = [randint(1, max_dimsize) for _ in range(size)]
+                        ins = [self.op.gen_rng.randint(1, max_dimsize) for _ in
+                                range(size)]
                         shape[pos:pos] = ins
                     elif kind == Indel.Delete:
                         beg, end = rest
@@ -495,14 +494,15 @@ class ArgMutations(GenFunc):
             with self.reserve_edit(1) as avail:
                 if not avail:
                     return
-                for arg, shape in arg_shapes.items():
+                for arg, shape in sorted(arg_shapes.items()):
                     if num_yielded == self.op.max_yield_count:
                         break
                     if isinstance(shape, int) or len(shape) == 0:
                         continue
-                    i = choice(range(len(shape)))
+                    i = self.op.gen_rng.choice(range(len(shape)))
                     old_val = shape[i]
-                    new_val, alt_val = sample(range(1, max_mut_size), 2)
+                    rang = range(1, max_mut_size)
+                    new_val, alt_val = self.op.gen_rng.sample(rang, 2)
                     val = new_val if new_val != shape[i] else alt_val
                     shape[i] = val
                     mut_shape = { k: copy(v) for k, v in arg_shapes.items() }
@@ -553,7 +553,7 @@ class DTypeIndiv(GenFunc):
         with self.reserve_edit(1) as avail:
             if avail:
                 tot = min(len(self.invalid_dtypes), self.op.dtype_err_quota)
-                ys = sample(self.invalid_dtypes, tot)
+                ys = self.op.gen_rng.sample(self.invalid_dtypes, tot)
                 yield from ys
 
 class DTypeEquiv(GenFunc):
@@ -623,7 +623,7 @@ class ShapeInt(NodeFunc):
     def __call__(self, arg_shapes):
         shape = arg_shapes[self.arg_name]
         if len(shape) != 1:
-            return []
+            return
         else:
             arg = oparg.IntArg(shape[0])
             yield arg
@@ -672,7 +672,7 @@ class ShapeTensor2D(NodeFunc):
         rows = [ arg_shapes[n] for n in names ]
         if len({ len(r) for r in rows }) != 1:
             # unequal length rows
-            return []
+            return
         arg = oparg.ShapeTensor2DArg(rows)
         yield arg
 
@@ -691,8 +691,10 @@ class RankInt(NodeFunc):
         yield arg
         
 class Int(GenFunc):
-    def __init__(self, lo, hi):
+    def __init__(self, op, lo, hi):
         super().__init__(f'{lo}-{hi}')
+        self.op = op
+
         if lo is None:
             self.lo = -sys.maxsize - 1
         else:
@@ -703,7 +705,7 @@ class Int(GenFunc):
             self.hi = hi
 
     def __call__(self):
-        return [randint(self.lo, self.hi)]
+        yield self.op.gen_rng.randint(self.lo, self.hi)
 
 class Options(GenFunc):
     """

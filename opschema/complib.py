@@ -17,6 +17,12 @@ def filter_pad(filt, dilation):
 def filter_pad_t(filt, dilation):
     return f'({filt} - 1) * {dilation} + 1'
 
+def dilate(s, d):
+    return (s - 1) * d + 1
+
+def dilate_t(s,  d):
+    return f'({s} - 1) * {d} + 1'
+
 def ceildiv(a, b):
     return math.ceil(a / b)
 

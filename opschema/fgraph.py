@@ -1,4 +1,3 @@
-import itertools
 import inspect
 import enum
 from .error import SchemaError
@@ -297,7 +296,9 @@ class VarArgs(enum.Enum):
     Empty = 2         # neither
 
 def _topo_sort(nodes):
-    """Sort nodes with ancestors first"""
+    """
+    Sort nodes with ancestors first
+    """
     order = []
     todo = set(n.name for n in nodes)
     # done = set()
@@ -308,9 +309,10 @@ def _topo_sort(nodes):
         for ch in node.children:
             dfs(ch)
         order.append(node)
-    for n in nodes:
+    for n in sorted(nodes, key=lambda n: n.name):
         dfs(n)
-    return order[::-1]
+    topo_list = order[::-1]
+    return topo_list
 
 """
 Generation Graph API - a list-valued computation graph
@@ -412,7 +414,7 @@ def all_values(*nodes):
     results = [ tuple(c[n.name] for n in nodes) for c in config ]
     return results
 
-def gen_graph_iterate(nodes, report_nodes):
+def gen_graph_iterate_old(nodes, report_nodes):
     """
     Generate all possible settings of {nodes}, yielding the values of the
     subset of {report_nodes} as a name => value map
@@ -536,11 +538,4 @@ def pred_graph_evaluate(*nodes):
         if not n.evaluate():
             return n.get_cached()
     return None
-
-def func_graph_evaluate(*nodes):
-    topo_nodes = _topo_sort(nodes)
-    for node in topo_nodes:
-        val = node.value()
-        node.set_cached(val)
-    return { n.used_name(): n.get_cached() for n in topo_nodes }
 

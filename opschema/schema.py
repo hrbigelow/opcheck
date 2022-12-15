@@ -1,10 +1,11 @@
 import tensorflow as tf
 import traceback
 import inspect
+from collections import OrderedDict
 import sys, io, os
 import re
 import itertools
-from random import choice
+from random import Random
 from . import predicates as pr
 from . import generators as ge
 from . import infer as nf
@@ -109,9 +110,12 @@ class OpSchema(object):
 
         # Graphs
         self.pred_graph = {}
-        self.gen_graph = {} # idx => node, for generating inventory
+        self.gen_graph = {} 
         self.inf_graph = {}
         self.dims_graph = {}
+
+        # Random Number Generators
+        self.gen_rng = Random()
 
         # provides information for gr.DimsInput nodes
         self.dims_graph_input = {}
@@ -780,38 +784,12 @@ class OpSchema(object):
     def _prep_gen_tests(self):
         self.avail_test_edits = 1
 
-    def generate_args(self):
+    def generate_args(self, rand_seed=12345):
         self._prep_gen_tests()
-
-        live_kinds = (
-                ge.DTypeEquiv, ge.DTypeIndiv, ge.DTypesNotImpl,
-                ge.IndexRanks, ge.RankRange, ge.RankEquiv,
-                ge.Layout, ge.Sig, ge.SigMap,
-                ge.ArgRanks,
-                ge.ArgIndels,
-                ge.Options,
-                ge.ArgMutations,
-                )
-        out_kinds = (
-                ge.DTypesNotImpl,
-                # ge.IndexRanks,
-                # ge.SigMap,
-                # ge.ArgRanks,
-                ge.Options,
-                ge.ArgIndels,
-                ge.ArgMutations,
-                )
-        nodes = list(self.gen_graph.values())
-        live = [n for n in nodes if isinstance(n.func, live_kinds)]
-        out = [n for n in nodes if isinstance(n.func, out_kinds)] 
-        live = nodes
+        live = self.gen_graph.values()
         out = [self._gen_node(ge.Args)]
-
-        ctr = 1
-        for op_args in fgraph.gen_graph_values(live, out):
-            # print(f'\r{ctr}', end='', flush=True)
-            # ctr += 1
-            # print(op_args)
+        self.gen_rng.seed(rand_seed)
+        for op_args in fgraph.gen_graph_values(live, out, self):
             yield op_args[0] # extract tuple element
 
     def validate(self, out_dir, test_ids, skip_ids, dtype_err_quota):
@@ -828,6 +806,7 @@ class OpSchema(object):
         stats = { k: 0 for k in cats }
 
         op_args_gen = self.generate_args()
+        # op_args_gen = list(self.generate_args())
         # print(f'Generated {len(op_args_list)} test cases')
 
         for test_id, op_args in enumerate(op_args_gen, 1):
@@ -842,9 +821,10 @@ class OpSchema(object):
                 else:
                     test_ids.remove(test_id)
 
-            # print(op_args)
             # self.show_graph_calls = True
             arg_dict = { k: v.value() for k, v in op_args.items() }
+            # print(test_id, op_args)
+            # continue
             string_err = io.BytesIO()
             try:
                 with stderr_redirector(string_err):
@@ -1069,13 +1049,18 @@ class OpSchema(object):
 
     def gen_dims_func(self, out_sig, func, in_sig, max_prod, do_scalar, *pars):
         """
-        Calls func(*in_dims, *pars), which yields one or more
+        Calls func(gen_rng, *in_dims, *pars), which yields one or more
         results.  Each result is either a tuple (lo, hi), if out_sig is a
         single index, or a tuple of such tuples, one for each index in out_sig 
+
+        gen_rng is a system-provided random number generator.
 
         Multiplexes the call over the broadcasted collection of components in
         in_sig.  Broadcasting occurs if an index is integer or length-1 integer
         list.
+
+        if `do_scalar` is True, additionally yield a scalar dimension, which
+        represents a rank-agnostic broadcasted dimension.
         """
         try:
             self._check_out_sig(out_sig)
@@ -1087,8 +1072,8 @@ class OpSchema(object):
             ind.dims_node_cls = ge.GenDims
 
         pri_idx = self._get_rank_idx(in_sig, out_sig)
-        gdims = ge.GenDims(out_sig, in_sig, func, pri_idx, do_scalar, max_prod,
-                pars)
+        gdims = ge.GenDims(self, out_sig, in_sig, func, pri_idx, do_scalar,
+                max_prod, pars)
         G.set_registry(self.dims_graph)
         parents = self._get_dims_nodes(in_sig)
         ranks_dnode = self._dims_node(ge.DimsInput, base.INDEX_RANKS)
@@ -1099,7 +1084,7 @@ class OpSchema(object):
         Generate dimensions of {out_idx} of appropriate rank such that the
         product is in [1, max_prod]
         """
-        def gen():
+        def gen(rng):
             yield 1, None
         try:
             self.gen_dims_func(out_idx, gen, '', max_prod, False)
@@ -1111,7 +1096,7 @@ class OpSchema(object):
         Generate dimensions of {out_idx} of appropriate rank such that the
         product is in [min_prod, max_prod]
         """
-        def gen():
+        def gen(rng):
             yield min_val, max_val
         try:
             self.gen_dims_func(out_idx, gen, '', int(1e10), False)
@@ -1305,7 +1290,7 @@ class OpSchema(object):
         """
         G.set_registry(self.gen_graph)
         pred_obj = pr.ArgInt(arg_name, lo, hi)
-        gen_obj = ge.Int(lo, hi)
+        gen_obj = ge.Int(self, lo, hi)
         schema = self._pred_node(pr.Schema)
         p_arg = P.add_node(pred_obj, schema)
         g_arg = G.add_node(gen_obj)
@@ -1785,5 +1770,5 @@ class OpSchema(object):
         self._dot_graph(nodes, f'{stub}.inf')
 
         nodes = self.dims_graph.values()
-        self._dot_graph(nodes, f'{stub}.comp_dims')
+        self._dot_graph(nodes, f'{stub}.dims')
 

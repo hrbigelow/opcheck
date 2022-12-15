@@ -1,6 +1,7 @@
 def init_schema(op):
     op.add_index('b', 'batch', 1)
-    op.add_index('l', 'leading', (0,4))
+    # op.add_index('l', 'leading', (0,4))
+    op.add_index('l', 'leading', (1,1))
     op.add_index('c', 'channel', 1)
 
     formats = { 
@@ -17,7 +18,8 @@ def init_schema(op):
     op.gen_dims('l', 100)
     op.gen_dims('c', 100)
 
-    op.valid_dtypes('value', ('int', 'complex', 'float', 'uint8'))
+    # op.valid_dtypes('value', ('int', 'complex', 'float', 'uint8'))
+    op.valid_dtypes('value', ('int16', ))
     op.equate_dtypes('bias', 'value')
 
     op.return_tensor('bcl', 'blc')
