@@ -414,31 +414,11 @@ def all_values(*nodes):
     results = [ tuple(c[n.name] for n in nodes) for c in config ]
     return results
 
-def gen_graph_iterate_old(nodes, report_nodes):
-    """
-    Generate all possible settings of {nodes}, yielding the values of the
-    subset of {report_nodes} as a name => value map
-    """
-    # print('gen_graph_iterate: ', ','.join(n.name for n in visited_nodes))
-    topo_nodes = _topo_sort(nodes)
-    val_map = {}
-    def gen_rec(i):
-        if i == len(topo_nodes):
-            yield dict(val_map)
-            return
-        node = topo_nodes[i]
-        values = node.values()
-        for val in values:
-            node.set_cached(val)
-            name = node.used_name()
-            val_map[name] = val
-            yield from gen_rec(i+1)
-    yield from gen_rec(0)
-
-def gen_graph_iterate(nodes):
+def gen_graph_iterate(nodes, full_name=True):
     """
     Produce all possible settings of the graph nodes as a generator of map
-    items.  Each map item is node.name => val
+    items.  Each map item is name => val.  If `full_name`, use node.name as the
+    name, otherwise use node.sub_name
     """
     # print('gen_graph_iterate: ', ','.join(n.name for n in visited_nodes))
     topo_nodes = _topo_sort(nodes)
@@ -451,12 +431,12 @@ def gen_graph_iterate(nodes):
         values = node.values()
         for val in values:
             node.set_cached(val)
-            name = node.used_name()
+            name = node.name if full_name else node.sub_name
             val_map[name] = val
             yield from gen_rec(i+1)
     yield from gen_rec(0)
 
-def _gen_graph(live_nodes, result_nodes, yield_map, op=None):
+def _gen_graph(live_nodes, result_nodes, yield_map, full_name, op):
     """
     Iterate over all settings of live_nodes.  For each setting, collect the
     current values of result_nodes (which must be a subset of live_nodes)
@@ -478,7 +458,7 @@ def _gen_graph(live_nodes, result_nodes, yield_map, op=None):
         imap[li] = ri
 
     result = [None] * len(result_nodes)
-    res_names = [r.used_name() for r in result_nodes]
+    res_names = [r.name if full_name else r.sub_name for r in result_nodes]
 
     def gen_rec(i):
         if i == len(live_nodes):
@@ -519,14 +499,15 @@ def gen_graph_values(live_nodes, result_nodes, op=None):
     Iterate over all configurations of live_nodes, reporting the tuple of
     values of result_nodes, which must be a subset of live_nodes
     """
-    return _gen_graph(live_nodes, result_nodes, False, op)
+    return _gen_graph(live_nodes, result_nodes, False, False, op)
 
-def gen_graph_map(live_nodes, result_nodes, op=None):
+def gen_graph_map(live_nodes, result_nodes, full_name=True, op=None):
     """
     Iterate over all configurations of live_nodes, reporting the map values of
-    result_nodes (node name => value), which must be a subset of live_nodes
+    result_nodes (node name => value), which must be a subset of live_nodes.
+    if `full_name`, use node.name.  Otherwise use node.sub_name
     """
-    return _gen_graph(live_nodes, result_nodes, True, op)
+    return _gen_graph(live_nodes, result_nodes, True, full_name, op)
 
 def pred_graph_evaluate(*nodes):
     """

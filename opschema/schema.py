@@ -453,31 +453,38 @@ class OpSchema(object):
                 nodes.append(node)
         return nodes
 
+    def _dims_arg_nodes(self):
+        """
+        Return a map of arg_name => node, which includes all generative nodes
+        used as inputs to any computed dims.  Although INDEX_RANKS is one of
+        the DimsInput nodes, this is not included since it is never an input
+        for a CompDims node
+        """
+        gen_nodes = {}
+        for node in self.dims_graph.values():
+            func = node.func
+            if isinstance(func, ge.DimsInput) and func.gen_node is not None:
+                gen_node = func.gen_node
+                gen_nodes[gen_node.sub_name] = gen_node
+        return gen_nodes
+
     def comp_dims_report(self, use_full_names=False):
         """
         Show a listing of all computed index dimensions 
         """
-        comp_nodes = self._comp_dims_nodes() 
-        if len(comp_nodes) == 0:
-            return None
-
+        gen_nodes_map = self._dims_arg_nodes()
+        gen_nodes = gen_nodes_map.values()
         render = base.RenderCompDims(self)
-        inp_nodes = self._dims_input_nodes()
-        inp_nodes = [n for n in inp_nodes if n.sub_name != base.INDEX_RANKS]
-        inp_names = [n.sub_name for n in inp_nodes]
-        self.dims_graph_input[base.INDEX_RANKS] = {}
-
-        # The generative nodes outside the comp_dims graph
-        gen_nodes = [n.func.gen_node for n in inp_nodes if n.func.gen_node is
-                not None]
 
         comp_formulas = {}
-        vals_list = fgraph.all_values(*gen_nodes)
-        for vals in vals_list:
-            for name, val in zip(inp_names, vals):
-                if isinstance(val, OpArg):
-                    val = val.value()
-                self.dims_graph_input[name] = val
+        gen = fgraph.gen_graph_map(gen_nodes, gen_nodes, full_name=False)
+        dims_inputs_list = list(gen)
+        if len(dims_inputs_list) == 0:
+            dims_inputs_list = [{}]
+
+        for dims_inputs in dims_inputs_list:
+            render.set_inputs(dims_inputs)
+            render.set_inputs({ base.INDEX_RANKS: {} })
             if use_full_names:
                 eq_map = render.get_snake()
             else:
@@ -487,11 +494,31 @@ class OpSchema(object):
                 eqn = f'{lhs} = {rhs}'
                 cset.add(eqn)
 
+        if len(comp_formulas) == 0:
+            return None
+
         formulas = []
         for idx, cset in comp_formulas.items():
             formulas.extend(cset)
 
         report = '\n'.join(formulas)
+        return report
+
+    def index_preds_report(self):
+        """
+        Show a listing of index predicates
+        """
+        if len(self.index_preds) == 0:
+            return None
+
+        snakes = []
+        olcs = []
+        for pred in self.index_preds:
+            snake = pred.get_formula(self, snake_case=True)
+            olc = pred.get_formula(self, snake_case=False)
+            snakes.append(snake)
+            olcs.append(olc)
+        report = '\n'.join(snakes) + '\n\n' + '\n'.join(olcs)
         return report
 
     def dtype_rules_report(self):
@@ -579,6 +606,7 @@ class OpSchema(object):
         index_ranks = self.index_ranks_report()
         comp_dims_snake = self.comp_dims_report(True)
         comp_dims_olc = self.comp_dims_report(False)
+        index_preds = self.index_preds_report()
         dtype_rules = self.dtype_rules_report()
         combo_rules = self.excluded_dtypes_report()
 
@@ -593,6 +621,11 @@ class OpSchema(object):
             finals.append(f'Computed dimensions\n\nNone')
         else:
             finals.append(f'Computed dimensions\n\n{comp_dims_snake}\n\n{comp_dims_olc}')
+
+        if index_preds is None:
+            finals.append(f'Index predicates\n\nNone')
+        else:
+            finals.append(f'Index predicates\n\n{index_preds}')
 
         finals.append(f'DType Rules\n\n{dtype_rules}')
 
@@ -1640,7 +1673,7 @@ class OpSchema(object):
             inode = self.inf_graph[pri_idx]
             inode.func.add_shapes_constraint(cons)
 
-    def dims_pred(self, pred_name, pfunc, pfunc_t, indices, *arg_names):
+    def dims_pred(self, pred_name, pfunc, pfunc_t, indices):
         """
         Registers {pfunc} with the schema to be used as an additional
         predicate for {indexes} dimensions.
@@ -1652,21 +1685,24 @@ class OpSchema(object):
         {pred_name} is a name given to this custom predicate.  It may be used
         in error messages.
 
-        Called as pfunc(*index_shapes, *argvals), where index_shapes
-        are the resolved shapes of `indices` and argvals are the resolved
-        values of `arg_names`.
+        Called as pfunc(*index_shapes), where index_shapes
+        are the resolved shapes of `indices`.
+
+        Note: dims predicate functions can only operate on index dimensions.
+        To model a predicate that depends on op parameters as well, first
+        create an intermediate computed index with add_index and comp_dims API
+        calls, which accept non-index parameters.  Then, use that intermediate
+        index in a predicate.
         """
-        pred = base.IndexPredicate(pred_name, False, pfunc, pfunc_t, indices,
-                *arg_names)
+        pred = base.IndexPredicate(pred_name, False, pfunc, pfunc_t, indices)
         self.index_preds.append(pred)
 
-    def dims_pred_cw(self, pred_name, pfunc, pfunc_t, indices, *arg_names):
+    def dims_pred_cw(self, pred_name, pfunc, pfunc_t, indices):
         """
         Like dims_pred, but pfunc is called 'component-wise'.  That is, it is
         called once for each set of broadcasted index shapes.
         """
-        pred = base.IndexPredicate(pred_name, True, pfunc, pfunc_t, indices,
-                *arg_names)
+        pred = base.IndexPredicate(pred_name, True, pfunc, pfunc_t, indices)
         self.index_preds.append(pred)
 
     def dims_pred_rng(self, idx, lo, hi):

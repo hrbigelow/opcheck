@@ -63,8 +63,8 @@ def main():
     func_map = { 
             'list': list_schemas,
             'explain': explain,
-            'gen_input': gen_input,
-            'test_op': test_op,
+            # 'gen_input': gen_input,
+            # 'test_op': test_op,
             'validate': validate,
             'graph': graph
             }

@@ -24,7 +24,7 @@ def not_both_over_one(shape1, shape2):
     return not (o1 and o2)
 
 def not_both_over_one_templ(shape1, shape2):
-    msg =  f'"{shape1}" and "{shape2}" dimensions cannot '
+    msg =  f'{shape1} and {shape2} dimensions cannot '
     msg += f'both contain an element over 1'
     return msg
 
@@ -32,5 +32,5 @@ def divis_by(numer, denom):
     return numer % denom == 0
 
 def divis_by_t(numer, denom):
-    return f'"{numer}" must be divisible by "{denom}"'
+    return f'{numer} must be divisible by {denom}'
 

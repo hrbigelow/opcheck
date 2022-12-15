@@ -5,6 +5,7 @@ import re
 from collections import namedtuple, OrderedDict
 from .error import SchemaError
 from . import fgraph
+from . import oparg
 
 LAYOUT = ':layout'
 SINGLE_FORMAT = ':single_format'
@@ -568,22 +569,22 @@ class DataFormats(object):
         return self.formats[data_format][1]
 
 class IndexPredicate(object):
-    def __init__(self, name, cwise, pfunc, pfunc_t, indices, *arg_names):
+    def __init__(self, name, cwise, pfunc, pfunc_t, indices):
         self.name = name
         self.cwise = cwise
         self.pfunc = pfunc
         self.pfunc_t = pfunc_t
         self.indices = indices
-        self.arg_names = arg_names
 
-    def __call__(self, *dims_argvals):
+    def get_formula(self, op, snake_case):
+        inputs = tuple(op.index[idx].display_name(snake_case) for idx in
+                self.indices)
+        return self.pfunc_t(*inputs)
+
+    def __call__(self, *dims):
         """
         Evaluate the predicate either component-wise or all at once
         """
-        ninds = len(self.indices)
-        dims = dims_argvals[:ninds]
-        argvals = dims_argvals[ninds:]
-
         if self.cwise:
             ranks = { len(d) for d in dims if isinstance(d, (list, tuple)) }
             if len(ranks) > 1:
@@ -591,17 +592,17 @@ class IndexPredicate(object):
                     f'IndexPredicate is component-wise but input indices '
                     f'{self.indices} have different ranks')
             elif len(ranks) == 0:
-                return self.pfunc(*dims, *argvals)
+                return self.pfunc(*dims)
             else:
                 rank = ranks.pop()
                 for c in range(rank):
                     ins = tuple(d if isinstance(d, int) else d[c] for d in dims)
-                    if not self.pfunc(*ins, *argvals):
+                    if not self.pfunc(*ins):
                         return False
                 return True
         else:
             try:
-                return self.pfunc(*dims, *argvals)
+                return self.pfunc(*dims)
             except BaseException as ex:
                 raise SchemaError(f'IndexPredicate error in non-cw mode: {ex}')
     
@@ -750,10 +751,11 @@ class RenderCompDims(object):
     def __init__(self, op):
         self.op = op
 
-    def set_inputs(self, obs_args, index_ranks, layout):
-        self.op.dims_graph_input.update(obs_args)
-        self.op.dims_graph_input[INDEX_RANKS] = dict(index_ranks)
-        self.op.dims_graph_input[LAYOUT] = layout
+    def set_inputs(self, dims_inputs):
+        for name, val in dims_inputs.items():
+            if isinstance(val, oparg.OpArg):
+                val = val.value()
+            self.op.dims_graph_input[name] = val
 
     def init_dims_graph(self, idx_info):
         # initialize input nodes
@@ -777,13 +779,12 @@ class RenderCompDims(object):
         self.op.comp_dims_mode = comp_mode 
         self.init_dims_graph(inputs)
         comp_nodes = self.op._comp_dims_nodes()
-        comp_names = tuple(n.sub_name for n in comp_nodes)
         input_nodes = self.op._dims_input_nodes()
-        gen = fgraph.gen_graph_iterate(comp_nodes + input_nodes)
+        live_nodes = comp_nodes + input_nodes
+        gen = fgraph.gen_graph_map(live_nodes, comp_nodes, full_name=False)
         result = list(gen)
         assert len(result) == 1, 'Internal Error with comp graph'
-        dims_map = { idx: result[0][idx] for idx in comp_names }
-        return dims_map
+        return result[0]
 
     def get_olc(self):
         """

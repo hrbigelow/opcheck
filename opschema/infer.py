@@ -217,9 +217,12 @@ class IndexConstraints(ReportNodeFunc):
             yield shape_edit
             return
 
-        # each usage should have a single entry
-        self.render.set_inputs(obs_args, shape_edit.index_ranks,
-                shape_edit.layout)
+        dims_inputs = { 
+                **obs_args, 
+                base.INDEX_RANKS: shape_edit.index_ranks,
+                base.LAYOUT: shape_edit.layout 
+                }
+        self.render.set_inputs(dims_inputs)
 
         input_dims = shape_edit.get_input_dims(use_scalars=True)
         comp_dims = self.render.get_dims(input_dims)

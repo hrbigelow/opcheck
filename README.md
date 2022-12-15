@@ -62,6 +62,18 @@ legal for the op.  Once defined, it provides four functionalities:
 
 ## Synopsis
 
+    # list available ops
+    python -m opschema.cl list
+
+    # explain an OP_PATH
+    python -m opschema.cl explain OP_PATH [-i|--include_inventory]
+
+    # print graphs for OP_PATH in .pdf format
+    python -m opschema.cl graph OP_PATH OUT_DIR
+
+    # validate OP_PATH schema against the TensorFlow op
+    python -m opschema.cl validate OP_PATH OUT_DIR [--test_ids] [--skip_ids] [--max_dtype_err] 
+
 `opschema` provides a registry for the available schemas and allows you
 to load them individually or all together.  Schemas are instances of
 `opschema.schema.OpSchema`, which provides member functions to configure it.

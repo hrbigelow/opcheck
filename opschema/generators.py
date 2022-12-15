@@ -436,7 +436,7 @@ class ArgMutations(GenFunc):
         dims_nodes = [n for n in all_nodes if isinstance(n.func, dims_kinds)]
 
         self.op.comp_dims_mode = base.CompDimsMode.Dims
-        index_gen = fgraph.gen_graph_map(all_nodes, dims_nodes)
+        index_gen = fgraph.gen_graph_map(all_nodes, dims_nodes, full_name=False)
         index_dims_list = []
         for tup_map in index_gen:
             dims_map = {}

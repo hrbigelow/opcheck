@@ -11,7 +11,8 @@ def init_schema(op):
     op.add_index('s', 'strides', 'i')
     op.add_index('d', 'dilations', 'i')
     op.add_index('l', 'output channel', 1)
-    op.add_index('o', 'output spatial', 'i')
+    op.add_index('o', 'output spatial declared', 'i')
+    op.add_index('q', 'output spatial computed', 'i')
 
     op.arg_tensor('input', 'bik')
     op.arg_tensor('filters', 'flk')
@@ -20,7 +21,7 @@ def init_schema(op):
     op.arg_shape_bcast_list('dilations', 'd')
     op.arg_option('padding', ('VALID', 'SAME'))
     op.arg_unchecked('name')
-    op.return_tensor('bol')
+    op.return_tensor('bql')
 
     op.gen_dims('b', 100)
     op.gen_dims('f', 100)
@@ -44,19 +45,27 @@ def init_schema(op):
 
     op.gen_dims_func('o', odims_gen, 'jg', 1000, False)   
 
-    def oi_pred(o, j, g, padding):
+    def qdims(j, g, padding):
         if padding == 'VALID':
-            return (o - g + 1) == j
+            return j + g - 1
         else:
-            return o == j
+            return j
 
-    def oi_pred_t(o, j, g, padding):
+    def qdims_t(j, g, padding):
         if padding == 'VALID':
-            return f'({o} - {g} + 1) must equal {j}'
+            return f'{j} + {g} - 1'
         else:
-            return f'{o} must equal {j}'
+            return j
 
-    op.dims_pred_cw('in-out-pred', oi_pred, oi_pred_t, 'ojg', 'padding')
+    op.comp_dims_cw('q', qdims, qdims_t, 'jg', 'padding')
+
+    def oq_pred(o, q):
+        return o == q
+
+    def oq_pred_t(o, q):
+        return f'{o} must equal {q}'
+
+    op.dims_pred_cw('', oq_pred, oq_pred_t, 'oq')
 
     op.valid_dtypes('input', ('float',))
     op.equate_dtypes('filters', 'input')
