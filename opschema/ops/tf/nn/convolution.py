@@ -1,13 +1,13 @@
 from opschema.base import LAYOUT
-from opschema.complib import filter_pad, filter_pad_t, ceildiv
-from opschema.genlib import stride_dil, divis_by, below_above 
+from opschema.complib import dilate, dilate_t, ceildiv, conv, conv_t
+from opschema.genlib import WrapParams, stride_dil, divis_by, below_above 
 from opschema import predlib, complib
 
 def init_schema(op):
     op.add_index('b', 'batch', (1,5))
     op.add_index('i', 'input spatial', (1,3))
     op.add_index('f', 'filter spatial', 'i')
-    op.add_index('p', 'padded filter spatial', 'i')
+    op.add_index('g', 'dilated filter spatial', 'i')
     op.add_index('s', 'strides', 'i')
     op.add_index('d', 'dilations', 'i')
     op.add_index('k', 'input channel', 1)
@@ -39,25 +39,13 @@ def init_schema(op):
     op.gen_dims('j', 30)
     op.gen_dims_func('s', stride_dil, '', 10, True) 
     op.gen_dims_func('d', stride_dil, '', 10, True) 
-    op.comp_dims_cw('p', filter_pad, filter_pad_t, 'fd') 
-    op.gen_dims_func('i', below_above, 'p', 1000, False)  
-    op.gen_dims_func('k', divis_by, 'j', 300, False, 300)
+    op.comp_dims_cw('g', dilate, dilate_t, 'fd') 
+    op.gen_dims_func('i', below_above, 'g', 1000, False)  
 
-    def odims(i, p, s, padding):
-        if padding == 'VALID':
-            out = ceildiv(i - p + 1, s)
-        else:
-            out = ceildiv(i, s)
-        return out
+    wrap_divis_by = WrapParams(divis_by, 300)
+    op.gen_dims_func('k', wrap_divis_by, 'j', 300, False)
 
-    def odims_t(i, p, s, padding):
-        if padding == 'VALID':
-            tem = f'ceil(({i} - {p} + 1) / {s})'
-        else:
-            tem = f'ceil({i} / {s})' 
-        return tem
-
-    op.comp_dims_cw('o', complib.conv, complib.conv_t, 'ips', 'padding')
+    op.comp_dims_cw('o', conv, conv_t, 'ig', 'padding')
 
     op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))
     op.equate_dtypes('filters', 'input')

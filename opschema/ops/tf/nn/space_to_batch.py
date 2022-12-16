@@ -1,6 +1,6 @@
 import numpy as np
 from opschema.predlib import divis_by, divis_by_t
-from opschema.genlib import mod_padding
+from opschema import genlib
 
 def init_schema(op):
     op.add_index('b', 'batch', 1)
@@ -23,7 +23,8 @@ def init_schema(op):
     op.gen_dims('k', 50)
     op.gen_dims('r', 100)
 
-    op.gen_dims_func('se', mod_padding, 'ik', 1e10, False, 100)
+    mod_padding100 = genlib.WrapParams(genlib.mod_padding, 100)
+    op.gen_dims_func('se', mod_padding100, 'ik', 1e10, False)
 
     # ensure that padded input is divisible by block size
     op.dims_pred_cw('pad_input_block', divis_by, divis_by_t, 'jk')

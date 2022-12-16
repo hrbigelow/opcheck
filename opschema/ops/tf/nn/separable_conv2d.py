@@ -49,5 +49,6 @@ def init_schema(op):
     def wdims_t(c, k):
         return f'{c} * {k}'
 
+    op.comp_dims_cw('p', dilate, dilate_t, 'i
     op.comp_dims_cw('w', wdims, wdims_t, 'ck')
 

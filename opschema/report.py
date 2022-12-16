@@ -412,8 +412,7 @@ def _idx_constraint_msg(op, fix, obs_args):
         items.append(item)
     values_msg = grammar_list(items)
 
-    argvals = tuple(obs_args[arg] for arg in pred.arg_names)
-    constraint_msg = pred.pfunc_t(*templ_args, *argvals)
+    constraint_msg = pred.pfunc_t(*templ_args)
 
     notice = f'{values_msg}.  {constraint_msg}'
 

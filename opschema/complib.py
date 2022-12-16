@@ -11,17 +11,35 @@ an integer list.
 import numpy as np
 import math
 
-def filter_pad(filt, dilation):
-    return (filt - 1) * dilation + 1
-
-def filter_pad_t(filt, dilation):
-    return f'({filt} - 1) * {dilation} + 1'
-
 def dilate(s, d):
     return (s - 1) * d + 1
 
 def dilate_t(s,  d):
     return f'({s} - 1) * {d} + 1'
+
+def conv(i, f, padding):
+    if padding == 'VALID':
+        return i - f + 1
+    else:
+        return i
+
+def conv_t(i, f, padding):
+    if padding == 'VALID':
+        return f'{i} - {f} + 1'
+    else:
+        return i
+
+def tconv(i, f, padding):
+    if padding == 'VALID':
+        return i + f - 1
+    else:
+        return i
+
+def tconv_t(i, f, padding):
+    if padding == 'VALID':
+        return f'{i} + {f} - 1'
+    else:
+        return i
 
 def ceildiv(a, b):
     return math.ceil(a / b)
@@ -31,33 +49,4 @@ def mod(a, b):
 
 def reduce_prod(a):
     return int(np.prod(a))
-
-def conv(input, pad_filter, stride, padding):
-    if padding == 'VALID':
-        out = ceildiv(input - pad_filter + 1, stride)
-    else:
-        out = ceildiv(input, stride)
-    return out
-
-def conv_t(input, pad_filter, stride, padding):
-    if padding == 'VALID':
-        tem = f'ceil(({input} - {pad_filter} + 1) / {stride})'
-    else:
-        tem = f'ceil({input} / {stride})' 
-    return tem
-
-# transpose conv output calculation
-def tconv(input, pad_filter, stride, padding):
-    if padding == 'VALID':
-        out = input - (pad_filter - 1) * stride
-    else:
-        out = input
-    return out
-
-def tconv_t(input, pad_filter, stride, padding):
-    if padding == 'VALID':
-        txt = f'{input} - ({pad_filter} - 1) * {stride}'
-    else:
-        txt = input
-    return txt
 

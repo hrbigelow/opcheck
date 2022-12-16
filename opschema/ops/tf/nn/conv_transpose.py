@@ -31,33 +31,18 @@ def init_schema(op):
     op.gen_dims('k', 30)
     op.gen_dims('l', 30)
 
-    jdims =   lambda i, s: i * s
-    jdims_t = lambda i, s: f'{i} * {s}'
-
     # input is dilated with 'strides' 
     op.comp_dims_cw('j', dilate, dilate_t, 'is') 
     # filter is dilated with 'dilations'
     op.comp_dims_cw('g', dilate, dilate_t, 'fd')
 
+    # TODO: does this need padding switch?
     def odims_gen(rng, j, g):
         val = j + g - 1
         yield val, val
 
     op.gen_dims_func('o', odims_gen, 'jg', 1000, False)   
-
-    def qdims(j, g, padding):
-        if padding == 'VALID':
-            return j + g - 1
-        else:
-            return j
-
-    def qdims_t(j, g, padding):
-        if padding == 'VALID':
-            return f'{j} + {g} - 1'
-        else:
-            return j
-
-    op.comp_dims_cw('q', qdims, qdims_t, 'jg', 'padding')
+    op.comp_dims_cw('q', tconv, tconv_t, 'jg', 'padding')
 
     def oq_pred(o, q):
         return o == q

@@ -784,12 +784,14 @@ class OpSchema(object):
         for ind in self.index.values():
             if ind.dims_node_cls is None:
                 raise SchemaError(
+                    f'Schema {self.op_path} contains error:\n'
                     f'Index {ind.idx} has not been registered with either '
                     f'gen_dims_* or comp_dims_* API calls.  All indexes '
                     f'must be registered with one of these.')
             if ind.is_computed():
                 if ind.has_insig:
                     raise SchemaError(
+                        f'Schema {self.op_path} contains error:\n'
                         f'Index {ind.idx} is a computed index (registered '
                         f'with comp_dims* API call) but also appears in one '
                         f'or more input signatures.  Only non-computed indexes '
@@ -797,6 +799,7 @@ class OpSchema(object):
             else:
                 if not ind.has_insig:
                     raise SchemaError(
+                        f'Schema {self.op_path} contains error:\n'
                         f'Index {ind.idx} is a non-computed index '
                         f'(registered with gen_dims* API call) but does not '
                         f'appear in any input signature.  All non-computed '
@@ -1080,7 +1083,7 @@ class OpSchema(object):
                 f'the dims_graph with one of the gen_dims_* or comp_dims '
                 f'API functions')
 
-    def gen_dims_func(self, out_sig, func, in_sig, max_prod, do_scalar, *pars):
+    def gen_dims_func(self, out_sig, func, in_sig, max_prod, do_scalar, *arg_names):
         """
         Calls func(gen_rng, *in_dims, *pars), which yields one or more
         results.  Each result is either a tuple (lo, hi), if out_sig is a
@@ -1098,19 +1101,39 @@ class OpSchema(object):
         try:
             self._check_out_sig(out_sig)
         except SchemaError as ex:
-            raise SchemaError(f'gen_dims_func got error: {ex}')
+            raise SchemaError(f'Error constructing gen_dims for {out_sig}:\n{ex}')
 
+        mut_gnode = self._gen_node(ge.ArgMutations)
         for idx in out_sig:
             ind = self.index[idx]
             ind.dims_node_cls = ge.GenDims
 
+        arg_parents = []
+        for arg_name in arg_names:
+            dnode = self._maybe_add_arg_parent(mut_gnode, arg_name)
+            arg_parents.append(dnode)
+
         pri_idx = self._get_rank_idx(in_sig, out_sig)
-        gdims = ge.GenDims(self, out_sig, in_sig, func, pri_idx, do_scalar,
-                max_prod, pars)
+        gdims = ge.GenDims(self, out_sig, in_sig, func, pri_idx, do_scalar, max_prod,
+            *arg_names)
         G.set_registry(self.dims_graph)
         parents = self._get_dims_nodes(in_sig)
         ranks_dnode = self._dims_node(ge.DimsInput, base.INDEX_RANKS)
-        G.add_node_sn(gdims, ranks_dnode, *parents)
+        G.add_node_sn(gdims, ranks_dnode, *parents, *arg_parents)
+
+    def gen_dims_calc(self, out_sig, func, in_sig, *arg_names):
+        """
+        Calls func(*in_dims, *arg_vals) which yields one or more results.
+        Each result is either a tuple (lo, hi), if out_sig is a single index,
+        or a tuple of tuples, one for each index in out_sig.
+
+        `arg_names` must be names of arguments passed to the op
+        arg_vals are the runtime resolved values of the argument names
+        """
+        def gen(rng, *args):
+            yield from func(*args)
+
+        return self.gen_dims_func(out_sig, gen, in_sig, int(1e10), False, *arg_names)
 
     def gen_dims(self, out_idx, max_prod):
         """
@@ -1161,34 +1184,47 @@ class OpSchema(object):
         """
         return self._comp_dims(out_idx, func, tfunc, in_sig, True, *arg_names)
 
+    def _maybe_add_arg_parent(self, node, arg_name):
+        if arg_name == base.LAYOUT:
+            arg_gnode = self._gen_node(ge.Layout, base.LAYOUT) 
+            node.maybe_append_parent_sn(arg_gnode)
+
+        elif arg_name in self.arg_order:
+            arg_gnode = self.arg_gen_nodes[arg_name]
+            node.maybe_append_parent_sn(arg_gnode)
+
+        else:
+            raise SchemaError(
+                f'name \'{arg_name}\' in arg_names must be either a '
+                f'framework op argument, or the constant '
+                f'\'{base.LAYOUT}\'.\n'
+                f'Input arguments are: ' + ', '.join(self.arg_order))
+
+        dnode = self._dims_node(ge.DimsInput, arg_name)
+        if dnode is None:
+            dobj = ge.DimsInput(self, arg_name)
+            dnode = G.add_node(dobj)
+        return dnode
+
     def _comp_dims(self, out_idx, func, tfunc, in_sig, cwise, *arg_names):
+        """
+        Instantiate `out_idx` as a computed index.  The dimensions are computed
+        as func(*in_dims, *arg_vals).  If `cwise`, dimensions are computed
+        component-wise: func is called once per component.
+
+        arg_vals are the run-time argument values resolved from `arg_names`
+
+        tfunc is the corresponding template function, which produces
+        human-readable formulae of the computation.
+        """
         self._check_out_sig(out_idx)
         mut_gnode = self._gen_node(ge.ArgMutations)
 
         G.set_registry(self.dims_graph)
 
         arg_parents = []
-
         for arg_name in arg_names:
-            if arg_name == base.LAYOUT:
-                arg_gnode = self._gen_node(ge.Layout, base.LAYOUT) 
-                mut_gnode.maybe_append_parent_sn(arg_gnode)
-
-            elif arg_name in self.arg_order:
-                arg_gnode = self.arg_gen_nodes[arg_name]
-                mut_gnode.maybe_append_parent_sn(arg_gnode)
-
-            else:
-                raise SchemaError(
-                    f'name \'{arg_name}\' in arg_names must be either a '
-                    f'framework op argument, or the constant '
-                    f'\'{base.LAYOUT}\'.\n'
-                    f'Input arguments are: ' + ', '.join(self.arg_order))
-
-            dnode = self._dims_node(ge.DimsInput, arg_name)
-            if dnode is None:
-                dobj = ge.DimsInput(self, arg_name)
-                dnode = G.add_node(dobj)
+            dnode = self._maybe_add_arg_parent(mut_gnode, arg_name)
             arg_parents.append(dnode)
 
         ind = self.index[out_idx]

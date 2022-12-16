@@ -1,10 +1,12 @@
 from opschema import genlib
+from opschema.complib import conv, conv_t, dilate, dilate_t
 
 def init_schema(op):
     op.add_index('b', 'batch', (1,10))
     op.add_index('i', 'input spatial', 2)
     op.add_index('k', 'input channel', 1)
     op.add_index('f', 'filter spatial', 'i')
+    op.add_index('g', 'dilated filter spatial', 'i')
     op.add_index('l', 'output channel', 1)
     op.add_index('o', 'output spatial', 'i')
     op.add_index('r', 'rate', 1) 
@@ -25,21 +27,8 @@ def init_schema(op):
     op.valid_dtypes('value', ('int32', 'float',))
     op.equate_dtypes('filters', 'value')
 
-    def odims(i, f, r, padding):
-        if padding == 'VALID':
-            out = i - (f - 1) * r
-        else:
-            out = i
-        return out
-
-    def odims_t(i, f, r, padding):
-        if padding == 'VALID':
-            txt = f'{i} - ({f} - 1) * {r}'
-        else:
-            txt = f'{i}'
-        return txt
-
-    op.comp_dims_cw('o', odims, odims_t, 'ifr', 'padding')
+    op.comp_dims_cw('g', dilate, dilate_t, 'fr')
+    op.comp_dims_cw('o', conv, conv_t, 'ig', 'padding')
     op.return_tensor('bol')
 
 

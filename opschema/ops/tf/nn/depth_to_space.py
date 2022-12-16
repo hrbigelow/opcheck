@@ -33,10 +33,18 @@ def init_schema(op):
 
     op.gen_dims('b', 100)
     op.gen_dims('i', 500)
-    op.gen_dims_func('s', genlib.interval, '', 100, False, 1, 8)
-    op.gen_dims_func('c', genlib.interval, '', 4, False, 3, 5)
+
+    interval18 = genlib.WrapParams(genlib.interval, 1, 8)
+    op.gen_dims_func('s', interval18, '', 100, False)
+
+    interval35 = genlib.WrapParams(genlib.interval, 3, 5)
+    op.gen_dims_func('c', interval35, '', 4, False)
+
     op.comp_dims_cw('o', mul, mult, 'is')
     op.comp_dims_cw('t', sq, sqt, 's')
-    op.gen_dims_func('k', genlib.divis_by, 't', 100, False, 100)
+
+    divis_by100 = genlib.WrapParams(genlib.divis_by, 100)
+    op.gen_dims_func('k', divis_by100, 't', 100, False)
+
     op.comp_dims_cw('f', div, divt, 'kt')
 

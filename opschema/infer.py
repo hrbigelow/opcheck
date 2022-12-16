@@ -237,9 +237,8 @@ class IndexConstraints(ReportNodeFunc):
             if not all(idx in index_dims for idx in pred.indices):
                 continue
             pred_input_dims = [ index_dims[idx] for idx in pred.indices ]
-            # resolve argnames
-            argvals = tuple(obs_args[v] for v in pred.arg_names)
-            if not pred(*pred_input_dims, *argvals):
+
+            if not pred(*pred_input_dims):
                 # collect the predecessor formulas
                 comp_nodes = self.op._comp_dims_nodes()
                 comp_names = [ n.sub_name for n in comp_nodes ]

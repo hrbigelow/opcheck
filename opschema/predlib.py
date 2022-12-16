@@ -9,8 +9,6 @@ are two types of functions in this library:
 Note that the entire shape of an index can either be an integer list, or a
 single integer (representing a rank-agnostic shape)
 """
-import numpy as np
-
 def not_both_over_one(shape1, shape2):
     """
     Return true if, for all i, not(shape1[i] > 1 and shape2[i] > 1) is true

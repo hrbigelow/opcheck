@@ -7,7 +7,6 @@ import random
 import numpy as np
 
 def list_schemas():
-    print('Available Schemas in ops directory')
     for op_path in opschema.list_schemas():
         print(op_path)
 

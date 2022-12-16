@@ -3,6 +3,14 @@ Functions for use in gen_dims_func API call.  These are generator functions
 which generate lo, hi integer pairs defining the range for dims in test case
 generation.  If lo and/or hi are None, this indicates an open range.
 """
+class WrapParams(object):
+    def __init__(self, gen_func, *pars):
+        self.gen_func = gen_func
+        self.trailing_pars = pars
+
+    def __call__(self, *args):
+        yield from self.gen_func(*args, *self.trailing_pars)
+
 def stride_dil(rng):
     yield 1, 1
     yield 2, None 

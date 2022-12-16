@@ -81,7 +81,7 @@ class GenDims(NodeFunc):
     It is called once per component in the rank of {rank_idx}.
     """
     def __init__(self, op, sig, in_sig, func, rank_idx, yield_scalar, max_prod,
-            pars):
+        *arg_names):
         super().__init__(sig)
         self.op = op
         self.in_sig = in_sig
@@ -89,7 +89,7 @@ class GenDims(NodeFunc):
         self.rank_idx = rank_idx
         self.yield_scalar = yield_scalar
         self.max_prod = max_prod
-        self.pars = pars
+        self.arg_names = arg_names
         self.num_indexes = len(sig)
 
     @staticmethod
@@ -110,8 +110,7 @@ class GenDims(NodeFunc):
         else:
             dims_list = []
             for idx_range in list(zip(*comp_ranges)):
-                dims = base.range_under_size(idx_range, self.max_prod,
-                        self.op.gen_rng)
+                dims = base.range_under_size(idx_range, self.max_prod, self.op.gen_rng)
                 dims_list.append(dims)
             yield tuple(dims_list)
 
@@ -124,7 +123,12 @@ class GenDims(NodeFunc):
         else:
             yield tuple(d[0] for d in dims)
 
-    def __call__(self, index_ranks, **grouped_dims_map):
+    def __call__(self, index_ranks, **dims_and_args):
+        plist = [ (k,v) for k,v in dims_and_args.items() ]
+        nargs = len(self.arg_names)
+        rit = reversed([plist.pop() for _ in range(nargs)])
+        arg_vals = [v for _,v in rit]
+        grouped_dims_map = dict(plist)
         dims_map = base.ungroup_dims(grouped_dims_map)
         input_dims = [ dims_map[idx] for idx in self.in_sig ]
 
@@ -134,7 +138,7 @@ class GenDims(NodeFunc):
                     f'{type(self).__name__}: yield_scalar flag only supported '
                     f'for integer index inputs'
                 )
-            gen = self.func(self.op.gen_rng, *input_dims, *self.pars)
+            gen = self.func(self.op.gen_rng, *input_dims, *arg_vals)
             fgen = self.fill(gen)
             yield from self.gen_dims_scalar(fgen)
 
@@ -142,7 +146,7 @@ class GenDims(NodeFunc):
         gens = []
         for c in range(rank):
             ins = tuple(base.bcast_dim(dims, c) for dims in input_dims)
-            gen = self.func(self.op.gen_rng, *ins, *self.pars)
+            gen = self.func(self.op.gen_rng, *ins, *arg_vals)
             fgen = self.fill(gen)
             gens.append(fgen)
         
@@ -208,7 +212,12 @@ class CompDims(NodeFunc):
             return self.safe_func(*input_dims, *arg_vals)
 
     def templ_string(self, input_dims, arg_vals):
-        templ = self.tfunc(*input_dims, *arg_vals)
+        try:
+            templ = self.tfunc(*input_dims, *arg_vals)
+        except BaseException as ex:
+            raise SchemaError(
+                f'Computed dims {self.idx} encountered error calling enclosed function '
+                f'{self.tfunc}: {ex}')
         if self.nargs > 0:
             z = zip(self.arg_names, arg_vals)
             cfg = ', '.join(f'{arg} = {val}' for arg, val in z) 
