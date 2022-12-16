@@ -340,6 +340,8 @@ and related variants.
 
 ```python
 # excerpt from opschema/ops/tf/nn/convolution.py
+from opschema.complib import dilate, dilate_t, strided_conv, strided_conv_t
+
 # Index 'g' (dilated filter spatial) is computed using the dilate function
 # from f (filter spatial) and d (dilation)
 op.comp_dims_cw('g', dilate, dilate_t, 'fd') 
@@ -349,6 +351,28 @@ op.comp_dims_cw('g', dilate, dilate_t, 'fd')
 op.comp_dims_cw('o', strided_conv, strided_conv_t, 'igs', 'padding')
 ```
 
+Because certain formulas recur in many ops, such functions may be found in
+`opschema/complib.py`.  A numeric version operating on integers and a template
+version interpolating string representations must be provided.  For example:
+
+```python
+# excerpt from opschema/complib.py
+def strided_conv(i, f, s, padding):
+    if padding == 'VALID':
+        return ceildiv(i - f + 1, s)
+    else:
+        return ceildiv(i, s)
+
+def strided_conv_t(i, f, s, padding):
+    if padding == 'VALID':
+        return f'ceil(({i} + {f} - 1) / {s})'
+    else:
+        return f'ceil({i} / {s})' 
+```
+
+Because the schema overall is defined as a python function, any custom compute
+functions may be defined as local functions as well.  Placing them in
+`opschema/complib.py` is just a convenience.
 
 ## Index Predicates
 
