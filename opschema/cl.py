@@ -36,7 +36,8 @@ def test_op(op_path, out_dir, test_id):
                 sys.excepthook(*sys.exc_info())
             break
 
-def validate(op_path, out_dir, test_ids=None, skip_ids=None, max_dtype_err=2):
+def validate(op_path, out_dir, test_ids=None, skip_ids=None, max_dtype_err=0,
+        rand_seed=0):
     opschema.register(op_path)
     op = opschema.get(op_path)
 
@@ -50,7 +51,7 @@ def validate(op_path, out_dir, test_ids=None, skip_ids=None, max_dtype_err=2):
     elif isinstance(skip_ids, tuple):
         skip_ids = set(skip_ids)
 
-    return op.validate(out_dir, test_ids, skip_ids, max_dtype_err)
+    return op.validate(out_dir, test_ids, skip_ids, max_dtype_err, rand_seed)
 
 def explain(op_path, include_inventory=False):
     return opschema.explain(op_path, include_inventory)

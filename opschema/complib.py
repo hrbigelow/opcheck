@@ -18,6 +18,7 @@ def dilate_t(s,  d):
     return f'({s} - 1) * {d} + 1'
 
 def conv(i, f, padding):
+    # return size of convolution without stride
     if padding == 'VALID':
         return i - f + 1
     else:
@@ -28,6 +29,18 @@ def conv_t(i, f, padding):
         return f'{i} - {f} + 1'
     else:
         return i
+
+def strided_conv(i, f, s, padding):
+    if padding == 'VALID':
+        return ceildiv(i - f + 1, s)
+    else:
+        return ceildiv(i, s)
+
+def strided_conv_t(i, f, s, padding):
+    if padding == 'VALID':
+        return f'ceil(({i} + {f} - 1) / {s})'
+    else:
+        return f'ceil({i} / {s})' 
 
 def tconv(i, f, padding):
     if padding == 'VALID':

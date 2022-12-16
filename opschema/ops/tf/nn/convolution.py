@@ -1,5 +1,5 @@
 from opschema.base import LAYOUT
-from opschema.complib import dilate, dilate_t, ceildiv, conv, conv_t
+from opschema.complib import dilate, dilate_t, ceildiv, strided_conv, strided_conv_t
 from opschema.genlib import WrapParams, stride_dil, divis_by, below_above 
 from opschema import predlib, complib
 
@@ -11,7 +11,7 @@ def init_schema(op):
     op.add_index('s', 'strides', 'i')
     op.add_index('d', 'dilations', 'i')
     op.add_index('k', 'input channel', 1)
-    op.add_index('j', 'output filter', 1)
+    op.add_index('j', 'filter input channel', 1)
     op.add_index('l', 'output channel', 1)
     op.add_index('o', 'output spatial', 'i')
 
@@ -44,8 +44,7 @@ def init_schema(op):
 
     wrap_divis_by = WrapParams(divis_by, 300)
     op.gen_dims_func('k', wrap_divis_by, 'j', 300, False)
-
-    op.comp_dims_cw('o', conv, conv_t, 'ig', 'padding')
+    op.comp_dims_cw('o', strided_conv, strided_conv_t, 'igs', 'padding')
 
     op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))
     op.equate_dtypes('filters', 'input')

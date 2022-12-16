@@ -828,7 +828,7 @@ class OpSchema(object):
         for op_args in fgraph.gen_graph_values(live, out, self):
             yield op_args[0] # extract tuple element
 
-    def validate(self, out_dir, test_ids, skip_ids, dtype_err_quota):
+    def validate(self, out_dir, test_ids, skip_ids, dtype_err_quota, rand_seed):
         if not os.path.exists(out_dir):
             raise RuntimeError(
                 f'{type(self).__qualname__}: Could not open output path '
@@ -841,9 +841,7 @@ class OpSchema(object):
         cats = [ 'TP', 'TN', 'FP', 'FN' ]
         stats = { k: 0 for k in cats }
 
-        op_args_gen = self.generate_args()
-        # op_args_gen = list(self.generate_args())
-        # print(f'Generated {len(op_args_list)} test cases')
+        op_args_gen = self.generate_args(rand_seed)
 
         for test_id, op_args in enumerate(op_args_gen, 1):
             if skip_ids is not None and test_id in skip_ids:

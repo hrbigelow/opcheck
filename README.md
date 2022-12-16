@@ -48,8 +48,7 @@ operations.  Once written, a schema represents a single operation, such as
 `tf.nn.convoution` or `tf.nn.bias_add`, etc.  The schema defines what inputs are
 legal for the op.  Once defined, it provides four functionalities:
 
-* wrap TensorFlow op, intercept inputs at call-time, provide human-readable
-  error message 
+* provide better error messages than the exceptions TensorFlow issues
 
 * generate a complete set of legal (and a particular set of illegal) inputs for
   the op
@@ -62,207 +61,370 @@ legal for the op.  Once defined, it provides four functionalities:
 
 ## Synopsis
 
-    # list available ops
+List available op schemas (defined under opschema/ops)
+
     python -m opschema.cl list
 
-    # explain an OP_PATH
+Explain an op, optionally including a list of all possible call configurations
+
     python -m opschema.cl explain OP_PATH [-i|--include_inventory]
 
-    # print graphs for OP_PATH in .pdf format
+Print the graphs associated with an op in .pdf format (requires graphviz)
+
     python -m opschema.cl graph OP_PATH OUT_DIR
 
-    # validate OP_PATH schema against the TensorFlow op
-    python -m opschema.cl validate OP_PATH OUT_DIR [--test_ids] [--skip_ids] [--max_dtype_err] 
+Validate an op schema against the TensorFlow op it represents  
 
-`opschema` provides a registry for the available schemas and allows you
-to load them individually or all together.  Schemas are instances of
-`opschema.schema.OpSchema`, which provides member functions to configure it.
-The schema definitions are in `opschema/ops`.
+    python -m opschema.cl validate OP_PATH OUT_DIR [--test_ids] [--skip_ids] \
+        [--max_dtype_err=0] [--rand_seed=0]
 
-To see the list of implemented schemas, use:
+## What it does
 
-    python -m opschema.cl list
+`opschema` provides an API for writing *schemas* for TensorFlow ops.  A schema
+here means a set of rules that define what combinations of inputs are legal.
+Once a schema is defined, you can use opschema to generate a complete set of
+test inputs for the op for all legal combinations of tensor dtypes, shapes, and
+combinations of other control arguments such as `data_format` etc.  In
+addition, a subset of illegal inputs can be generated as well, which are useful
+for comparing TensorFlow's exception with opschema's error message.
 
-To print a human-readable representation of a schema, use one of:
+## Example Error Messages
 
-    python -m opschema.cl explain tf.gather_nd
-    python -m opschema.cl explain tf.gather_nd -i
-    python -m opschema.cl explain tf.gather_nd --include_inventory
+Some examples TensorFlow calls that raised exceptions.  Each example shows the
+argument values (tensors are abbreviated to shape+dtype), the TensorFlow
+exception text, and the error message from opschema.
 
-Note that including the inventory may be very long for highly polymorphic ops.
 
-To wrap the original TensorFlow op so that it opschema can intercept its inputs
-and provide error messages.  
 
-```python
-# wrap tf.gather_nd
-opschema.register('tf.gather_nd')
+## How it works
 
-# call tf.gather_nd(...) directly
+`opschema` defines an op schema using a few basic concepts common to all ops.
+To best illustrate these I'll illustrate them with the example of the
+`tf.nn.convolution` schema.
 
-# restore tf.gather_nd to original
-opschema.deregister('tf.gather_nd')
-```
-
-This process reassigns the member function, for example `tf.gather_nd` to a
-wrapper function.  The wrapper function first inspects the inputs and prints an
-error message if any violation is detected.  Regardless of violation, it then
-passes the inputs on to the original TensorFlow operation.  In this way it is
-otherwise unobtrusive to the functioning of an existing network.
-
-## Example Error messages - before and after
-
-Run
-
-    python -m opschema.cl validate OP_PATH REPORTS_DIR [TEST_IDS] [SKIP_IDS] [ERROR_QUOTA]
-    # example
-    python -m opschema.cl validate tf.nn.convolution reports
-
-The example produces files `reports/tf.nn.convolution.txt` and
-`reports/tf.nn.convolution.sum.txt`.  
-
-## How does it work?
-
-`opschema` uses three abstractions to define the schema:  *index*, *signature*,
-and *layout*.
-
-### Index
-
-The lowest level abstraction is the *index*, created with the `OpSchema` API
-function [add_index](opschema/schema.py#L877).  This is a group of semantically
-related dimensions that occur within the shape of input tensors or other
-shape-related arguments.  An index has a single-letter name and a longer
-description.  It is rank-agnostic in that different calls to the op may take on
-a different number of these dimensions.  The individual components of the
-dimensions often participate in formulas with dimensions of other indices.
-
-Examples:
-
-    code  description
-    b     batch
-    i     input spatial
-    k     input channel
-    f     filter spatial
-    j     output filter 
-    l     output channel
-
-Rank-agnostic here means that, at run-time, an index can represent zero, one,
-two, or more individual dimensions within a tensor shape, depending on how the
-op was called.
-
-### Signature
-
-A *signature* is simply an ordered sequence of *indexes*, usually represented
-as a string of the one-letter codes.  Most input tensors have a *signature*.
-Importantly, since each *index* is rank-agnostic, so is the signature.
-
-Examples:
-
-    tensor   signature
-    input    bik           
-    filter   fjl
-
-While indexes are rank-agnostic, it is also useful to see possible
-*instantiations* of indexes showing the actual rank of the shape for a
-particular call of the op.  For instance, `tf.nn.convolution` may be called
-with 1, 2, or 3 spatial dimensions, which imply the rank of indexes 'i' and
-'f'.  Similarly, it works with any number of batch dimensions 'b' >= 1.  Such
-instantiations can be represented using repetitions of the one-letter code:
-
-Examples:
-
-    input shape instantiations
-    bik, biik, biiik, bbik, bbbik, ...
-
-By default, each index has no constraints on what rank it can take on.
-Rank constraints are provided within the [add_index](opschema/schema.py#L877)
-API function.  The 'explain' command-line function has a section on the index
-rank constraints.  For `tf.nn.convolution` it is:
+    python -m opschema.cl explain tf.nn.convolution -i
 
 ```
+Schema for tf.nn.convolution
+
+Indexes
+
+Index  Description           
+b      batch                 
+i      input spatial         
+f      filter spatial        
+g      dilated filter spatial
+s      strides               
+d      dilations             
+k      filter input channel
+j      output filter         
+l      output channel        
+o      output spatial        
+
+Signatures
+
+input  filters  strides  dilations  return[0]  data_format             
+bki    fjl      s        d          blo        ['NCW', 'NCHW', 'NCDHW']
+bik    fjl      s        d          bol        ['NWC', 'NHWC', 'NDHWC']
+
 Index ranks
 
-rank(b) in [1, 5]
-rank(i) in [1, 3]
-rank(f) = rank(i)
-rank(p) = rank(i)
-rank(s) = rank(i)
-rank(d) = rank(i)
-rank(k) = 1
-rank(j) = 1
-rank(l) = 1
-rank(o) = rank(i)
+rank(b) in [1, 5]     
+rank(i) in [1, 3]     
+rank(f) = rank(i)     
+rank(g) = rank(i)     
+rank(s) = rank(i)     
+rank(d) = rank(i)     
+rank(k) = 1           
+rank(j) = 1           
+rank(l) = 1           
+rank(o) = rank(i)     
+
+Computed dimensions
+
+dilated_filter_spatial = (filter_spatial - 1) * dilations + 1
+output_spatial = ceil(input_spatial / strides)   [padding = SAME]
+output_spatial = ceil((input_spatial + dilated_filter_spatial - 1) / strides)   [padding = VALID]
+
+g = (f - 1) * d + 1
+o = ceil((i + g - 1) / s)   [padding = VALID]
+o = ceil(i / s)   [padding = SAME]
+
+Index predicates
+
+dilated_filter_spatial must be >= 0
+output_spatial must be >= 0
+strides and dilations dimensions cannot both contain an element over 1
+input_channel must be divisible by output_filter
+
+g must be >= 0
+o must be >= 0
+s and d dimensions cannot both contain an element over 1
+k must be divisible by j
+
+DType Rules
+
+input.dtype in (int32, float16, float32, float64, bfloat16)
+filters.dtype = input.dtype
+
+Excluded DType Combos
+
+input.dtype  rank(i)  layout
+int32        1,2      0     
+int32        3        *     
+bfloat16     1,2      *     
+bfloat16     3        0     
+
+Inventory
+
+input.shape  input.dtype  filters.shape  filters.dtype  strides  data_format  dilations  return[0].shape
+bki          float16      fjl            float16        s        NCW          d          blo            
+bki          float32      fjl            float32        s        NCW          d          blo            
+bki          float64      fjl            float64        s        NCW          d          blo            
+bik          int32        fjl            int32          s        NWC          d          bol            
+bik          float16      fjl            float16        s        NWC          d          bol            
+bik          float32      fjl            float32        s        NWC          d          bol            
+bik          float64      fjl            float64        s        NWC          d          bol            
+bki          float16      fjl            float16        s        NCW          d          blo            
+bki          float32      fjl            float32        s        NCW          d          blo            
+bki          float64      fjl            float64        s        NCW          d          blo            
+bik          int32        fjl            int32          s        NWC          d          bol            
+bik          float16      fjl            float16        s        NWC          d          bol            
+bik          float32      fjl            float32        s        NWC          d          bol            
+bik          float64      fjl            float64        s        NWC          d          bol            
+bkii         float16      ffjl           float16        ss       NCHW         dd         bloo           
+bkii         float32      ffjl           float32        ss       NCHW         dd         bloo           
+...
 ```
 
-The rank of an index can be constrained either within a range, or constrained
-to be equal to that of another index.  In the above, the rank of the 'input
-spatial' (i) index can be in [1,3], and there can be between 1 and 5 batch
-dimensions.  The rank of the 'filter spatial' (f) index is set equal to that of
-'input spatial' and so on.
+`opschema` uses three abstractions to define the schema:  *index*, *signature*,
+and *layout*.  The first section lists the indices:
 
-#### Computed Indexes and intermediate Indexes
 
-Indexes come in two varieties:  *computed* or not computed.  Being *computed*
-means that the dimensions are determined as a function of the dimensions of
-other indices.  A function is assigned using the API call
-[OpSchema.comp_dims_cw](opschema/schema.py#1130) for a component-wise computation, or
-[OpSchema.comp_dims](opschema/schema.py#1113) for a non-component-wise computation.  For
-example, with `tf.nn.convolution` the 'explain' section shows:
+## Index section
+
+```bash
+Index  Description           
+b      batch                 
+i      input spatial         
+f      filter spatial        
+g      dilated filter spatial
+s      strides               
+d      dilations             
+k      input channel         
+j      filter input channel 
+l      output channel        
+o      output spatial        
+```
+opschema Indexes are declared with
+[add_index](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L899) 
+as in:
+
+```python
+# excerpt from opschema/ops/tf/nn/convolution.py
+# declare an index called 'batch' which can range in rank from 1 to 5
+op.add_index('b', 'batch', (1,5))
+op.add_index('i', 'input spatial', (1,3))
+
+# declare index 'f' to have rank equivalent to index 'i'
+op.add_index('f', 'filter spatial', 'i')
+...
+```
+
+opschema `Index` objects represent shaped quantities.  They are not always
+instantiated directly in input or output tensors, however.  Any quantities that
+participate in computations that involve shapes, even intermediate
+calculations, can be declared as `Index` entities.  In the example above,
+'strides' and 'dilations' are ordinary parameters, while 'dilated filter
+spatial' is an intermediate index that does not appear in any inputs or outputs
+of the op.
+
+
+## Signatures section
+
+```bash
+Signatures
+
+input  filters  strides  dilations  return[0]  data_format             
+bki    fjl      s        d          blo        ['NCW', 'NCHW', 'NCDHW']
+bik    fjl      s        d          bol        ['NWC', 'NHWC', 'NDHWC']
+```
+
+This section shows a table with one *layout* for each row.  Each column
+represents a shape-bearing parameter (which may be a tensor, but may not).  The cells in
+the row define *signatures*, which are concatenations of the single letter
+codes for `Index` objects.  For example, the 'filters' parameter has signature
+'fjl', meaning that its shape is interpreted as a set of dimensions 'filter
+spatial', then 'filter input channel', then 'output channel'.
+
+The individual arguments are registered with the schema depending on the kind
+of argument.  Input tensors are registered with [arg_tensor]( https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1499)
+and return tensors with [return_tensor]( https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1776).
+The signatures are declared with these API calls, and the layouts are
+associated with the `data_format` parameter using the API call 
+[arg_layout](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1389).
+
+The OpSchema API calls are:
+
+```python
+# excerpt from opschema/ops/tf/nn/convolution.py
+formats = {
+        'NCW': (0, 1), # layout 0, rank(i) = 1
+        'NCHW': (0, 2), # etc...
+        'NCDHW': (0, 3),
+        'NWC': (1, 1),
+        'NHWC': (1, 2),
+        'NDHWC': (1, 3),
+        None: (1, None),  # default layout is layout 1, regardless of rank(i)
+        }
+
+# argument 'data_format' determines the layout according to the 'formats' map
+# and the rank of index 'i'
+op.arg_layout('data_format', formats, 'i')
+
+# tensor 'input' is registered with signatures for each layout
+op.arg_tensor('input', 'bki', 'bik')
+op.arg_tensor('filters', 'fjl')
+```
+
+## Index ranks
+
+
+```bash
+Index ranks
+
+rank(b) in [1, 5]     
+rank(i) in [1, 3]     
+rank(f) = rank(i)     
+rank(g) = rank(i)     
+rank(s) = rank(i)     
+rank(d) = rank(i)     
+rank(k) = 1           
+rank(j) = 1           
+rank(l) = 1           
+rank(o) = rank(i)     
+```
+
+The Index ranks section defines rank constraints for each `Index` object.  An
+Index rank means the same as for a tensor, but for a subset of semantically
+related indices.  For instance, 'filter.rank' is equal to `rank(f) + rank(j) +
+rank(l)`.  According to the above constraints, this would imply it could range
+from 3 to 5.  All of the above rank constraints are determined during index
+creation, but an additional API function [limit_ranks](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1246)
+can be used.
+
+## Computed dimensions
+
 
 ```bash
 Computed dimensions
 
-p = (f - 1) * d + 1
-o = ceil((i - p + 1) / s)   [padding = VALID]
+dilated_filter_spatial = (filter_spatial - 1) * dilations + 1
+output_spatial = ceil(input_spatial / strides)   [padding = SAME]
+output_spatial = ceil((input_spatial + dilated_filter_spatial - 1) / strides)   [padding = VALID]
+
+g = (f - 1) * d + 1
+o = ceil((i + g - 1) / s)   [padding = VALID]
 o = ceil(i / s)   [padding = SAME]
 ```
 
-These are registered as component-wise.  For instance, if `rank(i) = 2`, then
-each dimension of `i` will be computed from the corresponding dimension of `s`
-and/or `p`, and so forth.
+The Computed dimensions section shows the formulas registered for Computed Indexes.
+The formulas are shown in snake-cased
+form and single-letter-code form.  For formulas that depend on other op
+parameters (in this case the 'padding' parameter), the variants of the formulas
+are shown.  These formulas are used both to compute valid inputs during error
+checking, and to generate readable formulas for context in error messages.
 
-Here, we see that 'padded filter spatial' (p) index is computed from 'filter
-spatial' and 'dilation'.  And, 'output spatial' (o) has two different formulas,
-depending on the command-line argument 'padding'.
-
-Note here that the 'p' index does not appear anywhere in an input signature.
-It is purely an intermediate calculation.  But, having an explicit name for the
-index is useful to clarify to the user how the visible 'o' index is computed in
-the case of 'padding = VALID'.
-
-These formulas are also used to display actual dimensions in error messages.
-
-### Layout
-
-A *layout* is a set of consistent *signatures* accepted by the op.  Some ops
-have just a single layout.  May have two, which could be described as 'channel
-first' or 'channel last', and are determined by the `data_format` argument.
-
-Examples:
-
-    input  filters  strides  dilations  return[0]  data_format
-    bki    fjl      s        d          blo        ['NCW', 'NCHW', 'NCDHW']
-    bik    fjl      s        d          bol        ['NWC', 'NHWC', 'NDHWC']
-
-The above example shows two different layouts for the `tf.nn.convolution`
-operation.  Like *signatures*, the notion of a *layout* is rank-agnostic.  
-
-The indexes and layouts for a given op schema can be shown with:
-
-    python -m opschema.cl explain tf.nn.convolution
-
-To see the complete list of signature instantiations, use:
-
-    python -m opschema.cl explain tf.nn.convolution -i
-
-# DType constraints
-
-TensorFlow ops are usually constrained to work on certain combinations of
-`dtype` of the input tensors.  `opschema` provides a few API functions to
-specify this.
+Computed dimensions are registered with the API call [OpSchema.comp_dims](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1162)
+and related variants.
 
 ```python
-# DType constraints for tf.nn.convolution
+# excerpt from opschema/ops/tf/nn/convolution.py
+# Index 'g' (dilated filter spatial) is computed using the dilate function
+# from f (filter spatial) and d (dilation)
+op.comp_dims_cw('g', dilate, dilate_t, 'fd') 
+
+# Index 'o' (output spatial) is computed using the strided_conv function from 
+# index 'i' (input spatial), 'g' (dilated filter spatial), and 's' (stride)
+op.comp_dims_cw('o', strided_conv, strided_conv_t, 'igs', 'padding')
+```
+
+
+## Index Predicates
+
+```bash
+Index predicates
+
+dilated_filter_spatial must be >= 0
+output_spatial must be >= 0
+strides and dilations dimensions cannot both contain an element over 1
+input_channel must be divisible by filter_input_channel 
+
+g must be >= 0
+o must be >= 0
+s and d dimensions cannot both contain an element over 1
+k must be divisible by j
+```
+
+Predicate functions may be registered on individual or combinations of indices.
+A non-negativity predicate is automatically registered on all computed indices.
+In the above example, these are 'dilated filter spatial' and 'output spatial'.
+The schema author may register additional predicates.  In the case of
+`tf.nn.convolution`, 'input channel' must be disivible by 'filter input
+channel'.  In fact this is not documented, but it is empirically true. 
+
+Predicates are registered with API call
+[dims_pred](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1710)
+and its component-wise variant, as follows:
+
+```python
+# excerpt from opschema/ops/tf/nn/convolution.py
+# only stride or dilation components can be over 1, not both (this is documented)
+op.dims_pred('s-d exclusion', 
+        predlib.not_both_over_one,
+        predlib.not_both_over_one_templ, 'sd')
+
+# input channel must be disivible by filter input channel (not documented)
+op.dims_pred_cw('k % j == 0', predlib.divis_by, predlib.divis_by_t, 'kj')
+```
+
+## DType constraints
+
+```bash
+DType Rules
+
+input.dtype in (int32, float16, float32, float64, bfloat16)
+filters.dtype = input.dtype
+
+Excluded DType Combos
+
+input.dtype  rank(i)  layout
+int32        1,2      0     
+int32        3        *     
+bfloat16     1,2      *     
+bfloat16     3        0     
+```
+
+Constraints on allowed DTypes are given first as a set of broad rules, and then
+specific exclusions.  The DType Rules can be one of two forms - either specify
+that some tensor can take on certain dtypes, or specify that a tensor dtype
+must be the same as another tensor.
+
+The Excluded DType Combos section specifies combinations of dtype, index rank,
+and possibly layout which are excluded.  Usually this is done because such
+combinations are not implemented.  In the above example, `int32` Conv1D and
+Conv2D are not implemented specifically for layout 0, which means data_formats
+'NCW', 'NCHW'.
+
+DType constraints are declared using API calls 
+[valid_dtypes](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1269),
+[equate_dtypes](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1305),
+[exclude_combos](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1327)
+
+as shown here:
+
+```python
+# excerpt from opschema/ops/tf/nn/convolution.py
 op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))
 op.equate_dtypes('filters', 'input')
 op.exclude_combos('input', 'int32', 'i', (1,2), LAYOUT, 0)
@@ -271,25 +433,11 @@ op.exclude_combos('input', 'bfloat16', 'i', (1,2))
 op.exclude_combos('input', 'bfloat16', 'i', 3, LAYOUT, 0)
 ```
 
-The above snippet of the `tf.nn.convolution` schema definition illustrates the
-three `OpSchema` API calls related to dtype constraints.  `valid_dtypes` simply
-specifies which dtypes are accepted for a given argument tensor.  There is a
-wildcard-like syntax (see [base.py:parse_dtype_expr](opschema/base.py#L264))
-used to specify multiple dtypes briefly.
-
-`equate_dtypes` says that the dtype of one argument tensor must be identical to
-another.
-
-`exclude_combos` declares that a certain combination of dtypes, index ranks,
-and/or layouts is excluded.  This is needed because certain of these
-combinations may not be implemented by TensorFlow.
-
 # Other Constraints
 
 There are other relationships between inputs in certain TensorFlow ops.  For
 example, with `tf.gather_nd`, the last dimension of the `indices` shape
 determines the rank of the 'read location' (r) index.  This is declared using
-the API function [OpSchema.rank_dims_constraint](opschema/schema.py#L1638).
-
-
+the API function [rank_dims_constraint](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1698).
+For a complete list of API functions, see `opschema.schema.OpSchema` class.
 
