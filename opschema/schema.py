@@ -101,7 +101,7 @@ class OpSchema(object):
 
         # TODO: enable setting this
         self.max_search_dist = 4
-        self.show_graph_calls = False
+        self.show_graph_calls = False 
 
         # used by IndexDims and ArgShapes to compute index dimensions 
         self.target_nelem = 1e6
@@ -1707,13 +1707,12 @@ class OpSchema(object):
             inode = self.inf_graph[pri_idx]
             inode.func.add_args_constraint(cons)
 
-    def rank_dims_constraint(self, get_dims, rank_sig, shape_arg):
+    def rank_dims_constraint(self, func, rank_sig, shape_arg):
         """
-        Creates a constraint called {constr_name} in the inference graph
-        with the logic: RANK(rank_sig) == get_dims(shape_arg)
+        Expresses the constraint RANK(rank_sig) = func(obs_shapes[shape_arg]).
         """
         # add the constraint to the inference graph 
-        cons = base.ShapeFuncConstraint(rank_sig, get_dims, shape_arg)
+        cons = base.ShapeFuncConstraint(rank_sig, func, shape_arg)
         for idx in rank_sig:
             pri_idx = self.index[idx].pri_idx
             inode = self.inf_graph[pri_idx]

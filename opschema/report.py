@@ -95,7 +95,7 @@ class Report(object):
                 formats = self.op.data_formats.formats
                 exc_layouts = rule.layouts
                 exc_formats = [df for df, (l, _) in formats.items() if l in
-                        exc_layouts]
+                        exc_layouts and df is not None]
                 fmt_list = ', '.join(exc_formats)
                 item = f'data formats ({fmt_list})'
                 items.append(item)

@@ -107,7 +107,7 @@ which produces files OUT_DIR/OP_PATH.txt and OUT_DIR/OP_PATH.sum.txt
 These excerpts are taken from OUT_DIR/OP_PATH.txt.  The format for each entry
 is:
 
-    ID  CLASS  ARGS_LIST 
+    ## ID  CLASS  ARGS_LIST 
     TF_EXCEPTION_TEXT
    
     OPSCHEMA_ERROR_MESSAGE
@@ -125,6 +125,371 @@ and opschema error message agree.  The goal is for the opschema message to be
 more informative and lead to a successful correction.  But, the schema
 definition is a reverse-engineering process based on the observed behavior of
 the TensorFlow op. 
+
+### `tf.nn.convolution`
+
+```
+## 2    TP      input=[42, 23, 5]:float16, filters=[32, 23, 24]:int8, strides=1, padding=VALID, data_format=NCW, dilations=1
+cannot compute Conv2D as input #1(zero-based) was expected to be a half tensor but is a int8 tensor [Op:Conv2D]
+
+Received filters.dtype = int8 and input.dtype = float16.  dtypes of filters and input must match.
+```
+
+Here, input and filters have mismatching dtypes.  TensorFlow's exception
+assumes filters has the wrong one, which may be too strong.  Also, it refers to
+filters as 'input #1(zero_based)'.  opschema always uses the actual names of
+arguments in its error messages.
+
+```
+## 3    TP      input=[87, 80, 3]:float16, filters=[9, 2, 3]:float16, strides=1, padding=VALID, data_format=NCW, dilations=1
+Computed output size would be negative: -5 [input_size: 3, effective_filter_size: 9, stride: 1] [Op:Conv2D]
+
+           input.shape   filters.shape   strides   data_format   dilations   return[0].shape
+received       87 80 3           9 2 3         1           NCW           1           87 3 -5
+template        b  k i           f j l         s                         d            b l  o
+   error                                                                                  ^^
+
+output_spatial (o) = [-5].  output_spatial must be >= 0
+
+Dimensions computed as:
+dilated_filter_spatial = (filter_spatial - 1) * dilations + 1
+output_spatial = ceil((input_spatial + dilated_filter_spatial - 1) / strides)   [padding = VALID]
+
+g = (f - 1) * d + 1
+o = ceil((i + g - 1) / s)   [padding = VALID]
+
+[9] = ([9] - 1) * 1 + 1
+[-5] = ceil(([3] + [9] - 1) / 1)   [padding = VALID]
+```
+
+Here, TensorFlow's error message is good.  Although, it seems the internal
+name 'input_size' is not chosen in coordination with the documentation.  It is
+also confusing that Op:Conv2D is mentioned, since this is a 1D convolution.
+
+opschema's error message highlights exactly which indices are negative, and
+shows the formulas used to compute them, using top-level names.  These same
+names (input_spatial, output_spatial, dilated_filter_spatial, etc) appear in
+the automatically generated docs as well.
+
+```
+## 5    TP      input=[87, 1, 3]:float16, filters=[9, 2, 3]:float16, strides=1, padding=VALID, data_format=NCW, dilations=1
+input depth must be evenly divisible by filter depth: 1 vs 2 [Op:Conv2D]
+
+           input.shape   filters.shape   strides   data_format   dilations   return[0].shape
+received        87 1 3           9 2 3         1           NCW           1           87 3 -5
+template         b k i           f j l         s                         d            b l  o
+   error           ^               ^
+
+input_channel (k) = [1] and filter_input_channel (j) = [2].  input_channel must be divisible by filter_input_channel
+```
+
+Here TensorFlow's error message is not bad.  Again it uses non-standard names
+'input depth' and 'filter depth'.  'input depth' is equivalent to the
+documentation's term 'in_channels'.  However, the documentation erroneously
+claims that filters must have matching depth as input.
+
+    filters	    An (N+2)-D Tensor with the same type as input and shape 
+                spatial_filter_shape + [in_channels, out_channels].
+
+opschema by design always uses the standard names and highlights the exact
+dimensions in context.
+
+```
+## 4    FN      input=[87, 80, 3]:float16, filters=[1, 2, 3]:float16, strides=1, padding=VALID, data_format=NCW, dilations=1
+No algorithm worked! [Op:Conv2D]
+
+None
+```
+
+This is a case opschema thinks is fine, and I'm not sure what the problem is.
+It seems to have something to do with the relationship between indices k
+(input_channel) and j (filter_input_channel).
+
+```
+## 25   TP      input=[97, 27, 1]:float16, filters=[72, 1, 9, 20]:float16, strides=1, padding=VALID, data_format=NCW, dilations=1
+Value for attr 'data_format' of "NCW" is not in the list of allowed values: "NHWC", "NCHW"
+        ; NodeDef: {{node Conv2D}}; Op<name=Conv2D; signature=input:T, filter:T -> output:T; attr=T:type,allowed=[DT_HALF, DT_BFLOAT16, DT_FLOAT, DT_DOUBLE, DT_INT32]; attr=strides:list(int); attr=use_cudnn_on_gpu:bool,default=true; attr=padding:string,allowed=["SAME", "VALID", "EXPLICIT"]; attr=explicit_paddings:list(int),default=[]; attr=data_format:string,default="NHWC",allowed=["NHWC", "NCHW"]; attr=dilations:list(int),default=[1, 1, 1, 1]> [Op:Conv2D]
+
+Received invalid configuration: input rank = 3, filters rank = 4 and data_format = NCW.  Closest valid configurations:
+
+           input.shape   filters.shape   strides   data_format   dilations   return[0].shape
+received     [97,27,1]     [72,1,9,20]         1           NCW           1
+config 1         b k i        => f j l         s                         d             b l o
+
+=> config 1: remove 1 dimension from filters
+```
+
+In this example, it could be intended as a 2D convolution but with a dimension
+missing from input, or that filters has one extra dimension.  TensorFlow
+assumes the latter, and this could cause confusion for the user.  Also, the
+extra information doesn't seem helpful.
+
+opschema is admittedly a bit didactic here - it tries to guess the closest fix
+based on an internal 'edit distance'.
+
+
+```
+## 26   TP      input=[67, 36, 12]:float16, filters=[18, 21]:float16, strides=1, padding=VALID, data_format=NCW, dilations=1
+num_spatial_dims (input.shape.ndims - num_batch_dims - 1) must be one of 1, 2 or 3 but saw 0.  num_batch_dims: 2.
+
+Received invalid configuration: input rank = 3, filters rank = 2 and data_format = NCW.  Closest valid configurations:
+
+           input.shape   filters.shape   strides   data_format   dilations   return[0].shape
+received    [67,36,12]         [18,21]         1           NCW           1
+config 1         b k i        => f j l         s                         d             b l o
+
+=> config 1: add 1 dimension to filters
+```
+
+Here, TensorFlow's message claims `num_batch_dims: 2` which is too strong of an
+assumption, possibly leading to confusion.
+
+```
+## 59   TP      input=[69, 45]:float32, filters=[59, 23, 2]:float32, strides=1, padding=VALID, data_format=NCW, dilations=1
+input must be 4-dimensional[69,1,45] [Op:Conv2D]
+
+Received invalid configuration: input rank = 2, filters rank = 3 and data_format = NCW.  Closest valid configurations:
+
+           input.shape   filters.shape   strides   data_format   dilations   return[0].shape
+received       [69,45]       [59,23,2]         1           NCW           1
+config 1      => b k i           f j l         s                         d             b l o
+
+=> config 1: add 1 dimension to input
+```
+
+Here TensorFlow's message is contradictory and nearly uninterpretable.  It
+seems to claim that 'input' has a shape [69,1,45] which it does not actually
+have.
+
+```
+## 98   FP      input=[83, 5, 90]:float32, filters=[90, 5, 25]:float32, strides=1, padding=VALID, data_format=NCHW, dilations=1
+None
+
+           input.shape   filters.shape   strides   data_format   dilations   return[0].shape
+received       83 5 90         90 5 25         1          NCHW           1           83 25 1
+template        b k  i          f j  l         s           NCW           d            b  l o
+   error                                                  ^^^^
+
+=> Change data_format to NCW
+```
+
+Here, TensorFlow succeeds, performing a 1D convolution successfully, even
+though `data_format` was provided incorrectly as `NCHW`, contrary to the
+documentation.
+
+```
+## 1868 FP      input=[99, 1, 90, 31]:float16, filters=[40, 15, 18]:float16, strides=[4], padding=SAME, data_format=NCW, dilations=1
+None
+
+Return tensor 0 was expected to have shape [99, 1, 18, 8] but was [99, 1, 18, 31]
+```
+
+Here is another false positive case in which TensorFlow does not raise an
+exception.  opschema flags it because the return tensor didn't have the
+expected shape.  
+
+
+### `tf.nn.avg_pool`
+
+```
+## 1    TP      input=[66, 17, 1]:bfloat16, ksize=[7], strides=[50], padding=VALID, data_format=NCW
+Tried to squeeze dim index 2 for tensor with 1 dimensions. [Op:Squeeze]
+
+This combination is not implemented: input.dtype in (bfloat16) and [1] input_spatial dimensions
+```
+
+Here, TensorFlow's exception does not give the user any clue what went wrong.
+opschema's error message in my opinion could be improved, but is reasonably
+clear.  Perhaps it could be augmented with a template table as in previous
+examples.
+
+```
+## 9    TP      input=[2, 36, 1]:float16, ksize=[5, 1], strides=[67], padding=VALID, data_format=NCW
+ksize should be of length 1, 1 or 3 but was 2
+
+Received invalid configuration: input rank = 3, ksize rank = 2 and data_format = NCW.  Closest valid configurations:
+
+           input.shape   ksize   strides   data_format   return[0].shape
+received      [2,36,1]   [5,1]        67           NCW
+config 1         b c i    => k         s                           b c o
+
+=> config 1: remove 1 dimension from ksize
+```
+
+TensorFlow guesses that the rank of ksize is the problem, but suggests '1, 1,
+or 3', which doesn't make much sense.
+
+```
+## 13   TP      input=[91, 19, 5]:float16, ksize=[5], strides=[14, 1], padding=VALID, data_format=NCW
+strides should be of length 1, 1 or 3 but was 2
+
+Received invalid configuration: input rank = 3, strides rank = 2 and data_format = NCW.  Closest valid configurations:
+
+           input.shape   ksize   strides   data_format   return[0].shape
+received     [91,19,5]       5    [14,1]           NCW
+config 1         b c i       k      => s                           b c o
+
+=> config 1: remove 1 dimension from strides
+```
+
+Here TensorFlow's exception seems to have the same problem as in example 9.
+Also, the documentation contains a similar confusing message about `ksize` and
+`strides` parameters:
+
+	  strides   An int or list of ints that has length 1, N or N+2. The stride of the 
+              sliding window for each dimension of the input tensor.
+
+It should read '1, 2, or 3'.
+
+```
+## 42   FP      input=[37, 40, 6]:float16, ksize=[8], strides=[98], padding=VALID, data_format=NCHW
+None
+
+           input.shape   ksize   strides   data_format   return[0].shape
+received       37 40 6       8        98          NCHW           37 40 0
+template        b  c i       k         s           NCW            b  c o
+   error                                          ^^^^
+
+=> Change data_format to NCW
+
+           input.shape   ksize   strides   data_format   return[0].shape
+received       37 40 6       8        98          NCHW            37 1 6
+template        b  i c       k         s           NWC             b o c
+   error                                          ^^^^
+
+=> Change data_format to NWC
+
+Received invalid configuration: input rank = 3 and data_format = NCHW.  Closest valid configurations:
+
+           input.shape   ksize   strides   data_format   return[0].shape
+received     [37,40,6]       8        98          NCHW
+config 1    => b c i i       k         s                         b c o o
+
+=> config 1: add 1 dimension to input
+```
+
+Here, as in `tf.nn.convolution` example 98, TensorFlow allows `data_format =
+NCHW` in contradiction with documentation.  opschema is admittedly trying a bit
+too hard and is too verbose (probably needs to be pared down).
+
+```
+## 51   TP      input=[63, 34, 2]:float16, ksize=[3], strides=[90], padding=VALID, data_format=NHWC
+Can not squeeze dim[2], expected a dimension of 1, got 0 [Op:Squeeze]
+
+<opschema response omitted>
+```
+
+TensorFlow's error message is not useful at all here.
+
+
+### `tf.nn.depth_to_space`
+
+```
+## 17   TP      input=[90, 306, 1, 51]:int32, block_size=1, data_format=NHWC
+Value for attr 'block_size' of 1 must be at least minimum 2
+        ; NodeDef: {{node DepthToSpace}}; Op<name=DepthToSpace; signature=input:T -> output:T; attr=T:type; attr=block_size:int,min=2; attr=data_format:string,default="NHWC",allowed=["NHWC", "NCHW", "NCHW_VECT_C"]> [Op:DepthToSpace]
+
+Argument 'block_size' expected to be an integer >= 2
+```
+
+The first part of this message is not bad, except that it is confusing to call
+it attr 'block_size'.  And, the remaining part is just visual noise.
+
+
+### `tf.nn.space_to_batch`
+
+```
+## 7    TP      input=[40, 36]:int8, block_shape=[31, 1], paddings=[11], [15]
+input rank should be >= 3 instead of 2 [Op:SpaceToBatchND]
+
+Received invalid configuration: input rank = 2, block_shape rank = 2, paddings.0 rank = 1 and paddings.1 rank = 1.  Closest valid configurations:
+
+           input.shape   block_shape   return[0].shape
+received       [40,36]        [31,1]
+config 1           b i          => k               p o
+
+=> config 1: remove 1 dimension from block_shape
+```
+
+Comparing the received signatures with closest valid signatures:
+
+                input  block_shape  paddings.0  paddings.1
+    received    bi     kk           s           e
+    config 1    bi     k            s           e
+    config 2    bii    kk           ss          ee
+
+opschema suggests the closest valid one (config 1) which implies that
+block_shape has one too many dimensions.  The other possibility is that it was
+correct, but that both input and paddings are missing a dimension.
+
+TensorFlow assumes the latter, which may be too strong of an assumption.
+
+```
+## 8    TP      input=[47, 34]:int8, block_shape=[], paddings=[1], [23]
+paddings should have shape [0, 2] instead of [1,2] [Op:SpaceToBatchND]
+
+Received invalid configuration: input rank = 2, block_shape rank = 0, paddings.0 rank = 1 and paddings.1 rank = 1.  Closest valid configurations:
+
+           input.shape   block_shape   return[0].shape
+received       [47,34]            []
+config 1           b i          => k               p o
+
+=> config 1: add 1 dimension to block_shape
+```
+
+Here, 'block_shape' was incorrectly provided with rank 0, when it must be
+between 1 and 3.  But, TensorFlow incorrectly suggests to change the 'paddings'
+parameter rank to match that of 'block_shape', leading to a nonsensical
+suggestion.
+
+
+```
+## 21   TP      input=[1, 17, 4]:int16, block_shape=[47], paddings=[34], [9]
+padded_shape[0]=60 is not divisible by block_shape[0]=47 [Op:SpaceToBatchND]
+
+           input.shape   block_shape   return[0].shape
+received        1 17 4            47            47 1 4
+template        b  i r             k             p o r
+   error                          ^^
+
+padded_input_spatial (j) = [60] and block_shape (k) = [47].  padded_input_spatial must be divisible by block_shape
+
+Dimensions computed as:
+output_batch = product(block_shape) * batch
+padded_input_spatial = padding_start + input_spatial + padding_end
+
+p = product(k) * b
+j = s + i + e
+
+[47] = product([47]) * 1
+[60] = [34] + [17] + [9]
+```
+
+Here, TensorFlow's error message is not bad.  However, there is no mechanism
+for synching the documentation with the constraint that is violated.  On the
+other hand, opschema's 'explain' clearly states:
+
+```
+Computed dimensions
+
+output_batch = product(block_shape) * batch
+padded_input_spatial = padding_start + input_spatial + padding_end
+output_spatial = padded_input_spatial // block_shape
+
+p = product(k) * b
+j = s + i + e
+o = j // k
+
+Index predicates
+
+padded_input_spatial must be divisible by block_shape
+padded_input_spatial must be >= 0
+output_spatial must be >= 0
+output_batch must be >= 0
+```
+
+using names which are programmatically guaranteed to appear in the run-time
+error messages.
 
 
 # Schema Sections

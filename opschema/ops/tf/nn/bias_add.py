@@ -1,26 +1,30 @@
+from opschema.base import LAYOUT
+
 def init_schema(op):
     op.add_index('b', 'batch', 1)
-    # op.add_index('l', 'leading', (0,4))
-    op.add_index('l', 'leading', (1,1))
+    op.add_index('s', 'spatial', (0,3))
     op.add_index('c', 'channel', 1)
 
     formats = { 
             'NC..': (0, None),
-            'N..C': (1, None)
+            'N..C': (1, None),
+            None: (1, None)
             }
 
-    op.arg_layout('data_format', formats, 'l')
-    op.arg_tensor('value', 'bcl', 'blc')
+    op.arg_layout('data_format', formats, 's')
+    op.arg_tensor('value', 'bcs', 'bsc')
     op.arg_tensor('bias', 'c')
     op.arg_unchecked('name')
 
     op.gen_dims('b', 100)
-    op.gen_dims('l', 100)
+    op.gen_dims('s', 100)
     op.gen_dims('c', 100)
 
-    # op.valid_dtypes('value', ('int', 'complex', 'float', 'uint8'))
-    op.valid_dtypes('value', ('int16', ))
+    op.valid_dtypes('value', ('int', 'uint', 'float', 'bfloat', 'complex'))
     op.equate_dtypes('bias', 'value')
 
-    op.return_tensor('bcl', 'blc')
+    excluded = ('int8', 'int16', 'int64', 'bfloat', 'uint', 'complex')
+    op.exclude_combos('value', excluded, 's', 0, LAYOUT, 0)
+
+    op.return_tensor('bcs', 'bsc')
 

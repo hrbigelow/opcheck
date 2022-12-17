@@ -58,7 +58,7 @@ class Layout(NodeFunc):
 class RankRange(ReportNodeFunc):
     """
     Produce a range of all valid ranks of a primary index.  'Valid' means
-    obeying all schema constraints.
+    obeying all schema constraints and observation constraints.
     """
     def __init__(self, op, name):
         super().__init__(op, name)
@@ -71,10 +71,16 @@ class RankRange(ReportNodeFunc):
         self.schema_cons.append(cons)
 
     def add_shapes_constraint(self, cons):
+        """
+        cons is created from API call rank_dims_constraint
+        """
         # these functions are called with obs_shapes, **index_ranks
         self.obs_shapes_cons.append(cons)
 
     def add_args_constraint(self, cons):
+        """
+        cons is created from API call arg_rank
+        """
         # these functions are called with obs_args, **index_ranks
         self.obs_args_cons.append(cons)
 

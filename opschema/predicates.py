@@ -367,7 +367,8 @@ class Inventory(NodeFunc):
         all_nodes = set(self.op.inf_graph.values())
         exc_nodes = (self.op.obs_shapes, self.op.obs_dtypes, self.op.obs_args)
         live_nodes = all_nodes.difference(exc_nodes)
-        for fix in fgraph.gen_graph_values(live_nodes, (self.op.report_inode,)):
+        out_nodes = (self.op.report_inode, )
+        for fix in fgraph.gen_graph_values(live_nodes, out_nodes, self.op):
             fixes.append(fix[0]) 
 
         if self.op.avail_edits == 0:

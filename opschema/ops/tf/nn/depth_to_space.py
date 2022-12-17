@@ -1,3 +1,4 @@
+from opschema.base import LAYOUT
 from opschema.predlib import divis_by, divis_by_t
 from opschema import genlib
 
@@ -25,7 +26,16 @@ def init_schema(op):
     op.arg_shape_int('block_size', 's', 2, None) 
     op.arg_unchecked('name')
     op.return_tensor('bof', 'bfo', 'bfoc')
-    op.valid_dtypes('input', ('int32', 'float32'))
+    op.valid_dtypes('input', ('int', 'float', 'uint', 'qint', 'bfloat', 'bool', 'complex'))
+
+    op.exclude_combos('input', 'int', LAYOUT, (1,2))
+    op.exclude_combos('input', 'qint', LAYOUT, (0,1))
+    op.exclude_combos('input', ('float16', 'float32'), LAYOUT, 2)
+    op.exclude_combos('input', 'float64', LAYOUT, (1,2))
+    op.exclude_combos('input', 'uint', LAYOUT, (1,2))
+    op.exclude_combos('input', 'bfloat16', LAYOUT, 1)
+    op.exclude_combos('input', 'bool', LAYOUT, 1)
+    op.exclude_combos('input', 'complex', LAYOUT, 1)
 
     sq, sqt = lambda s: s * s, lambda s: f'{s} * {s}'
     mul, mult = lambda a, b: a * b, lambda a, b: f'{a} * {b}'

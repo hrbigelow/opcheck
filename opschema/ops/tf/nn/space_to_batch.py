@@ -19,11 +19,11 @@ def init_schema(op):
     op.arg_unchecked('name')
 
     op.gen_dims('b', 50)
-    op.gen_dims('i', 400)
+    op.gen_dims('i', 50)
     op.gen_dims('k', 50)
     op.gen_dims('r', 100)
 
-    mod_padding100 = genlib.WrapParams(genlib.mod_padding, 100)
+    mod_padding100 = genlib.WrapParams(genlib.mod_padding, 50)
     op.gen_dims_func('se', mod_padding100, 'ik', 1e10, False)
 
     # ensure that padded input is divisible by block size

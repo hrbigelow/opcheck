@@ -476,9 +476,9 @@ def _gen_graph(live_nodes, result_nodes, yield_map, full_name, op):
                 pre_node = live_nodes[i-1]
                 indented_name = ' ' * i + pre_node.name
                 msg = (
-                        f'ined: {initial_edits} '
-                        f'aved: {op.avail_edits} '
-                        f'val: {pre_node.get_cached()} '
+                        f'initial_edits: {initial_edits} '
+                        f'avail_edits: {op.avail_edits} '
+                        f'node_val: {pre_node.get_cached()} '
                         )
                 print(f'{indented_name:50s}{msg}')
 
