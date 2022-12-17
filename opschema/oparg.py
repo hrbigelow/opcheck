@@ -13,6 +13,9 @@ class OpArg(object):
     def __repr__(self):
         raise NotImplementedError
 
+    def __str__(self):
+        raise NotImplementedError
+
     def value(self):
         """
         Generate the value for use by the framework op
@@ -33,7 +36,10 @@ class DataTensorArg(OpArg):
         self.dtype = tf.dtypes.as_dtype(dtype_name)
 
     def __repr__(self):
-        return f'DTen({self.shape}:{self.dtype.name})'
+        return f'{self.__class__.__name__}({self.shape}:{self.dtype.name})'
+
+    def __str__(self):
+        return f'{self.shape}:{self.dtype.name}'
 
     def value(self):
         try:
@@ -86,7 +92,10 @@ class ShapeTensorArg(OpArg):
         return tf.constant(self.shape, dtype=tf.int32)
     
     def __repr__(self):
-        return f'ShTen({self.shape})'
+        return f'{self.__class__.__name__}({self.shape})'
+
+    def __str__(self):
+        return f'{self.shape}'
 
 class ShapeListArg(OpArg):
     """
@@ -97,7 +106,10 @@ class ShapeListArg(OpArg):
         self.shape = shape
 
     def __repr__(self):
-        return f'L({self.shape})'
+        return f'{self.__class__.__name__}({self.shape})'
+
+    def __str__(self):
+        return f'{self.shape}'
 
     def value(self):
         return self.shape
@@ -111,7 +123,11 @@ class ShapeTensor2DArg(OpArg):
 
     def __repr__(self):
         content = ', '.join(str(r) for r in self.content)
-        return f'Sh2Ten({content})'
+        return f'{self.__class__.__name__}({content})'
+
+    def __str__(self):
+        content = ', '.join(str(r) for r in self.content)
+        return content
 
     def value(self):
         ten = tf.constant(self.content, dtype=tf.int32)
@@ -126,7 +142,10 @@ class IntArg(OpArg):
         self.val = val
 
     def __repr__(self):
-        return f'I:{self.val}' 
+        return f'{self.__class__.__name__}({self.val})' 
+
+    def __str__(self):
+        return f'{self.val}'
 
     def value(self):
         return self.val
@@ -139,7 +158,10 @@ class ValueArg(OpArg):
         self.val = val
 
     def __repr__(self):
-        return f'V:{self.val}'
+        return f'{self.__class__.__name__}({self.val})'
+
+    def __str__(self):
+        return f'{self.val}'
 
     def value(self):
         return self.val

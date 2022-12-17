@@ -75,8 +75,12 @@ Print the graphs associated with an op in .pdf format (requires graphviz)
 
 Validate an op schema against the TensorFlow op it represents  
 
-    python -m opschema.cl validate OP_PATH OUT_DIR [--test_ids] [--skip_ids] \
-        [--max_dtype_err=0] [--rand_seed=0]
+    python -m opschema.cl validate OP_PATH OUT_DIR \
+        [--test_ids] \
+        [--skip_ids] \
+        [--max_dtype_err=0] \
+        [--rand_seed=0] \
+        [--show_traceback]
 
 ## What it does
 
@@ -91,12 +95,39 @@ for comparing TensorFlow's exception with opschema's error message.
 ## Example Error Messages
 
 Some examples TensorFlow calls that raised exceptions.  Each example shows the
-argument values (tensors are abbreviated to shape+dtype), the TensorFlow
+argument values (tensors are abbreviated to shape:dtype), the TensorFlow
 exception text, and the error message from opschema.
 
+Examples are generated with:
+
+    python -m opschema.cl validate OP_PATH OUT_DIR
+
+which produces files OUT_DIR/OP_PATH.txt and OUT_DIR/OP_PATH.sum.txt
+
+These excerpts are taken from OUT_DIR/OP_PATH.txt.  The format for each entry
+is:
+
+    ID  CLASS  ARGS_LIST 
+    TF_EXCEPTION_TEXT
+   
+    OPSCHEMA_ERROR_MESSAGE
+
+CLASS has the following meaning: 
+
+    CLASS     TensorFlow     opschema
+    TP        raises         issues error
+    TN        succeeds       none 
+    FP        succeeds       issues error
+    FN        raises         none 
+
+Note that CLASS does not say anything about how well the TensorFlow exception
+and opschema error message agree.  The goal is for the opschema message to be
+more informative and lead to a successful correction.  But, the schema
+definition is a reverse-engineering process based on the observed behavior of
+the TensorFlow op. 
 
 
-## How it works
+# Schema Sections
 
 `opschema` defines an op schema using a few basic concepts common to all ops.
 To best illustrate these I'll illustrate them with the example of the
@@ -457,11 +488,51 @@ op.exclude_combos('input', 'bfloat16', 'i', (1,2))
 op.exclude_combos('input', 'bfloat16', 'i', 3, LAYOUT, 0)
 ```
 
-# Other Constraints
+## Other Constraints
 
 There are other relationships between inputs in certain TensorFlow ops.  For
 example, with `tf.gather_nd`, the last dimension of the `indices` shape
 determines the rank of the 'read location' (r) index.  This is declared using
 the API function [rank_dims_constraint](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1698).
 For a complete list of API functions, see `opschema.schema.OpSchema` class.
+
+# Computation Graphs
+
+The schema API internally builds four computation graphs.  They can be viewed
+with:
+
+    python -m opschema.cl graph OP_PATH OUT_DIR
+
+This will produce pdf files `OUT_DIR/OP_PATH.{pred,gen,inf,dims}.pdf`.  A
+computation graph here has the usual meaning - nodes wrap functions, and
+the parents of a node provide the inputs to the function.  Nodes without
+parents wrap functions that take no inputs.  Evaluating the graph as a whole
+means evaluating the functions in valid topological order.
+
+## Generative Graph
+
+Two specializations of this idea are used in opschema.  A ***generative
+graph*** has nodes which wrap generator functions, which are provided in
+[opschema/generators.py](https://github.com/hrbigelow/opschema/blob/master/opschema/generators.py).
+Each function will yield zero or more items, depending on the inputs it
+receives.  The graph as a whole becomes a generator which yields value sets,
+one value corresponding to each node.  This notion can be seen as a
+generalization of `itertools.product`, which can be implemented as a generative
+graph of fully disconnected nodes with no parents.
+
+The `gen` graph is responsible for generating op input sets.  A subset of its
+nodes represent parameters of the op, while another subset represent hidden
+states which control relationships between them.
+
+## Predicate Graph
+
+The second specialization is a ***predicate graph***.  Its nodes wrap predicate
+functions defined in
+[opschema/predicates.py](https://github.com/hrbigelow/opschema/blob/master/opschema/predicates.py)
+As before, nodes with no parents hold predicate functions (function objects
+actually) which return a tuple `pred`, `data`.  If `pred` is True, `data` is
+passed on to the node's children as an input argument and graph evaluation
+proceeds.  If `pred` is False,
+`data` is an instance of `ErrorReport` which holds information about the
+failure, and graph evaluation halts.
 

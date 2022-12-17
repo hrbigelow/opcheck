@@ -42,7 +42,7 @@ def init_schema(op):
     op.comp_dims_cw('g', dilate, dilate_t, 'fd') 
     op.gen_dims_func('i', below_above, 'g', 1000, False)  
 
-    wrap_divis_by = WrapParams(divis_by, 300)
+    wrap_divis_by = WrapParams(divis_by, 100)
     op.gen_dims_func('k', wrap_divis_by, 'j', 300, False)
     op.comp_dims_cw('o', strided_conv, strided_conv_t, 'igs', 'padding')
 
@@ -58,6 +58,14 @@ def init_schema(op):
             predlib.not_both_over_one_templ, 'sd')
 
     op.dims_pred_cw('k % j == 0', predlib.divis_by, predlib.divis_by_t, 'kj')
+
+    def ratio_limit(k, j):
+        return k < j * 10
+
+    def ratio_limit_t(k, j):
+        return f'{k} < {j} * 10'
+
+    # op.dims_pred_cw('k < j * 10', ratio_limit, ratio_limit_t, 'kj')
     
     op.return_tensor('blo', 'bol')
 

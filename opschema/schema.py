@@ -71,6 +71,9 @@ class Index(object):
     def display_name(self, full=False):
         return base.snake_case(self.desc) if full else self.idx
 
+    def snake(self):
+        return base.snake_case(self.desc)
+
 class Partial(object):
     """
     Curry extra_args at the end
@@ -148,6 +151,7 @@ class OpSchema(object):
         # None: success.  pr.ErrorReport or list of Fix objects is failure
         self.op_error = None  # None means success.
         self.framework_exc_msg = None
+        self.framework_tblines = None
 
         # call time values
         self.arguments = {}
@@ -213,6 +217,7 @@ class OpSchema(object):
                     self.framework_exc_msg = exc_str 
                 else:
                     self.framework_exc_msg = mt.groups()[0]
+                self.framework_tblines = traceback.format_tb(ex.__traceback__)
                 raise ex
             finally:
                 msg = self._report()
@@ -240,6 +245,7 @@ class OpSchema(object):
         self.arguments = bind.arguments
         self.returns.clear()
         self.framework_exc_msg = None
+        self.framework_tblines = []
         self.inf_result = None
 
         for dist in range(self.max_search_dist+1):
@@ -828,7 +834,8 @@ class OpSchema(object):
         for op_args in fgraph.gen_graph_values(live, out, self):
             yield op_args[0] # extract tuple element
 
-    def validate(self, out_dir, test_ids, skip_ids, dtype_err_quota, rand_seed):
+    def validate(self, out_dir, test_ids, skip_ids, dtype_err_quota, rand_seed,
+            show_traceback=True):
         if not os.path.exists(out_dir):
             raise RuntimeError(
                 f'{type(self).__qualname__}: Could not open output path '
@@ -882,10 +889,15 @@ class OpSchema(object):
             stats[cat] += 1
             progress = '  '.join(f'{c}: {stats[c]:-5d}' for c in cats)
             print(f'\rTest: {test_id:-5d}  {progress}', end='')
-            arg_fields = '\t'.join(f'{k}:{v}' for k,v in op_args.items())
-            call = f'{test_id}\t{cat}\t{arg_fields}'
-            print('\n\n', call, file=report_fh)
-            print(f'Framework Msg\n{self.framework_exc_msg}\n', file=report_fh)
+            arg_fields = ', '.join(f'{k}={op_args[k]}' for k in self.arg_order
+                    if k in op_args)
+            call = f'## {test_id}\t{cat}\t{arg_fields}'
+            print(f'\n\n{call}', file=report_fh)
+            
+            if show_traceback:
+                print(''.join(self.framework_tblines), file=report_fh)
+            print(f'{self.framework_exc_msg}\n', file=report_fh)
+
             print(self._report(), file=report_fh)
             edit_summary = self._report_edit_summary()
             summary = f'{call}\t{edit_summary}'

@@ -33,6 +33,7 @@ def init_schema(op):
 
     op.valid_dtypes('input', ('bfloat16', 'float',))
     op.exclude_combos('input', ('float64', 'bfloat16'), 'i', 3)
+    op.exclude_combos('input', ('bfloat16',), 'i', 1)
 
     def odims(i, k, s, padding):
         if padding == 'VALID':

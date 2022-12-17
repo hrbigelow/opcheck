@@ -87,7 +87,7 @@ class Report(object):
 
             if rule.ranks is not None:
                 for idx, rank in rule.ranks.items():
-                    desc = self.op.index[idx].desc
+                    desc = self.op.index[idx].snake()
                     item = f'{rank} {desc} dimensions'
                     items.append(item)
 
@@ -185,9 +185,10 @@ class Report(object):
             if idx_cons_msg is not None:
                 items.append(idx_cons_msg)
 
-        if len(items) > 0:
-            index_msg = index_definitions(self.op)
-            items.append(index_msg)
+        # This is too verbose to include
+        # if len(items) > 0:
+            # index_msg = index_definitions(self.op)
+            # items.append(index_msg)
 
         final = None if len(items) == 0 else '\n\n'.join(items)
         return final
@@ -282,7 +283,10 @@ class Report(object):
         index_defn = index_definitions(self.op)
         tail_msg = 'For the list of all valid configurations, use: '
         tail_msg += f'opschema.explain(\'{self.op.op_path}\')'
-        final = f'{leader_msg}\n\n{table}\n\n{index_defn}\n\n{tail_msg}\n'
+        
+        # this is too verbose
+        # final = f'{leader_msg}\n\n{table}\n\n{index_defn}\n\n{tail_msg}\n'
+        final = f'{leader_msg}\n\n{table}\n'
         return final
 
 def grammar_list(items):
@@ -298,7 +302,7 @@ def index_definitions(op):
     msg = 'index definitions:'
     items = [msg]
     for idx, ind in op.index.items():
-        item = f'{idx}: {ind.desc}'
+        item = f'{idx}: {ind.snake()}'
         items.append(item)
     tab = '\n'.join(items)
     return tab 
@@ -331,11 +335,11 @@ def _index_usage_leader(op, shape_edit, obs_shapes, obs_args):
     for idx, usage in shape_edit.usage_map.items():
         if len(usage) == 1:
             continue
-        desc = op.index[idx].desc
+        desc = op.index[idx].snake()
         args = [ arg for l in usage.values() for arg in l ]
         ord_args = [ arg for arg in op.arg_order if arg in args ]
         shape_list = grammar_list(ord_args)
-        item = f'\'{desc}\' dimensions (index {idx}) differ in {shape_list}'
+        item = f'\'{desc}\' (index {idx}) dimensions differ in {shape_list}'
         items.append(item)
     leader_msg = '\n'.join(items)
     return leader_msg
@@ -366,7 +370,7 @@ def _change_usage_msgs(op, fix):
 
         arg_list_msg = grammar_list(all_args) 
         item_str = grammar_list(items)
-        index_msg =  f'{op.index[idx].desc} (index {idx}) has inconsistent '
+        index_msg =  f'{op.index[idx].display_name(True)} ({idx}) has inconsistent '
         index_msg += f'dimensions in {arg_list_msg}. {item_str}'
         index_msgs.append(index_msg)
     return index_msgs
@@ -402,11 +406,11 @@ def _idx_constraint_msg(op, fix, obs_args):
         return None
 
     pred = fix.shape.index_pred_error
-    templ_args = [ f'{op.index[idx].desc}' for idx in pred.indices ]
+    templ_args = [ f'{op.index[idx].snake()}' for idx in pred.indices ]
 
     items = []
     for idx in pred.indices:
-        item =  f'"{op.index[idx].desc}" ({idx}) dimensions = '
+        item =  f'{op.index[idx].snake()} ({idx}) = '
         idx_dims = fix.shape.maybe_get_index_dim(idx)
         item += dims_string(idx_dims)
         items.append(item)
