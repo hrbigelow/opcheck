@@ -153,7 +153,7 @@ In many of the messages, there will be tables using semantic, one-letter-codes
 assigned to dimensions of tensor shapes.  These codes and tables are explained
 in the [Schema](#schema) section below.  
 
-## `DTypeEquate` examples
+## DTypeEquate examples
 
 These errors occur when two input tensors' dtypes differ but should not.  In
 this situation, TensorFlow assumes that the first dtype was the correct one and
@@ -185,7 +185,7 @@ DTypeEquate
 Received bias.dtype = float32 and value.dtype = int32.  dtypes of bias and value must match.
 ```
 
-## `DTypeIndiv` examples
+## DTypeIndiv examples
 
 DTypeIndiv fixes occur when a particular input tensor is declared with
 [valid_dtypes](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1282), for example:
@@ -272,7 +272,7 @@ DTypeIndiv
 Received input.dtype = qint16.  Valid dtypes for input are: bool, complex64, complex128, qint8, bfloat16, int8, int16, int32, int64, float16, float32, float64, uint8, uint16, uint32 and uint64
 ```
 
-## `ComboExcluded` examples
+## ComboExcluded examples
 
 ComboExcluded fixes are generated when a particular combination of input
 dtypes, index rank and/or layout (as inferred by `data_format`) is given but
@@ -337,7 +337,7 @@ ComboExcluded
 This combination is not implemented: input.dtype in (qint8, qint16, qint32) and data_format in (NHWC, NCHW)
 ```
 
-## `InsertDim` examples
+## InsertDim examples
 
 InsertDim fixes are suggested fixes issued by opschema to insert (usually one)
 dimensions to some input tensor.  They occur when the combination of input
@@ -407,7 +407,7 @@ config 1      => b c s            c                           b c s
 => config 1: add 1 dimension to value
 ```
 
-## `DeleteDim` examples
+## DeleteDim examples
 
 Like the `InsertDim` examples, `DeleteDim` fixes are issued when the submitted
 combination of ranks is not one of the allowed combinations.  In these
@@ -479,7 +479,7 @@ config 1         b k i        => f j k          b l o         s                 
 => config 1: remove 1 dimension from filters
 ```
 
-## `IndexUsage` examples
+## IndexUsage examples
 
 These fixes are issued when certain dimensions between two different tensors or
 other shapes are supposed to be equal but aren't.  TensorFlow exceptions often
@@ -1037,7 +1037,7 @@ l      output channel
 o      output spatial        
 ```
 opschema Indexes are declared with
-[add_index](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L899) 
+[add_index](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L912) 
 as in:
 
 ```python
@@ -1078,11 +1078,11 @@ codes for `Index` objects.  For example, the 'filters' parameter has signature
 spatial', then 'filter input channel', then 'output channel'.
 
 The individual arguments are registered with the schema depending on the kind
-of argument.  Input tensors are registered with [arg_tensor]( https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1499)
-and return tensors with [return_tensor]( https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1776).
+of argument.  Input tensors are registered with [arg_tensor]( https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1512)
+and return tensors with [return_tensor]( https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1788).
 The signatures are declared with these API calls, and the layouts are
 associated with the `data_format` parameter using the API call 
-[arg_layout](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1389).
+[arg_layout](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1402).
 
 The OpSchema API calls are:
 
@@ -1130,7 +1130,7 @@ Index rank means the same as for a tensor, but for a subset of semantically
 related indices.  For instance, 'filter.rank' is equal to `rank(f) + rank(j) +
 rank(l)`.  According to the above constraints, this would imply it could range
 from 3 to 5.  All of the above rank constraints are determined during index
-creation, but an additional API function [limit_ranks](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1246)
+creation, but an additional API function [limit_ranks](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1259)
 can be used.
 
 ## Computed dimensions
@@ -1155,7 +1155,7 @@ parameters (in this case the 'padding' parameter), the variants of the formulas
 are shown.  These formulas are used both to compute valid inputs during error
 checking, and to generate readable formulas for context in error messages.
 
-Computed dimensions are registered with the API call [OpSchema.comp_dims](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1162)
+Computed dimensions are registered with the API call [comp_dims](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1173)
 and related variants.
 
 ```python
@@ -1218,7 +1218,7 @@ The schema author may register additional predicates.  In the case of
 channel'.  In fact this is not documented, but it is empirically true. 
 
 Predicates are registered with API call
-[dims_pred](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1710)
+[dims_pred](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1722)
 and its component-wise variant, as follows:
 
 ```python
@@ -1261,9 +1261,9 @@ Conv2D are not implemented specifically for layout 0, which means data_formats
 'NCW', 'NCHW'.
 
 DType constraints are declared using API calls 
-[valid_dtypes](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1269),
-[equate_dtypes](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1305),
-[exclude_combos](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1327)
+[valid_dtypes](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1282),
+[equate_dtypes](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1318),
+[exclude_combos](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1340)
 
 as shown here:
 
@@ -1282,7 +1282,7 @@ op.exclude_combos('input', 'bfloat16', 'i', 3, LAYOUT, 0)
 There are other relationships between inputs in certain TensorFlow ops.  For
 example, with `tf.gather_nd`, the last dimension of the `indices` shape
 determines the rank of the 'read location' (r) index.  This is declared using
-the API function [rank_dims_constraint](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1698).
+the API function [rank_dims_constraint](https://github.com/hrbigelow/opschema/blob/master/opschema/schema.py#L1711).
 For a complete list of API functions, see `opschema.schema.OpSchema` class.
 
 # Computation Graphs
