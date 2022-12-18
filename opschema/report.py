@@ -97,12 +97,15 @@ class Report(object):
                 exc_formats = [df for df, (l, _) in formats.items() if l in
                         exc_layouts and df is not None]
                 fmt_list = ', '.join(exc_formats)
-                item = f'data formats ({fmt_list})'
+                arg_name = self.op.data_formats.arg_name
+                item = f'{arg_name} in ({fmt_list})'
                 items.append(item)
 
             set_msg = grammar_list(items)
             final = f'This combination is not implemented: {set_msg}'
-        return final
+
+        code = base.FixKind.codestring(dtype_edit.code())
+        return f'{code}\n{final}'
 
     def _carat_table(self, fix):
         """
@@ -162,7 +165,8 @@ class Report(object):
 
         rows = [header_row] + np.array(columns).transpose().tolist()
         main, _ = base.tabulate(rows, '   ', False)
-        table = '\n'.join(main)
+        codestring = base.FixKind.codestring(fix.code())
+        table = '\n'.join([codestring] + main)
         return table
 
     def carat_tables(self):
@@ -231,7 +235,9 @@ class Report(object):
 
         used_indexes = set()
         tips = []
+        code = 0
         for i, fix in enumerate(fixes, 1):
+            code |= fix.code()
             edit = fix.shape
             template_map = edit.arg_templates()
 
@@ -262,10 +268,11 @@ class Report(object):
             tips.append(final_tip)
             rows.append(row)
 
+        codestring = base.FixKind.codestring(code)
         main, _ = base.tabulate(rows, '   ', False)
         table = '\n'.join(main)
         tip_msg = '\n'.join(tips)
-        return f'{table}\n\n{tip_msg}'
+        return f'{codestring}\n{table}\n\n{tip_msg}'
 
     def arrow_table(self):
         """
@@ -280,9 +287,9 @@ class Report(object):
         leader_msg = f'Received invalid configuration: {ranks_msg}.  '
         leader_msg += f'Closest valid configurations:'
         table = self._template_table(fixes)
-        index_defn = index_definitions(self.op)
-        tail_msg = 'For the list of all valid configurations, use: '
-        tail_msg += f'opschema.explain(\'{self.op.op_path}\')'
+        # index_defn = index_definitions(self.op)
+        # tail_msg = 'For the list of all valid configurations, use: '
+        # tail_msg += f'opschema.explain(\'{self.op.op_path}\')'
         
         # this is too verbose
         # final = f'{leader_msg}\n\n{table}\n\n{index_defn}\n\n{tail_msg}\n'
@@ -324,25 +331,6 @@ def _get_shape_columns(op, obs_shapes):
 
 def _get_headers(op, columns):
     return [op._arg_shape_name(c) for c in columns]
-
-def _index_usage_leader(op, shape_edit, obs_shapes, obs_args):
-    """
-    Produce messages of the form:
-    {index_desc} dimensions (index {code}) differ in {shape_list}
-    for each inconsistent usage
-    """
-    items = []
-    for idx, usage in shape_edit.usage_map.items():
-        if len(usage) == 1:
-            continue
-        desc = op.index[idx].snake()
-        args = [ arg for l in usage.values() for arg in l ]
-        ord_args = [ arg for arg in op.arg_order if arg in args ]
-        shape_list = grammar_list(ord_args)
-        item = f'\'{desc}\' (index {idx}) dimensions differ in {shape_list}'
-        items.append(item)
-    leader_msg = '\n'.join(items)
-    return leader_msg
 
 def _change_usage_msgs(op, fix):
     """

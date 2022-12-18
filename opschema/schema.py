@@ -891,9 +891,10 @@ class OpSchema(object):
             print(f'\rTest: {test_id:-5d}  {progress}', end='')
             arg_fields = ', '.join(f'{k}={op_args[k]}' for k in self.arg_order
                     if k in op_args)
-            call = f'## {test_id}\t{cat}\t{arg_fields}'
+            call = f'## {test_id}\t{cat}\t{self.op_path}: {arg_fields}'
             print(f'\n\n{call}', file=report_fh)
             
+            print('TensorFlow Exception', file=report_fh)
             if show_traceback:
                 print(''.join(self.framework_tblines), file=report_fh)
             print(f'{self.framework_exc_msg}\n', file=report_fh)
@@ -1331,7 +1332,7 @@ class OpSchema(object):
         self.dtype_rules.add_equate_rule(trg_tensor, src_tensor)
 
         G.set_registry(self.gen_graph)
-        gobj = ge.DTypeEquiv(self, trg_tensor)
+        gobj = ge.DTypeEquate(self, trg_tensor)
         src_dtype = self._gen_node(ge.DTypeIndiv, src_tensor)
         trg_dtype = G.add_node(gobj, src_dtype)
         self.dtypes_gfilt.append_parent_sn(trg_dtype)

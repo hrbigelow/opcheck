@@ -22,7 +22,7 @@ def init_schema(op):
 
     op.arg_layout('data_format', formats, 'i')
     op.arg_tensor('input', 'bik', 'bki', 'bkic')
-    op.arg_shape_int('block_size', 's') 
+    op.arg_shape_int('block_size', 's', 2) 
     op.arg_unchecked('name')
     op.return_tensor('bof', 'bfo', 'bfoc')
 

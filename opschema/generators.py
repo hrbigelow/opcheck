@@ -565,7 +565,7 @@ class DTypeIndiv(GenFunc):
                 ys = self.op.gen_rng.sample(self.invalid_dtypes, tot)
                 yield from ys
 
-class DTypeEquiv(GenFunc):
+class DTypeEquate(GenFunc):
     """
     A DType which is declared equal to another using equate_dtypes 
     Inference: yields None or a DTypesEdit
@@ -577,15 +577,14 @@ class DTypeEquiv(GenFunc):
         self.all_dtypes = ALL_DTYPES
 
     def __call__(self, src_dtype):
-        num_err = 0
-        for dtype in self.all_dtypes:
-            if dtype == src_dtype:
-                yield src_dtype
-            else:
-                with self.reserve_edit(1) as avail:
-                    if avail and num_err != self.op.dtype_err_quota:
-                        yield dtype
-                        num_err += 1
+        yield src_dtype
+        with self.reserve_edit(1) as avail:
+            if not avail:
+                return
+            tot = min(len(self.all_dtypes) - 1, self.op.dtype_err_quota)
+            other_dtypes = tuple(d for d in self.all_dtypes if d != src_dtype)
+            yields = self.op.gen_rng.sample(other_dtypes, tot)
+            yield from yields
 
 class DTypesNotImpl(GenFunc):
     """

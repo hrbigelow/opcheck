@@ -158,6 +158,20 @@ class ShapeEdit(object):
     def cost(self):
         return self.indel_cost() + self.idx_usage_cost() + self.pred_cost()
 
+    def code(self):
+        code = 0
+        if self.indel_cost() != 0:
+            for arg, delta in self.arg_delta.items():
+                if delta > 0:
+                    code |= FixKind.InsertDim.value
+                else:
+                    code |= FixKind.DeleteDim.value
+        if self.idx_usage_cost() != 0:
+            code |= FixKind.IndexUsage.value
+        if self.pred_cost() != 0:
+            code |= FixKind.IndexPred.value
+        return code
+
     def arg_templates(self):
         # create arg => template map
         arg_templ = {}
@@ -266,6 +280,12 @@ class DataFormatEdit(object):
 
     def cost(self):
         return 0 if self.used == self.imputed else 2
+
+    def code(self):
+        if self.cost() == 0:
+            return 0
+        else:
+            return FixKind.Layout.value
         
 class DTypesEdit(object):
     def __init__(self, rule_kind, info):
@@ -278,6 +298,16 @@ class DTypesEdit(object):
 
     def __repr__(self):
         return f'{type(self).__qualname__}[{self.kind},{self.info}]'
+
+    def code(self):
+        if self.kind == 'indiv':
+            return FixKind.DTypeIndiv.value
+        elif self.kind == 'equate':
+            return FixKind.DTypeEquate.value
+        elif self.kind == 'combo':
+            return FixKind.ComboExcluded.value
+        else:
+            return 0
 
     def cost(self):
         return 0 if self.kind is None else 1
@@ -675,6 +705,24 @@ class ReportKind(enum.Enum):
     ArrowTable = 1
     DType = 2
 
+class FixKind(enum.Enum):
+    DTypeEquate = 1    # input tensors have differing dtypes but should match
+    DTypeIndiv = 2     # one input tensor has a disallowed dtype
+    ComboExcluded = 4  # this combo of dtypes, index ranks and/or layout is excluded 
+    InsertDim = 8      # fix by inserting dimension(s) to a particular tensor 
+    DeleteDim = 16     # fix by deleting dimension(s) from a particular tensor
+    IndexUsage = 32    # an index appearing multiple places has differing dimension
+    IndexPred = 64     # an index predicate is violated
+    Layout = 128       # fix by trying an alternate layout
+
+    @classmethod
+    def codestring(cls, code):
+        codes = []
+        for opt in cls:
+            if opt.value & code:
+                codes.append(opt.name)
+        return '|'.join(codes)
+
 class Fix(object):
     def __init__(self, df_edit, dtype_edit, shape_edit, **kwargs):
         self.df = df_edit
@@ -692,6 +740,10 @@ class Fix(object):
         f += f'{self.shape.idx_usage_cost()}, '
         f += f'{self.shape.pred_cost()}'
         return f
+
+    def code(self):
+        code = self.dtype.code() + self.shape.code() + self.df.code()
+        return code
 
     def summary(self):
         """
