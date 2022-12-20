@@ -356,7 +356,7 @@ def _change_usage_msgs(op, fix):
                 items.append(item)
                 all_args.add(arg)
 
-        arg_list_msg = grammar_list(all_args) 
+        arg_list_msg = grammar_list(list(all_args)) 
         item_str = grammar_list(items)
         index_msg =  f'{op.index[idx].display_name(True)} ({idx}) has inconsistent '
         index_msg += f'dimensions in {arg_list_msg}. {item_str}'
