@@ -6,6 +6,7 @@ A system to build input constraint schemas for TensorFlow operations
 Install from PyPI:
 
     pip install opschema
+    pip install git+https://github.com/hrbigelow/opschema
 
 # Motivation
 

@@ -1,15 +1,18 @@
 def init_schema(op):
     op.add_index('b', 'batch', 1)
     op.add_index('i', 'input', 1)
+    op.add_index('c', 'cell', 1)
+    op.add_index('j', 'input + cell', 1)
+    op.add_index('d', 'four cells', 1)
 
     op.arg_tensor('x', 'bi')
-    op.arg_tensor('cs_prev', 'bi')
-    op.arg_tensor('h_prev', 'bi')
-    op.arg_tensor('w', 'ii')
-    op.arg_tensor('wci', 'ii')
-    op.arg_tensor('wcf', 'ii')
-    op.arg_tensor('wco', 'ii')
-    op.arg_tensor('b', 'i')
+    op.arg_tensor('cs_prev', 'bc')
+    op.arg_tensor('h_prev', 'bc')
+    op.arg_tensor('w', 'jd')
+    op.arg_tensor('b', 'd')
+    op.arg_tensor('wci', 'cc')
+    op.arg_tensor('wcf', 'cc')
+    op.arg_tensor('wco', 'cc')
 
     op.arg_unchecked('name')
 
@@ -24,4 +27,28 @@ def init_schema(op):
 
     op.gen_dims('b', 500)
     op.gen_dims('i', 500)
+    op.gen_dims('c', 300)
+
+    def add(i, c):
+        val = i+c
+        yield val, val
+
+    op.gen_dims_calc('j', add, 'ic')
+
+    def four(c):
+        val = 4 * c
+        yield val, val
+
+    op.gen_dims_calc('d', four, 'c')
+
+    jpred = lambda j, i, c: j == i + c
+    jpred_t = lambda j, i, c: f'{j} == {i} + {c}'
+    op.dims_pred_cw('j == i + c', jpred, jpred_t, 'jic')
+
+    dpred = lambda d, c: d == c * 4
+    dpred_t = lambda d, c: f'{d} == {c} * 4'
+
+    op.dims_pred_cw('d == c * 4', dpred, dpred_t, 'dc')
+
+
 

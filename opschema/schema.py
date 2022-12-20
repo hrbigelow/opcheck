@@ -3,6 +3,7 @@ import traceback
 import inspect
 from collections import OrderedDict
 import sys, io, os
+import signal
 import re
 import itertools
 from random import Random
@@ -17,6 +18,11 @@ from .redirect import stderr_redirector
 from .error import *
 from .fgraph import PredNode as P, GenNode as G, FuncNode as F
 from .base import ShapeKind
+
+def handler(signum, frame):
+    print(f'Signal handler called with signal {signum}', flush=True)
+
+signal.signal(signal.SIGABRT, handler) 
 
 """
 Every API call will mutate the Generative Graph and the Predicate Graph
@@ -824,7 +830,7 @@ class OpSchema(object):
         self.avail_test_edits = 0
 
     def _prep_gen_tests(self):
-        self.avail_test_edits = 1
+        self.avail_test_edits = 0
 
     def generate_args(self, rand_seed=12345):
         self._prep_gen_tests()
