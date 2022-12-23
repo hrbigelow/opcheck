@@ -10,9 +10,9 @@ def init_schema(op):
     op.arg_tensor('h_prev', 'bc')
     op.arg_tensor('w', 'jd')
     op.arg_tensor('b', 'd')
-    op.arg_tensor('wci', 'cc')
-    op.arg_tensor('wcf', 'cc')
-    op.arg_tensor('wco', 'cc')
+    op.arg_tensor('wci', 'c')
+    op.arg_tensor('wcf', 'c')
+    op.arg_tensor('wco', 'c')
 
     op.arg_unchecked('name')
 
@@ -25,9 +25,9 @@ def init_schema(op):
     op.equate_dtypes('wco', 'x')
     op.equate_dtypes('b', 'x')
 
-    op.gen_dims('b', 500)
-    op.gen_dims('i', 500)
-    op.gen_dims('c', 300)
+    op.gen_dims('b', 1, 500, 500, True)
+    op.gen_dims('i', 1, 500, 500, True)
+    op.gen_dims('c', 1, 300, 300, True)
 
     def add(i, c):
         val = i+c
@@ -49,6 +49,5 @@ def init_schema(op):
     dpred_t = lambda d, c: f'{d} == {c} * 4'
 
     op.dims_pred_cw('d == c * 4', dpred, dpred_t, 'dc')
-
 
 

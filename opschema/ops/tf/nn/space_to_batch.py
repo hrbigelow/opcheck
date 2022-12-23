@@ -14,14 +14,14 @@ def init_schema(op):
     op.add_index('p', 'output batch', 1)
 
     op.arg_tensor('input', 'bir')
-    op.arg_shape_tensor('block_shape', 'k')
+    op.arg_shape_tensor('block_shape', 1, int(1e10), 'k')
     op.arg_shape_tensor2d('paddings', 's', 'e')
     op.arg_unchecked('name')
 
-    op.gen_dims('b', 50)
-    op.gen_dims('i', 50)
-    op.gen_dims('k', 50)
-    op.gen_dims('r', 100)
+    op.gen_dims('b', 1, 50, 50, True)
+    op.gen_dims('i', 1, 50, 50, True)
+    op.gen_dims('k', 1, 50, 50, True)
+    op.gen_dims('r', 1, 100, 100, True)
 
     mod_padding100 = genlib.WrapParams(genlib.mod_padding, 50)
     op.gen_dims_func('se', mod_padding100, 'ik', 1e10, False)

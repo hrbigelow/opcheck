@@ -8,12 +8,12 @@ REGISTRY = {}
 def register(*op_paths):
     """
     For each op_path in `op_paths`, instantiates a schema.OpSchema instance
-    initialized to the op_path schema.  Wraps the TensorFlow op with it.
-    To retrieve the schema.OpSchema instance, use get(op_path).
+    initialized to the op_path schema.  Wraps the TensorFlow op with it.  To retrieve
+    the schema.OpSchema instance, use get(op_path).
 
-    Once a TensorFlow op is wrapped, opschema will do pre-call error checking
-    and issue detailed error messages based on violations of constraints
-    defined in the schema.
+    Once a TensorFlow op is wrapped, opschema will do pre-call error checking and
+    issue detailed error messages based on violations of constraints defined in the
+    schema.
 
     To see the constraints, use opschema.explain(op_path)
     """

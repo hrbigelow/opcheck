@@ -3,10 +3,10 @@ import traceback
 import inspect
 from collections import OrderedDict
 import sys, io, os
-import signal
 import re
 import itertools
 from random import Random
+from . import genlib
 from . import predicates as pr
 from . import generators as ge
 from . import infer as nf
@@ -18,11 +18,8 @@ from .redirect import stderr_redirector
 from .error import *
 from .fgraph import PredNode as P, GenNode as G, FuncNode as F
 from .base import ShapeKind
+from .procfuncs import proc_wrap
 
-def handler(signum, frame):
-    print(f'Signal handler called with signal {signum}', flush=True)
-
-signal.signal(signal.SIGABRT, handler) 
 
 """
 Every API call will mutate the Generative Graph and the Predicate Graph
@@ -99,6 +96,7 @@ class OpSchema(object):
         # flags
         self.avail_edits = 0
         self.avail_test_edits = 0
+        self.gen_zeros = False
         self.max_yield_count = 1000
         self.comp_dims_mode = None 
 
@@ -163,9 +161,6 @@ class OpSchema(object):
         self.arguments = {}
         self.returns = [] 
 
-    def _set_gen_error_quotas(self, dtype_quota):
-        self.dtype_err_quota = dtype_quota
-
     def _pred_node(self, pred_class, name=None):
         name = fgraph.node_name(pred_class, name)
         return self.pred_graph.get(name, None)
@@ -213,6 +208,7 @@ class OpSchema(object):
             except BaseException as ex:
                 raise OpSchemaInternalError(ex)
             try:
+                # exit_code, ret_val = proc_wrap(self.framework_op, **self.arguments)
                 ret_val = self.framework_op(**self.arguments)
                 self._check_return(ret_val)
                 return ret_val
@@ -829,25 +825,23 @@ class OpSchema(object):
     def _prep_gen_inventory(self):
         self.avail_test_edits = 0
 
-    def _prep_gen_tests(self):
-        self.avail_test_edits = 0
-
     def generate_args(self, rand_seed=12345):
-        self._prep_gen_tests()
         live = self.gen_graph.values()
         out = [self._gen_node(ge.Args)]
         self.gen_rng.seed(rand_seed)
         for op_args in fgraph.gen_graph_values(live, out, self):
             yield op_args[0] # extract tuple element
 
-    def validate(self, out_dir, test_ids, skip_ids, dtype_err_quota, rand_seed,
-            show_traceback=True):
+    def validate(self, out_dir, test_ids, skip_ids, dtype_err_quota,
+            test_edits, gen_zeros, rand_seed, show_traceback=True):
         if not os.path.exists(out_dir):
             raise RuntimeError(
                 f'{type(self).__qualname__}: Could not open output path '
                 f'\'{out_dir}\' for report generation')
 
-        self._set_gen_error_quotas(dtype_err_quota)
+        self.dtype_err_quota = dtype_err_quota
+        self.avail_test_edits = test_edits
+        self.gen_zeros = gen_zeros
 
         report_fh = open(os.path.join(out_dir, f'{self.op_path}.txt'), 'w')
         summary_fh = open(os.path.join(out_dir, f'{self.op_path}.sum.txt'), 'w')
@@ -874,13 +868,16 @@ class OpSchema(object):
             # continue
             string_err = io.BytesIO()
             try:
+                # proc_wrap(self, op_args)
                 with stderr_redirector(string_err):
                     self.wrapped_op(**arg_dict)
+                    # pass
             except (OpSchemaInternalError, SchemaError) as ex:
                 print(string_err.getvalue().decode('UTF-8'))
                 raise ex
             except BaseException as ex:
                 pass
+                # raise ex
 
             if self.op_error is None:
                 cat = 'TN' if self.framework_exc_msg is None else 'FN'
@@ -1147,30 +1144,38 @@ class OpSchema(object):
         `arg_names` must be names of arguments passed to the op
         arg_vals are the runtime resolved values of the argument names
         """
-        def gen(rng, *args):
-            yield from func(*args)
-
+        gen = genlib.GenFromFunc(func)
         return self.gen_dims_func(out_sig, gen, in_sig, int(1e10), False, *arg_names)
 
-    def gen_dims(self, out_idx, max_prod):
+    def gen_dims(self, out_idx, min_val, max_val, max_prod, gen_zero=False):
         """
-        Generate dimensions of {out_idx} of appropriate rank such that the
-        product is in [1, max_prod]
+        Generate dimensions of `out_idx` of appropriate rank such that each
+        dimension is in [min_val, max_val] and product is in [0, max_prod].
+        If `gen_zero`, generate zero as an additional output.
         """
-        def gen(rng):
-            yield 1, None
+        gen = genlib.GenRange(min_val, max_val, gen_zero)
         try:
             self.gen_dims_func(out_idx, gen, '', max_prod, False)
         except SchemaError as ex:
             raise SchemaError(f'gen_dims got error {ex}')
+
+    def gen_dims_prod(self, out_idx, max_prod):
+        """
+        Generate dimensions of {out_idx} of appropriate rank such that the
+        product is in [1, max_prod]
+        """
+        gen = genlib.GenRange(1, None)
+        try:
+            self.gen_dims_func(out_idx, gen, '', max_prod, False)
+        except SchemaError as ex:
+            raise SchemaError(f'gen_dims_prod got error {ex}')
 
     def gen_dims_rng(self, out_idx, min_val, max_val):
         """
         Generate dimensions of {out_idx} of appropriate rank such that the
         product is in [min_prod, max_prod]
         """
-        def gen(rng):
-            yield min_val, max_val
+        gen = genlib.GenRange(min_val, max_val)
         try:
             self.gen_dims_func(out_idx, gen, '', int(1e10), False)
         except SchemaError as ex:
@@ -1597,15 +1602,17 @@ class OpSchema(object):
         kind = ShapeKind.Int
         self._arg_shape_func(arg_name, (index,), arg_p, gen_obj, kind)
 
-    def arg_shape_tensor(self, arg_name, *sigs):
+    def arg_shape_tensor(self, arg_name, min_elem_val, max_elem_val, *sigs):
         """
         Register {arg_name} as a 1D integer tensor whose elements define the
         shape of a signature.  
+
+        Check that every element is in [`min_elem_val`, `max_elem_val`].
         """
         P.set_registry(self.pred_graph)
         schema = self._pred_node(pr.Schema)
         gen_obj = ge.ShapeTensor(arg_name)
-        pred_obj = pr.ShapeTensor(arg_name, gen_obj)
+        pred_obj = pr.ShapeTensor(arg_name, gen_obj, min_elem_val, max_elem_val)
         arg_p = P.add_node(pred_obj, schema)
         kind = ShapeKind.Tensor
         self._arg_shape_func(arg_name, sigs, arg_p, gen_obj, kind)

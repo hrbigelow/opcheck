@@ -1,6 +1,7 @@
 import sys
 import math
 import enum
+import itertools
 from copy import copy
 from contextlib import contextmanager
 from .fgraph import FuncNode as F, NodeFunc
@@ -10,13 +11,13 @@ from .error import *
 from . import oparg, base, fgraph
 
 """
-The generation graph (gen_graph) is constructed using NodeFuncs in this file.
-Its job is to generate test examples for the op.  Will generate a set of
-examples within a certain maximum edit distance of a valid example.  While all
-nodes in the gen_graph produce the full set of valid values for their inputs,
-certain nodes generate additional values which violate a schema constraint.
-While yielding these invalid values, the node deducts from op.avail_test_edits.
-and then resets it after the yield.
+The generation graph (gen_graph) is constructed using NodeFuncs in this file.  Its
+job is to generate test examples for the op.  Will generate a set of examples within
+a certain maximum edit distance of a valid example.  While all nodes in the gen_graph
+produce the full set of valid values for their inputs, certain nodes generate
+additional values which violate a schema constraint.  While yielding these invalid
+values, the node deducts from op.avail_test_edits.  and then resets it after the
+yield.
 
 At the beginning of example generation, op.avail_test_edits is set by the user.
 and determines the maximum edit distance that an emitted example can be from a
@@ -94,34 +95,41 @@ class GenDims(NodeFunc):
 
     @staticmethod
     def fill(gen):
-        lo, hi = next(gen)
-        lo = 0 if lo is None else lo
-        hi = int(1e10) if hi is None else hi
-        yield lo, hi
+        for lo, hi in gen:
+            lo = 0 if lo is None else lo
+            hi = int(1e10) if hi is None else hi
+            yield lo, hi
 
-    def gen_dims(self, gens):
-        # gens is one generator per component of the dims.  total of
-        # RANK(rank_idx) generate the next batch of dims.  if single index, an
-        # integer list. if multiple index, a tuple of integer lists
-        comp_ranges = tuple(next(g) for g in gens)
+    def gen_dims(self, pgen):
+        """
+        len(gens) = rank(rank_idx).  each element of gens is a generator which yields
+        either a single tuple pair, if self.num_indexes == 1, or a tuple of tuple
+        pairs. 
+        """
+        # need a combinatorial generation scheme
         if self.num_indexes == 1:
-            yield base.range_under_size(comp_ranges, self.max_prod,
-                    self.op.gen_rng) 
+            for comp_ranges in pgen:
+                dims = base.range_under_size(comp_ranges, self.max_prod,
+                        self.op.gen_rng) 
+                yield dims
+
         else:
-            dims_list = []
-            for idx_range in list(zip(*comp_ranges)):
-                dims = base.range_under_size(idx_range, self.max_prod, self.op.gen_rng)
-                dims_list.append(dims)
-            yield tuple(dims_list)
+            for comp_ranges in pgen:
+                dims_list = []
+                for idx_range in list(zip(*comp_ranges)):
+                    dims = base.range_under_size(idx_range, self.max_prod,
+                            self.op.gen_rng)
+                    dims_list.append(dims)
+                yield tuple(dims_list)
 
     def gen_dims_scalar(self, gen):
-        comp_range = next(gen) 
-        dims = base.range_under_size([comp_range], self.max_prod,
-                self.op.gen_rng)
-        if self.num_indexes == 1:
-            yield dims[0]
-        else:
-            yield tuple(d[0] for d in dims)
+        for comp_range in gen:
+            dims = base.range_under_size([comp_range], self.max_prod, self.op.gen_rng)
+            if self.num_indexes == 1:
+                yield dims[0]
+            else:
+                dims_flat = [d[0] for d in dims]
+                yield tuple(dims_flat)
 
     def __call__(self, index_ranks, **dims_and_args):
         plist = [ (k,v) for k,v in dims_and_args.items() ]
@@ -150,7 +158,8 @@ class GenDims(NodeFunc):
             fgen = self.fill(gen)
             gens.append(fgen)
         
-        yield from self.gen_dims(gens)
+        pgen = itertools.product(*gens)
+        yield from self.gen_dims(pgen)
 
 class CompDims(NodeFunc):
     """
@@ -502,7 +511,7 @@ class ArgMutations(GenFunc):
             max_mut_size = 5 
             with self.reserve_edit(1) as avail:
                 if not avail:
-                    return
+                    continue
                 for arg, shape in sorted(arg_shapes.items()):
                     if num_yielded == self.op.max_yield_count:
                         break

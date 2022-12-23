@@ -1,6 +1,6 @@
 from opschema.base import LAYOUT
 from opschema.complib import dilate, dilate_t, ceildiv, strided_conv, strided_conv_t
-from opschema.genlib import WrapParams, stride_dil, divis_by, below_above 
+from opschema.genlib import WrapParams, stride_dil, group_channels, below_above 
 from opschema import predlib, complib
 
 def init_schema(op):
@@ -33,17 +33,17 @@ def init_schema(op):
     op.arg_shape_bcast_list('dilations', 'd')
     op.arg_unchecked('name')
 
-    op.gen_dims('b', 100)
-    op.gen_dims('l', 30)
-    op.gen_dims('f', 100)
-    op.gen_dims('j', 30)
+    op.gen_dims('b', 1, 100, 100, True)
+    op.gen_dims('l', 1, 30, 30, True)
+    op.gen_dims('f', 1, 30, 30, True)
     op.gen_dims_func('s', stride_dil, '', 10, True) 
-    op.gen_dims_func('d', stride_dil, '', 10, True) 
+    op.gen_dims_func('d', stride_dil, '', 5, True) 
+
+    group_wrap = WrapParams(group_channels, 30)
+    op.gen_dims_func('kj', group_wrap, '', 1000, False) 
     op.comp_dims_cw('g', dilate, dilate_t, 'fd') 
     op.gen_dims_func('i', below_above, 'g', 1000, False)  
 
-    wrap_divis_by = WrapParams(divis_by, 100)
-    op.gen_dims_func('k', wrap_divis_by, 'j', 300, False)
     op.comp_dims_cw('o', strided_conv, strided_conv_t, 'igs', 'padding')
 
     op.valid_dtypes('input', ('int32', 'float', 'bfloat16'))

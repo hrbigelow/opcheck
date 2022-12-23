@@ -36,6 +36,22 @@ def dims_string(dims):
     else:
         return repr(dims)
 
+def list_phrase_or(items):
+    # generate 'A, B, or C'
+    if not items:
+        return None
+    elif len(items) < 3:
+        return ' or '.join(str(i) for i in items)
+    else:
+        return ', '.join(str(i) for i in items[:-1]) + ' or ' + str(items[-1])
+
+def non_negative(shape):
+    if isinstance(shape, int):
+        return shape >= 0
+    else:
+        return all(s >= 0 for s in shape)
+
+
 def ungroup_dims(gr_dims_map):
     # gr_dims_map is e.g. { 'bc': ([1,2], [2,3]), 'e': [5,6] }
     dims_map = {}
@@ -622,7 +638,12 @@ class IndexPredicate(object):
                     f'IndexPredicate is component-wise but input indices '
                     f'{self.indices} have different ranks')
             elif len(ranks) == 0:
-                return self.pfunc(*dims)
+                try:
+                    return self.pfunc(*dims)
+                except BaseException as ex:
+                    raise SchemaError(
+                        f'IndexPredicate {self.name} while running predicate '
+                        f'function func({dims}) got exception: {ex}')
             else:
                 rank = ranks.pop()
                 for c in range(rank):

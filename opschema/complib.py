@@ -12,10 +12,10 @@ import numpy as np
 import math
 
 def dilate(s, d):
-    return (s - 1) * d + 1
+    return s + max(0, s-1) * d
 
 def dilate_t(s,  d):
-    return f'({s} - 1) * {d} + 1'
+    return f'{s} + max(0, {s}-1) * {d}'
 
 def conv(i, f, padding):
     # return size of convolution without stride

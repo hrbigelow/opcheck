@@ -159,6 +159,37 @@ class ShapeList(ReportNodeFunc):
             if self.broadcast_mode and len(shape) == 1:
                 shape = shape[0]
             return True, shape
+
+class RangeCheck(object):
+    def __init__(self, valid_kinds, min_val=None, max_val=None):
+        self.valid_kinds = valid_kinds
+        self.min_val = min_val
+        self.max_val = max_val
+
+    def predicate_msg(self):
+        if self.min_val is not None:
+            if self.max_val is not None:
+                pred = f' in [{self.min_val}, {self.max_val}]'
+            else:
+                pred = f' >= {self.min_val}'
+        else:
+            if self.max_val is not None:
+                pred = f' <= {self.max_val}'
+
+        if self.valid_kinds is None:
+            return pred
+
+        kind_names = tuple(k.__name__ for k in self.valid_kinds)
+        kinds_msg = base.list_phrase_or(kind_names)
+        return f'({kinds_msg}) {pred}'
+
+    def valid(self, val):
+        lo = -int(1e10) if self.min_val is None else self.min_val
+        hi = int(1e10) if self.max_val is None else self.max_val 
+        return lo <= val <= hi and (
+                self.valid_kinds is None or
+                isinstance(val, self.valid_kinds)
+                )
         
 class ShapeInt(ReportNodeFunc):
     """
@@ -167,29 +198,19 @@ class ShapeInt(ReportNodeFunc):
     def __init__(self, arg_name, lo=None, hi=None):
         super().__init__(arg_name)
         self.arg_name = arg_name
-        self.min_val = lo
-        self.max_val = hi
+        self.ranged = RangeCheck(int, lo, hi)
 
     def user_msg(self, received_val):
-        msg =  f'Argument \'{self.arg_name}\' expected to be an integer'
-        if self.min_val is not None:
-            if self.max_val is not None:
-                msg += f' in [{self.min_val}, {self.max_val}]'
-            else:
-                msg += f' >= {self.min_val}'
-        else:
-            if self.max_val is not None:
-                msg += f' <= {self.max_val}'
+        msg =  f'Argument \'{self.arg_name}\' expected to be '
+        msg += self.ranged.predicate_msg()
         return msg
 
     def __call__(self, op):
         i = op._get_arg(self.arg_name)
-        lo = -int(1e10) if self.min_val is None else self.min_val
-        hi = int(1e10) if self.max_val is None else self.max_val 
-        if not isinstance(i, int) or i not in range(lo, hi+1):
-            return False, ErrorReport(self, i)
-        else:
+        if self.ranged.valid(i):
             return True, [i]
+        else:
+            return False, ErrorReport(self, i)
 
 class ShapeTensorFunc(ReportNodeFunc):
     """
@@ -198,11 +219,12 @@ class ShapeTensorFunc(ReportNodeFunc):
     {pred_func} accepts the integer list shape extracted from the tensor as
     well as any integer lists provided by *shapes.
     """
-    def __init__(self, arg_name, gen_node, pred_func):
+    def __init__(self, arg_name, gen_node, pred_func, lo, hi):
         super().__init__(arg_name)
         self.arg_name = arg_name
         self.gen_node = gen_node
         self.func = pred_func 
+        self.ranged = RangeCheck(None, lo, hi)
 
     def user_msg(self, received_val):
         msg =  f'Argument \'{self.arg_name}\' expected to be an int32 tensor '
@@ -213,8 +235,8 @@ class ShapeTensorFunc(ReportNodeFunc):
             msg += 'Received dtype = {received_val.dtype.name}.'
         else:
             nums = received_val.numpy().tolist()
-            if any(n < 0 for n in nums):
-                msg += 'One or more elements were less than zero.'
+            if not all(self.ranged.valid(n) for n in nums):
+                msg += f'Elements must be {self.ranged.predicate_msg()}'
         return msg
 
     def __call__(self, op, *shapes):
@@ -224,18 +246,23 @@ class ShapeTensorFunc(ReportNodeFunc):
             return False, err 
         else:
             nums = ten.numpy().tolist()
-            if any(n < 0 for n in nums):
+            if not all(self.ranged.valid(n) for n in nums):
                 return False, err 
             else:
-                return self.func(nums, *shapes)
+                try:
+                    return self.func(nums, *shapes)
+                except BaseException as ex:
+                    raise SchemaError(
+                        f'Predicate function for {self.arg_name} argument called as: '
+                        f'func({nums}, {shapes}) raised an exception: {ex}')
 
 class ShapeTensor(ShapeTensorFunc):
     """
     Specialization of ShapeTensorFunc that performs no additional checks
     """
-    def __init__(self, arg_name, gen_node):
+    def __init__(self, arg_name, gen_node, lo, hi):
         pred_func = lambda shape: (True, shape)
-        super().__init__(arg_name, gen_node, pred_func)
+        super().__init__(arg_name, gen_node, pred_func, lo, hi)
 
 class ShapeTensor2D(ReportNodeFunc):
     """

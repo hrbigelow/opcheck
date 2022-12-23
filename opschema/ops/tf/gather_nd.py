@@ -1,3 +1,9 @@
+def rankr(indices_shape):
+    if len(indices_shape) == 0:
+        return None
+    else:
+        return indices_shape[-1]
+
 def init_schema(op):
     op.add_index('b', 'batch')
     op.add_index('r', 'read location', (1, 7))
@@ -26,11 +32,6 @@ def init_schema(op):
     op.valid_dtypes('indices', ('int32+',))
     op.valid_dtypes('params', ('int32+', 'float'))
 
-    def rankr(indices_shape):
-        if len(indices_shape) == 0:
-            return None
-        else:
-            return indices_shape[-1]
     op.rank_dims_constraint(rankr, 'r', 'indices')
 
     # output shape prediction

@@ -27,7 +27,7 @@ def not_both_over_one_templ(shape1, shape2):
     return msg
 
 def divis_by(numer, denom):
-    return numer % denom == 0
+    return denom > 0 and numer % denom == 0
 
 def divis_by_t(numer, denom):
     return f'{numer} must be divisible by {denom}'
