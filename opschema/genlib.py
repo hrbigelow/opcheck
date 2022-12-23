@@ -46,7 +46,7 @@ def stride_dil(rng):
 def below_above(rng, mid):
     if mid > 0:
         yield 1, mid
-    yield max(0, mid + 1), None 
+    yield max(0, mid + 1), 1000
     yield 0, 0
 
 def interval(rng, lo, hi):
@@ -58,6 +58,7 @@ def mod_padding(rng, input, block, max_total_pad):
     also yield random ranges as well.
     max_total_pad must be >= largest possible block size
     """
+    assert block != 0, 'mod_padding assert failed'
     rem = (block - (input % block)) % block
     max_mul = max_total_pad - rem
     max_t = max_mul // block

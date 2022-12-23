@@ -76,7 +76,8 @@ class GenDims(NodeFunc):
     each index in {sig}.
 
     GenDims ensures that each set of dimensions total number of elements (the product)
-    does not exceed {max_prod}. 
+    does not exceed {max_prod}.  Additionally, ensures that no single dimension
+    exceeds `max_prod`.
 
     func is called as list(func(*input_dims, *pars)) to collect all of its yields.
     It is called once per component in the rank of {rank_idx}.

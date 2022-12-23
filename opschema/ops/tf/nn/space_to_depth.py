@@ -37,11 +37,11 @@ def init_schema(op):
     sq, sqt = lambda s: s * s, lambda s: f'{s} * {s}'
     odims, odims_t = lambda i, s: i // s, lambda i, s: f'{i} // {s}'
 
-    op.gen_dims('i', 100)
+    op.gen_dims('i', 1, 100, 100, True)
     op.gen_dims_rng('s', 10, 100)
     op.comp_dims_cw('t', sq, sqt, 's')
-    op.gen_dims('b', 100)
-    op.gen_dims('k', 20)
+    op.gen_dims('b', 1, 100, 100, True)
+    op.gen_dims('k', 1, 20, 20, True)
     op.gen_dims_rng('c', 4, 4)
 
     op.comp_dims_cw('o', odims, odims_t, 'is')

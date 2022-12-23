@@ -96,7 +96,6 @@ class OpSchema(object):
         # flags
         self.avail_edits = 0
         self.avail_test_edits = 0
-        self.gen_zeros = False
         self.max_yield_count = 1000
         self.comp_dims_mode = None 
 
@@ -833,7 +832,7 @@ class OpSchema(object):
             yield op_args[0] # extract tuple element
 
     def validate(self, out_dir, test_ids, skip_ids, dtype_err_quota,
-            test_edits, gen_zeros, rand_seed, show_traceback=True):
+            test_edits, rand_seed, show_traceback=True):
         if not os.path.exists(out_dir):
             raise RuntimeError(
                 f'{type(self).__qualname__}: Could not open output path '
@@ -841,7 +840,6 @@ class OpSchema(object):
 
         self.dtype_err_quota = dtype_err_quota
         self.avail_test_edits = test_edits
-        self.gen_zeros = gen_zeros
 
         report_fh = open(os.path.join(out_dir, f'{self.op_path}.txt'), 'w')
         summary_fh = open(os.path.join(out_dir, f'{self.op_path}.sum.txt'), 'w')

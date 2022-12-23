@@ -20,7 +20,7 @@ def init_schema(op):
 
     op.gen_dims('b', 1, 50, 50, True)
     op.gen_dims('i', 1, 50, 50, True)
-    op.gen_dims('k', 1, 50, 50, True)
+    op.gen_dims('k', 1, 50, 50, False)
     op.gen_dims('r', 1, 100, 100, True)
 
     mod_padding100 = genlib.WrapParams(genlib.mod_padding, 50)

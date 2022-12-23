@@ -25,10 +25,10 @@ def init_schema(op):
     op.arg_option('padding', ('VALID', 'SAME'))
     op.arg_unchecked('name')
 
-    op.gen_dims('b', 100)
-    op.gen_dims('c', 50)
-    op.gen_dims('k', 10)
-    op.gen_dims('s', 100)
+    op.gen_dims('b', 1, 100, 100, True)
+    op.gen_dims('c', 1, 50, 50, True)
+    op.gen_dims('k', 1, 10, 10, True)
+    op.gen_dims('s', 1, 100, 100, False)
     op.gen_dims_func('i', genlib.below_above, 'k', 1000, False)
 
     op.valid_dtypes('input', ('bfloat16', 'float',))
@@ -51,6 +51,7 @@ def init_schema(op):
         return tem
 
     op.comp_dims_cw('o', odims, odims_t, 'iks', 'padding')
+    op.dims_pred_rng('k', 1, None) 
 
     op.return_tensor('bco', 'boc')
 

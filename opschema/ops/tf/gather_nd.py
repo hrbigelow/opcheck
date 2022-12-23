@@ -16,11 +16,11 @@ def init_schema(op):
     op.limit_ranks('bre', 0, 10)
 
     # generators
-    op.gen_dims('b', 500)
-    op.gen_dims('r', 100)
-    op.gen_dims('w', 100)
-    op.gen_dims('e', 100)
-    op.gen_dims('c', 8)
+    op.gen_dims('b', 1, 500, 500, True)
+    op.gen_dims('r', 1, 100, 100, True)
+    op.gen_dims('w', 1, 100, 100, True)
+    op.gen_dims('e', 1, 100, 100, True)
+    op.gen_dims('c', 1, 8, 8, True)
 
     # argument interpretations
     op.arg_tensor('indices', 'bwc')
@@ -33,6 +33,10 @@ def init_schema(op):
     op.valid_dtypes('params', ('int32+', 'float'))
 
     op.rank_dims_constraint(rankr, 'r', 'indices')
+
+    op.dims_pred_rng('b', 1, None)
+    op.dims_pred_rng('r', 1, None)
+    op.dims_pred_rng('e', 1, None)
 
     # output shape prediction
     op.return_tensor('bwe')

@@ -40,7 +40,7 @@ def test_op(op_path, out_dir, test_id):
             break
 
 def validate(op_path, out_dir, test_ids=None, skip_ids=None, max_dtype_err=0,
-        test_edits=0, gen_zeros=False, rand_seed=0, show_traceback=False):
+        test_edits=0, rand_seed=0, show_traceback=False):
     opschema.register(op_path)
     op = opschema.get(op_path)
 
@@ -55,7 +55,7 @@ def validate(op_path, out_dir, test_ids=None, skip_ids=None, max_dtype_err=0,
         skip_ids = set(skip_ids)
 
     return op.validate(out_dir, test_ids, skip_ids, max_dtype_err, test_edits,
-            gen_zeros, rand_seed, show_traceback)
+            rand_seed, show_traceback)
 
 def explain(op_path, include_inventory=False):
     return opschema.explain(op_path, include_inventory)

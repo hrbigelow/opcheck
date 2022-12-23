@@ -16,9 +16,9 @@ def init_schema(op):
     op.arg_tensor('bias', 'c')
     op.arg_unchecked('name')
 
-    op.gen_dims('b', 100)
-    op.gen_dims('s', 100)
-    op.gen_dims('c', 100)
+    op.gen_dims('b', 1, 100, 100, True)
+    op.gen_dims('s', 1, 100, 100, True)
+    op.gen_dims('c', 1, 100, 100, True)
 
     op.valid_dtypes('value', ('int', 'uint', 'float', 'bfloat', 'complex'))
     op.equate_dtypes('bias', 'value')
