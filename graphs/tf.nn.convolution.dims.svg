@@ -100,13 +100,13 @@
 <polygon fill="black" stroke="black" points="666.65,-209.93 676.84,-207.01 667.05,-202.94 666.65,-209.93"/>
 </g>
 <!-- CompDims(g)&#45;&gt;GenDims(f) -->
-<g id="edge9" class="edge">
+<g id="edge8" class="edge">
 <title>CompDims(g)&#45;&gt;GenDims(f)</title>
 <path fill="none" stroke="purple" d="M487.97,-164C497.7,-164 507.77,-164 517.54,-164"/>
 <polygon fill="purple" stroke="purple" points="517.58,-167.5 527.58,-164 517.58,-160.5 517.58,-167.5"/>
 </g>
 <!-- CompDims(g)&#45;&gt;GenDims(d) -->
-<g id="edge8" class="edge">
+<g id="edge9" class="edge">
 <title>CompDims(g)&#45;&gt;GenDims(d)</title>
 <path fill="none" stroke="purple" d="M465.89,-150.23C486.55,-143 512.03,-134.08 533.74,-126.48"/>
 <polygon fill="purple" stroke="purple" points="535.14,-129.7 543.42,-123.09 532.82,-123.09 535.14,-129.7"/>
@@ -144,17 +144,17 @@
 <!-- CompDims(o)&#45;&gt;DimsInput(_index_ranks) -->
 <g id="edge12" class="edge">
 <title>CompDims(o)&#45;&gt;DimsInput(_index_ranks)</title>
-<path fill="none" stroke="black" d="M100.88,-216.37C118.8,-222.8 140.68,-230.04 160.79,-235 367.45,-285.96 430.96,-283.86 639.65,-242 661.69,-237.58 685.59,-232.14 707.08,-227"/>
+<path fill="none" stroke="black" d="M97.99,-216.82C116.35,-224.17 139.47,-232.6 160.79,-238 367.1,-290.28 430.97,-283.86 639.65,-242 661.69,-237.58 685.59,-232.14 707.08,-227"/>
 <polygon fill="black" stroke="black" points="708.19,-230.33 717.09,-224.59 706.55,-223.53 708.19,-230.33"/>
 </g>
 <!-- CompDims(o)&#45;&gt;GenDims(s) -->
-<g id="edge15" class="edge">
+<g id="edge13" class="edge">
 <title>CompDims(o)&#45;&gt;GenDims(s)</title>
-<path fill="none" stroke="purple" d="M121.42,-208.11C187.9,-215.1 296.34,-226.51 363.9,-233.62"/>
-<polygon fill="purple" stroke="purple" points="363.66,-237.11 373.97,-234.68 364.39,-230.15 363.66,-237.11"/>
+<path fill="none" stroke="purple" d="M117.93,-210.35C131.88,-212.35 146.88,-214.37 160.79,-216 229.65,-224.08 308.9,-230.97 362.42,-235.26"/>
+<polygon fill="purple" stroke="purple" points="362.19,-238.76 372.43,-236.06 362.74,-231.78 362.19,-238.76"/>
 </g>
 <!-- CompDims(o)&#45;&gt;CompDims(g) -->
-<g id="edge13" class="edge">
+<g id="edge15" class="edge">
 <title>CompDims(o)&#45;&gt;CompDims(g)</title>
 <path fill="none" stroke="purple" d="M124.37,-199.7C177.97,-197.18 258,-192.21 327.17,-183 339.57,-181.35 352.77,-179.11 365.32,-176.74"/>
 <polygon fill="purple" stroke="purple" points="366.06,-180.16 375.21,-174.83 364.73,-173.29 366.06,-180.16"/>

@@ -994,15 +994,6 @@ class OpSchema(object):
             else:
                 pass
 
-            pri_inds = [ind.idx for ind in self.index.values() if ind.primary()]
-            for pidx in pri_inds:
-                if pidx == idx:
-                    continue
-                gpa = self.gen_graph[pidx]
-                idx_gnode.append_parent_sn(gpa)
-                ipa = self.inf_graph[pidx]
-                idx_inode.append_parent_sn(ipa)
-
         else:
             raise SchemaError(
                 f'{type(self).__qualname__}: Got constraint \'{rank_cons}\''

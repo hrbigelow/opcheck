@@ -68,8 +68,8 @@ combinations of datatypes and layout when input spatial dimensions are `[0, 0]`:
     372 data_format=NCHW_VECT_C  input=[93, 14, 0, 0, 4]:float32  block_size=75i -6
 
 For `tf.raw_ops.LSTMBlockCell`, it appears that, for both float16 and float32, if the
-cell dimension (the dimension of wci, wcf, wco, b, w.shape[1], h_prev.shape[1] or
-cs_prev.shape[1], then the op calls `abort()`.
+cell dimension is zero (the dimension of wci, wcf, wco, b, w.shape[1], h_prev.shape[1] or
+cs_prev.shape[1]), then the op calls `abort()`.
 
 ## Unclear Exception text 
 
@@ -129,30 +129,26 @@ it seems that the op accepts `int32`, all sizes of `float`, and `bfloat16`.  But
 are implemented.  These exclusions may also be device dependent.
 
 
-# Possible solution: Composable constraints
+# Current Approach: Composable constraints
 
-Since user-facing TensorFlow ops are intricate compositions of lower level ops, it is
-reasonable to hope that one can define top-level op constraints in terms of lower
-level constraints.  Doing so would be very convenient and maintainable - one could
-simply implement lower level checks in internal ops, and they would throw when
-violated.  No extra work would be needed besides composing these ops for the
-computation itself.
+Since user-facing TensorFlow ops are implemented as intricate compositions of lower
+level ops, it is reasonable to hope that one can define top-level op constraints in
+terms of locally defined lower level constraints.  Doing so would be very convenient
+and maintainable.  When the implementation of an op changes, no extra work would be
+needed for the exception handling to provide proper exceptions. 
 
-Unfortunately, it seems that it is not possible to achieve informative error messages
-this way.  If it were, then the high level code could catch and re-throw exceptions
-arising from deeper levels, contextualizing them.  But this seems not to be the case.
+Unfortunatley, in order to catch, translate a message, and rethrow exceptions, one
+must have sufficient context at the point of the exception to construct a meaningful
+message.  But, contextual information is lost on the way down and sometimes cannot be
+recovered.  If the proper checks don't occur on the way down, it is too late in many
+cases.
 
-I would guess it is unlikely that constraints violated on lower level op inputs could
-be meaningfully translated up to the user in terms of the tensor shapes, layout etc
-of the called op.  At least, this would be difficult for the developer to reason
-backwards and supply the proper message.
+Therefore, the approach advocated in this work is to detect violations of
+constraints as early as possible.  The function raising an exception must have
+access to all of the top-level argument names and values.
 
-Instead, I am advocating defining a *schema* for each top-level op, which has no
-knowledge of, or reliance on the implementation of that op.  The main principles
-behind a proof-of-concept API for building each op schema is presented below.
-
-The API has evolved quite a bit.  So far, I have only used it to implement schemas
-for these ops:
+In this work, I propose an API for defining these constraints and building the
+checking function.  I have so far used it to implement schemas for these ops:
 
 ```bash
 $ python -m opschema.cl list
@@ -174,6 +170,8 @@ tf.scatter_nd
 The schemas are not perfect descriptions of the TensorFlow op behavior.  In some
 cases, this is due to a shortcoming of the schema.  In others, they reveal likely
 bugs in the TensorFlow ops.
+
+TODO: transition
 
 # Comprehensive Unit tests
 
@@ -301,6 +299,32 @@ enclosed predicate computation graph diagrammed below:
 This is a generative graph nested inside a predicate node. Its job is to generate
 possible interpretations of the arguments that are correct according to the schema
 constraints, but also agree with the observed arguments.
+
+There are three special top-level parent nodes: `ObservedValue(args)`,
+`ObservedValue(shapes)` and `ObservedValue(dtypes)`.  In this example, the `shapes`
+one generates a single map of all shape-like quantities.  For `tf.nn.convolution`,
+this is:
+
+    { 
+      'input': input.shape, 
+      'filters': filters.shape, 
+      'strides': strides, 
+      'dilations': dilations 
+    }
+
+The next set of nodes are the `RankEquiv(idx)` and `RankRange(idx)` nodes.  These
+generate a set of legal ranks for `opschema.schema.Index` objects.  Such objects are
+explained in the README.md.  Briefly, an Index is a group of dimensions of one
+semantic category, such as 'batch', or 'input spatial dimensions'.   The rank of such
+an Index is just the number of dimensions.
+
+In the `tf.nn.convolution` example, we see from the graph that index `b` (batch) is
+generated from a `RankRange(b)` node, which generates the values [1,2,3,4,5] in this
+case.  `RankRange(i)` (input spatial) generates 1,2 and 3, corresponding to the 1D,
+2D, and 3D versions of convolution, respectively.  As another example, `RankEquiv(f)`
+( filter spatial) is constrained to generate only the rank of its parent - this
+constraint expresses the fact that the filter spatial dimensions must match those of
+the input.
 
 
 ```python
