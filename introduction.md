@@ -164,38 +164,41 @@ The predicate graph actually used by the `tf.nn.convolution` schema is shown her
 ![Predicate Graph](graphs/tf.nn.convolution.pred.svg)
 
 It is evaluated in topological order, parents first.  The 'Schema' node takes no
-arguments and returns (True, arg_dict).  Each child node extracts a particular value
-based on its name.  For instance, 'ShapeList(strides)' takes arg_dict['strides'] as
+arguments and returns `(True, arg_dict)`.  Each child node extracts a particular value
+based on its name.  For instance, `ShapeList(strides)` takes `arg_dict['strides']` as
 input.  Its job is to validate that it is either an integer or list of integers.  If
-so, it returns (True, arg_dict['strides']).  If not, it returns (False, ErrorReport),
+so, it returns `(True, arg_dict['strides'])`.  If not, it returns `(False, ErrorReport)`,
 which is a class that produces a human-readable error message.  The node
 `DataTensor(input)` extracts `arg_dict['input']` and validates that it is a tensor,
 passing it along if so.
 
 Nodes `TensorShape(input)` and `TensorDType(input)` always succeed - they are
 guaranteed to receive a tensor, and their only job is to extract and pass on its
-shape or dtype respectively.
+`shape` or `dtype` respectively.
 
 At the next level, nodes `ShapeMap` and `DTypes` always succeed.  Their job is to
-aggregate the outputs of their parents.  `ShapeMap` produces `{ 'input': <shape>,
-'filters': <shape> }` (the shapes of the input and filters tensors, respectively).
+aggregate the outputs of their parents.  `ShapeMap` produces `{ 'input': input.shape,
+'filters': filters.shape }` (the shapes of the input and filters tensors, respectively).
 
 Similarly, the aggregator node `ArgMap` collects argument values of certain other
-types.  All of these aggregators feed into the `Inventory` node, where the main work
+types.  In this case, it will be `{ 'padding': 'SAME', 'data_format': ... }`.
+All of these aggregators feed into the `Inventory` node, where the main work
 is done.
 
 Note now that the input information, after being validated for the correct types, is
-divided into shapes, dtypes, and other.  The shapes consist not just of tensor shapes
-but in this case other quantities (strides and dilations) which participate in
-shape-based calculations.  The 'other' are control parameters that affect the
-interpretation of existing shapes (i.e. `data_format`) or the computation of other
-shapes (`padding`).
+divided into shapes, dtypes, and everything else put in `ArgMap`.  The shapes consist
+not just of tensor shapes but in this case other quantities (strides and dilations)
+which participate in shape-based calculations.  The `ArgMap` are control parameters
+that affect the interpretation and computation of the shapes.
 
 Within the `Inventory` node, the predicate function is actually implemented by an
 enclosed predicate computation graph diagrammed below:
 
-<img
-src="https://github.com/hrbigelow/opschema/blob/master/graphs/tf.nn.convolution.inf.pdf"></img>
+![Inventory Graph](graphs/tf.nn.convolution.inf.svg)
+
+This is a generative graph nested inside a predicate node. Its job is to generate
+possible interpretations of the arguments that are correct according to the schema
+constraints, but also agree with the observed arguments.
 
 
 ```python
