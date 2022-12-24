@@ -1833,7 +1833,7 @@ class OpSchema(object):
 
     def _dot_graph(self, nodes, out_file):
         import graphviz
-        dot = graphviz.Digraph(graph_attr={'rankdir': 'LR'})
+        dot = graphviz.Digraph(graph_attr={'rankdir': 'LR'}, format='svg')
         names = { n.name: n.name.replace(':', '_') for n in nodes }
         for node in nodes:
             is_arg = (node in self.arg_gen_nodes.values())
@@ -1852,8 +1852,8 @@ class OpSchema(object):
                     color = 'black'
                 dot.edge(names[node.name], names[pa.name],
                         _attributes={'color': color})
-        dot.render(out_file)
-        print(f'Wrote {out_file}.pdf')
+        dot.render(out_file, cleanup=True)
+        print(f'Wrote {out_file}')
 
     def print_graphs(self, out_dir):
         nodes = self.pred_graph.values()
