@@ -41,8 +41,8 @@ def init_schema(op):
     mul, mult = lambda a, b: a * b, lambda a, b: f'{a} * {b}'
     div, divt = lambda a, b: a // b, lambda a, b: f'{a} // {b}'
 
-    op.gen_dims('b', 100)
-    op.gen_dims('i', 500)
+    op.gen_dims('b', 1, 100, 100, True)
+    op.gen_dims('i', 1, 500, 500, True)
 
     interval18 = genlib.WrapParams(genlib.interval, 1, 8)
     op.gen_dims_func('s', interval18, '', 100, False)

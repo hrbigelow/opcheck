@@ -1,0 +1,12 @@
+digraph {
+	graph [rankdir=LR]
+	"DimsInput(_index_ranks)" [label="DimsInput(:index_ranks)" color=black]
+	"GenDims(r)" [label="GenDims(r)" color=black]
+	"GenDims(r)" -> "DimsInput(_index_ranks)" [color=black]
+	"GenDims(e)" [label="GenDims(e)" color=black]
+	"GenDims(e)" -> "DimsInput(_index_ranks)" [color=black]
+	"GenDims(c)" [label="GenDims(c)" color=black]
+	"GenDims(c)" -> "DimsInput(_index_ranks)" [color=black]
+	"GenDims(w)" [label="GenDims(w)" color=black]
+	"GenDims(w)" -> "DimsInput(_index_ranks)" [color=black]
+}

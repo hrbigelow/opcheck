@@ -198,7 +198,7 @@ class ShapeInt(ReportNodeFunc):
     def __init__(self, arg_name, lo=None, hi=None):
         super().__init__(arg_name)
         self.arg_name = arg_name
-        self.ranged = RangeCheck(int, lo, hi)
+        self.ranged = RangeCheck((int,), lo, hi)
 
     def user_msg(self, received_val):
         msg =  f'Argument \'{self.arg_name}\' expected to be '

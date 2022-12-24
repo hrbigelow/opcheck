@@ -1,0 +1,12 @@
+digraph {
+	graph [rankdir=LR]
+	"InputVar(kwargs)" [label="InputVar(kwargs)" color=black]
+	"InputVar(i)" [label="InputVar(i)" color=black]
+	"InputVar(f)" [label="InputVar(f)" color=black]
+	"InputVar(r)" [label="InputVar(r)" color=black]
+	"CompIndex(o)" [label="CompIndex(o)" color=black]
+	"CompIndex(o)" -> "InputVar(i)" [color=purple]
+	"CompIndex(o)" -> "InputVar(f)" [color=purple]
+	"CompIndex(o)" -> "InputVar(r)" [color=purple]
+	"CompIndex(o)" -> "InputVar(kwargs)" [color=purple]
+}
