@@ -7,7 +7,7 @@ to often cryptic exception messages often arising very deep into the stack, or e
 program `abort()`.  In this note, I present a proposed solution and proof-of-concept
 repo.
 
-Properties of a robust frontend
+## Properties of a robust frontend
 
 * **Early checking** - inputs should be checked as early as possible, exceptions
   raised very low in the stack
@@ -24,10 +24,22 @@ Properties of a robust frontend
 * **Accurate documentation** - documentation should describe the full range of
   allowed inputs. 
 
-Current examples
+To achieve this, a precise mechanism for defining the set of valid inputs for an op
+would be needed, which I propose here.  It turns out that this mechanism produces two
+other things almost for free.  First, it provides a way to generate a thorough set of
+valid and invalid test cases, useful for unit testing.  Second, a way to generate
+human-readable documentation that precisely describes the rules that the valid inputs
+must follow.
 
-It appears that most exceptions arise from very deep in the code, but the traceback
-is filtered using `filter_traceback(fn)` from
+The mechanism consists of a compact API for building up the set of rules
+incrementally.  A typical op requires about 50 lines of code written in this API to
+fully define the op's *schema*.
+
+## Current examples
+
+TensorFlow does not have any early checking mechanism.  It appears that most
+exceptions arise from very deep in the code, but the traceback is filtered using
+`filter_traceback(fn)` from
 [tensorflow/python/util/traceback_utils.py](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/util/traceback_utils.py) 
 
 which states:
@@ -55,47 +67,69 @@ combinations of datatypes and layout when input spatial dimensions are `[0, 0]`:
     356 data_format=NCHW_VECT_C  input=[73, 4, 0, 0, 4]:float16  block_size=82   -6
     372 data_format=NCHW_VECT_C  input=[93, 14, 0, 0, 4]:float32  block_size=75i -6
 
+For `tf.raw_ops.LSTMBlockCell`, it appears that, for both float16 and float32, if the
+cell dimension (the dimension of wci, wcf, wco, b, w.shape[1], h_prev.shape[1] or
+cs_prev.shape[1], then the op calls `abort()`.
 
-Abort does *not* happen for other combinations, even with `[0, 0]` input spatial
-dimensions, for example
+## Unclear Exception text 
+
+Due to the fact that exceptions arise so deep in the stack and are not caught and
+rethrown, the code has no access to the argument names, and so there is no easy way
+to provide them in the exception message.  This lack of argument names can be seen in
+the examples below.  Others make incorrect assumptions, or refer to quantities that
+are not documented and not part of the op interface, using internal names.
+
+All of these problems are likely a consequence of having insufficient context during
+the exception.
+
+```
+cannot compute Conv2D as input #1(zero-based) was expected to be a int32 tensor but
+is a uint64 tensor [Op:Conv2D]
+
+Value for attr 'T' of int16 is not in the list of allowed values: half, bfloat16,
+float, double, int32
+
+Biases must be 1D: [] [Op:BiasAdd]
+
+Tried to squeeze dim index 2 for tensor with 1 dimensions. [Op:Squeeze]
+
+Conv2DSlowBackpropInput: input and out_backprop must have the same batch size.  Input
+batch: 2, outbackprop batch: 97, batch_dim: 0 [Op:Conv2DBackpropInput]
+
+No algorithm worked!  Error messages: [Op:Conv2DBackpropInput]
+
+Conv2DSlowBackpropInput: filter and out_backprop must have the same out_depth
+[Op:Conv2DBackpropInput]
+
+input_sizes must be 4-dimensional, got: 3 [Op:Conv2DBackpropInput]
+```
+
+## Inaccurate Documentation
+
+Many ops lack robust documentation.  For instance,
+[tf.nn.convolution](https://www.tensorflow.org/api_docs/python/tf/nn/convolution)
+states (paraphrasing):
+
+    `input` has a shape of:
+        [batch_size] + input_spatial_shape + [in_channels]
+        [batch_size] + [in_channels] + input_spatial_shape
+
+    `filters` has a shape of `spatial_filter_shape + [in_channels, out_channels]`
+
+It is not mentioned anywhere, but `filters` first channel merely needs to divide
+evenly into `in_channels`.
+
+Secondly, the op actually accepts numbers of batch dimensions varying at least
+between 1 and 5, possibly more.  The documentation seems to imply it only accepts 1
+batch dimension.
+
+Finally, there is no documentation on what dtypes are accepted.  By experimentation,
+it seems that the op accepts `int32`, all sizes of `float`, and `bfloat16`.  But, for
+`int32` and `bfloat16`, there are certain exceptions in which ranks or data_formats
+are implemented.  These exclusions may also be device dependent.
 
 
-For `tf.raw_ops.LSTMBlockCell`, it appears that
-
-    # all arguments are float16
-    1   x=[438, 420]  cs_prev=[438, 214]  h_prev=[438, 214]  w=[634, 856]   b=[856]   wci=[214]  wcf=[214]  wco=[214]  0
-    2   x=[0, 420]    cs_prev=[0, 214]    h_prev=[0, 214]    w=[634, 856]   b=[856]   wci=[214]  wcf=[214]  wco=[214]  -6
-    3   x=[290, 0]    cs_prev=[290, 214]  h_prev=[290, 214]  w=[214, 856]   b=[856]   wci=[214]  wcf=[214]  wco=[214]  0
-    4   x=[0, 0]      cs_prev=[0, 214]    h_prev=[0, 214]    w=[214, 856]   b=[856]   wci=[214]  wcf=[214]  wco=[214]  -6
-    5   x=[134, 64]   cs_prev=[134, 0]    h_prev=[134, 0]    w=[64, 0]      b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
-    6   x=[0, 64]     cs_prev=[0, 0]      h_prev=[0, 0]      w=[64, 0]      b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
-    7   x=[378, 0]    cs_prev=[378, 0]    h_prev=[378, 0]    w=[0, 0]       b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
-    8   x=[0, 0]      cs_prev=[0, 0]      h_prev=[0, 0]      w=[0, 0]       b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
-
-    # all arguments are float32
-    9   x=[76, 300]   cs_prev=[76, 272]   h_prev=[76, 272]   w=[572, 1088]  b=[1088]  wci=[272]  wcf=[272]  wco=[272]  0
-    10  x=[0, 300]    cs_prev=[0, 272]    h_prev=[0, 272]    w=[572, 1088]  b=[1088]  wci=[272]  wcf=[272]  wco=[272]  -6
-    11  x=[429, 0]    cs_prev=[429, 272]  h_prev=[429, 272]  w=[272, 1088]  b=[1088]  wci=[272]  wcf=[272]  wco=[272]  0
-    12  x=[0, 0]      cs_prev=[0, 272]    h_prev=[0, 272]    w=[272, 1088]  b=[1088]  wci=[272]  wcf=[272]  wco=[272]  -6
-    13  x=[14, 235]   cs_prev=[14, 0]     h_prev=[14, 0]     w=[235, 0]     b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
-    14  x=[0, 235]    cs_prev=[0, 0]      h_prev=[0, 0]      w=[235, 0]     b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
-    15  x=[482, 0]    cs_prev=[482, 0]    h_prev=[482, 0]    w=[0, 0]       b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
-    16  x=[0, 0]      cs_prev=[0, 0]      h_prev=[0, 0]      w=[0, 0]       b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
-
-
-To achieve this, a precise mechanism for defining the set of valid inputs for an op
-would be needed, which I propose here.  It turns out that this mechanism produces two
-other things almost for free.  First, it provides a way to generate a thorough set of
-valid and invalid test cases, useful for unit testing.  Second, a way to generate
-human-readable documentation that precisely describes the rules that the valid inputs
-must follow.
-
-The mechanism consists of a compact API for building up the set of rules
-incrementally.  A typical op requires about 50 lines of code written in this API to
-fully define the op's *schema*.
-
-
-# Possible approach - composable constraints
+# Possible solution: Composable constraints
 
 Since user-facing TensorFlow ops are intricate compositions of lower level ops, it is
 reasonable to hope that one can define top-level op constraints in terms of lower
