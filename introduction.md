@@ -1,19 +1,87 @@
-# Towards a robust TensorFlow frontend validation
+# Towards a robust TensorFlow frontend
 
 TensorFlow ops are highly polymorphic, accepting sometimes thousands of combinations
 of tensor shapes, dtypes, and other control settings.  In many cases, the variety of
 such allowed inputs is not fully documented.  Violating the hidden constraints leads
 to often cryptic exception messages often arising very deep into the stack, or even
-program abort().  In this note, I present a proposed solution and proof-of-concept
+program `abort()`.  In this note, I present a proposed solution and proof-of-concept
 repo.
 
-What would a robust frontend look like?  First, inputs should be checked as early as
-possible.  This means, any invalid tensor shape relationships or dtypes will be
-caught by the validation logic of the top-level op.  An exception would then be
-raised, which would be shallow in the stack.  The exception message would use actual
-names of op arguments, and state exactly what constraint is violated, as specifically
-as possible.  It could do this if it had knowledge of all of the constraints defining
-valid op inputs, as well as all of the inputs provided to the op.
+Properties of a robust frontend
+
+* **Early checking** - inputs should be checked as early as possible, exceptions
+  raised very low in the stack
+
+* **No abort()** - It should be impossible to cause TensorFlow to abort from  incorrect
+  inputs
+
+* **Argument names in exceptions** - The exception message should use actual
+  names of op arguments rather than e.g. `input #2(zero-based)` 
+
+* **Specific exception messages** - exception messages should be specific but not
+  make too strong assumptions about what fixes are needed
+
+* **Accurate documentation** - documentation should describe the full range of
+  allowed inputs. 
+
+Current examples
+
+It appears that most exceptions arise from very deep in the code, but the traceback
+is filtered using `filter_traceback(fn)` from
+[tensorflow/python/util/traceback_utils.py](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/util/traceback_utils.py) 
+
+which states:
+
+    Raw TensorFlow stack traces involve many internal frames, which can be
+    challenging to read through, while not being actionable for end users.
+    By default, TensorFlow filters internal frames in most exceptions that it
+    raises, to keep stack traces short, readable, and focused on what's
+    actionable for end users (their own code).
+
+The problem with filtering traceback is that it becomes less useful for core
+developers to diagnose a problem.  Filtering the traceback seems just a way of
+covering up the symptom of a deeper problem.  Either exceptions should be caught and
+re-thrown, or they should not be allowed to arise so deep in the codebase.
+
+## Abort() due to zero-size dimensions
+
+Two current examples of `abort()` being called are `tf.nn.space_to_depth` and
+`tf.raw_ops.LSTMBlockCell`.  For `tf.nn.space_to_batch`, abort happens for certain
+combinations of datatypes and layout when input spatial dimensions are `[0, 0]`:
+
+    ID  ARGS                                                                     exitcode
+    52  data_format=NHWC  input=[24, 0, 0, 8]:qint8  block_size=13               -6
+    260 data_format=NCHW  input=[4, 14, 0, 0]:qint8  block_size=28               -6
+    356 data_format=NCHW_VECT_C  input=[73, 4, 0, 0, 4]:float16  block_size=82   -6
+    372 data_format=NCHW_VECT_C  input=[93, 14, 0, 0, 4]:float32  block_size=75i -6
+
+
+Abort does *not* happen for other combinations, even with `[0, 0]` input spatial
+dimensions, for example
+
+
+For `tf.raw_ops.LSTMBlockCell`, it appears that
+
+    # all arguments are float16
+    1   x=[438, 420]  cs_prev=[438, 214]  h_prev=[438, 214]  w=[634, 856]   b=[856]   wci=[214]  wcf=[214]  wco=[214]  0
+    2   x=[0, 420]    cs_prev=[0, 214]    h_prev=[0, 214]    w=[634, 856]   b=[856]   wci=[214]  wcf=[214]  wco=[214]  -6
+    3   x=[290, 0]    cs_prev=[290, 214]  h_prev=[290, 214]  w=[214, 856]   b=[856]   wci=[214]  wcf=[214]  wco=[214]  0
+    4   x=[0, 0]      cs_prev=[0, 214]    h_prev=[0, 214]    w=[214, 856]   b=[856]   wci=[214]  wcf=[214]  wco=[214]  -6
+    5   x=[134, 64]   cs_prev=[134, 0]    h_prev=[134, 0]    w=[64, 0]      b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
+    6   x=[0, 64]     cs_prev=[0, 0]      h_prev=[0, 0]      w=[64, 0]      b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
+    7   x=[378, 0]    cs_prev=[378, 0]    h_prev=[378, 0]    w=[0, 0]       b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
+    8   x=[0, 0]      cs_prev=[0, 0]      h_prev=[0, 0]      w=[0, 0]       b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
+
+    # all arguments are float32
+    9   x=[76, 300]   cs_prev=[76, 272]   h_prev=[76, 272]   w=[572, 1088]  b=[1088]  wci=[272]  wcf=[272]  wco=[272]  0
+    10  x=[0, 300]    cs_prev=[0, 272]    h_prev=[0, 272]    w=[572, 1088]  b=[1088]  wci=[272]  wcf=[272]  wco=[272]  -6
+    11  x=[429, 0]    cs_prev=[429, 272]  h_prev=[429, 272]  w=[272, 1088]  b=[1088]  wci=[272]  wcf=[272]  wco=[272]  0
+    12  x=[0, 0]      cs_prev=[0, 272]    h_prev=[0, 272]    w=[272, 1088]  b=[1088]  wci=[272]  wcf=[272]  wco=[272]  -6
+    13  x=[14, 235]   cs_prev=[14, 0]     h_prev=[14, 0]     w=[235, 0]     b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
+    14  x=[0, 235]    cs_prev=[0, 0]      h_prev=[0, 0]      w=[235, 0]     b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
+    15  x=[482, 0]    cs_prev=[482, 0]    h_prev=[482, 0]    w=[0, 0]       b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
+    16  x=[0, 0]      cs_prev=[0, 0]      h_prev=[0, 0]      w=[0, 0]       b=[0]     wci=[0]    wcf=[0]    wco=[0]    -6
+
 
 To achieve this, a precise mechanism for defining the set of valid inputs for an op
 would be needed, which I propose here.  It turns out that this mechanism produces two
@@ -161,7 +229,7 @@ once for each possible setting of these inputs.
 
 The predicate graph actually used by the `tf.nn.convolution` schema is shown here:
 
-![Predicate Graph](graphs/tf.nn.convolution.pred.svg)
+![Predicate Graph](graphs/tf.nn.convolution.pred.svg?raw=true)
 
 It is evaluated in topological order, parents first.  The 'Schema' node takes no
 arguments and returns `(True, arg_dict)`.  Each child node extracts a particular value
@@ -194,7 +262,7 @@ that affect the interpretation and computation of the shapes.
 Within the `Inventory` node, the predicate function is actually implemented by an
 enclosed predicate computation graph diagrammed below:
 
-![Inventory Graph](graphs/tf.nn.convolution.inf.svg)
+![Inventory Graph](graphs/tf.nn.convolution.inf.svg?raw=true)
 
 This is a generative graph nested inside a predicate node. Its job is to generate
 possible interpretations of the arguments that are correct according to the schema
