@@ -9,7 +9,15 @@ note, I present a proposed solution and proof-of-concept repo.
 
 # Tensor Op Specification Language
 
-## Properties of a robust frontend
+# Properties of a robust frontend
+
+Here I propose what properties a frontend would need to have in order to be
+considered robust.  Such a frontend would provide benefits to users and core
+developers alike.  Users would receive much more actionable exceptions, and have a
+clearer idea how to use TensorFlow's ops properly in the first place.  Core
+developers would have a self-contained place to define the rules of the frontend for
+each op.  As I'll show later, the proposed mechanism also provides comprehensive unit
+testing examples, which already have revealed bugs in several ops.
 
 * **Early checking** - inputs should be checked as early as possible, exceptions
   raised very low in the stack
@@ -37,7 +45,12 @@ The mechanism consists of a compact API for building up the set of rules
 incrementally.  A typical op requires about 50 lines of code written in this API to
 fully define the op's *schema*.
 
-## Current examples
+# Current examples
+
+Some examples of current TensorFlow behavior are given below, which could be
+considered less than the ideal of a robust frontend. 
+
+## No Early Checking
 
 TensorFlow does not have any early checking mechanism.  It appears that most
 exceptions arise from very deep in the code, but the traceback is filtered using
@@ -85,6 +98,9 @@ All of these problems are likely a consequence of having insufficient context du
 the exception.
 
 ```
+Dimensions [4,1) of input[shape=[43]] must match dimensions [1,1) of
+updates[shape=[94]] [Op:ScatterNd]
+
 cannot compute Conv2D as input #1(zero-based) was expected to be a int32 tensor but
 is a uint64 tensor [Op:Conv2D]
 
@@ -243,15 +259,21 @@ exponential in the number of separate categories to be tested.
 
 In order to achieve this combinatoric behavior in a flexible way, `opschema` builds
 up a **predicate computation graph** and a **generator computation graph** to
-implement the predicate and generator functions respectively.
+implement the predicate and generator functions respectively.  Each API call from
+`opschema.schema.OpSchema` creates nodes and/or edges in these graphs.  The graphs
+themselves can be printed with:
+
+    python -m opschema.cl graph OP_PATH OUT_DIR
+
+which produces `OUT_DIR/OP_PATH.{gen,pred,inf,dims}.svg`
 
 As a high level illustration, a predicate computation graph is a computation graph
 whose nodes are special predicate functions.  The functions actually return a tuple
-of (success, value), where success is the predicate, and value is a value to be input
-into child nodes' predicate functions.  The entire graph becomes a predicate whose
-value is true if and only if all nodes evaluate to true.  To 'evaluate' the graph,
-the nodes are evaluated one by one in topological order, starting with nodes that
-have no parents.
+of `(success, value)`, where success is the predicate, and value is a value to be
+input into child nodes' predicate functions.  The entire graph becomes a predicate
+whose value is true if and only if all nodes evaluate to true.  To evaluate the
+graph, the nodes are evaluated one by one in topological order, starting with nodes
+that have no parents.
 
 The generator computation graph is similar, except that the functions are generator
 functions.  The entire graph becomes a generator function whose values reflect all
@@ -274,15 +296,22 @@ outputs of an op, but intermediate values as well.  For instance,
 
 # `opschema` predicate graphs
 
-The highest-level predicate graph actually used by the `tf.nn.convolution` schema is
-shown here.
+opschema employs a predicate graph to check whether an op's argument set is valid or
+not.  And, if not, to issue an informative error message.  Since it is a
+proof-of-concept, it does not throw an exception, but rather passes the argument set
+on to TensorFlow's op.  In this way, opschema's error message can be compared with
+TensorFlow's exception should it arise.  Ultimately, if it were adopted, it would
+instead be used to construct the exception text.
+
+The predicate graph actually used by the `tf.nn.convolution` schema is shown here.
 
 ![Predicate Graph](graphs/tf.nn.convolution.pred.svg?raw=true)
 
-Its job is something like 'enhanced typechecking' of arguments.  Each node contains a
-function that both acts as a predicate, and if successful, passes on a value to child
-nodes to be input into their enclosed functions.  If unsuccessful, evaluation of the
-graph stops.  It is evaluated in topological order, parents first. 
+
+All of the nodes except the `Inventory` node do something like 'enhanced
+typechecking' of arguments.  Each node contains a function that both acts as a
+predicate, and if successful, passes on a value to child nodes to be input into their
+enclosed functions.  If unsuccessful, evaluation of the graph stops.  
 
 The 'Schema' node takes no arguments and returns `(True, arg_dict)`.  Each child node
 extracts a particular value based on its name.  For instance, `ShapeList(strides)`
@@ -312,44 +341,27 @@ which participate in shape-based calculations.  The `ArgMap` are control paramet
 that affect the interpretation and computation of the shapes.
 
 Within the `Inventory` node, the predicate function is actually implemented by an
-enclosed predicate computation graph diagrammed below:
+enclosed generative computation graph diagramed below:
 
 ![Inventory Graph](graphs/tf.nn.convolution.inf.svg?raw=true)
 
 This is a generative graph nested inside a predicate node. Its job is to generate
 possible interpretations of the arguments that are correct according to the schema
-constraints, but also agree with the observed arguments.
+constraints, and agree with the observed arguments.  If it finds exactly one valid
+interpretation that is consistent with observations, the predicate succeeds.
 
-There are three special top-level parent nodes: `ObservedValue(args)`,
-`ObservedValue(shapes)` and `ObservedValue(dtypes)`.  In this example, the `shapes`
-one generates a single map of all shape-like quantities.  For `tf.nn.convolution`,
-this is:
+There are two sections of the graph which can generate independently.  Shown at the
+top are groups of `RankEquiv` and `RankRange` nodes.  Each of these corresponds to
+one opschema Index, and is responsible for generating each of the permitted ranks for
+each Index.  For example, `RankRange(batch)` will generate 1, 2, 3, 4, 5.
+`RankRange(input_spatial)` will generate 1, 2, 3.  Because of the combinatoric nature
+of the generative graph process, this creates 15 possible combinations.  All of the
+other nodes either are constraint to rank=1 (such as `input_channel` and
+`output_channel`) or are `RankEquiv` nodes which simply yield the same rank as their
+parent.  Note that at this stage, the only constraints on the rank combinations are
+those at the schema level.  There is no checking for consistency with observed
+argument values at this point.
 
-    { 
-      'input': input.shape, 
-      'filters': filters.shape, 
-      'strides': strides, 
-      'dilations': dilations 
-    }
-
-The next set of nodes are the `RankEquiv(idx)` and `RankRange(idx)` nodes.  Each
-`idx` here is one of the `opschema.schema.Index` objects declared in the schema.
-They generate a set of legal ranks for the Index object.  Each `RankRange` node
-receives input from `ObservedValue(shapes)` and `ObservedValue(args)`.
-`ObservedValue(shapes)` are only used in rare circumstances when the shape of one
-tensor constraints the rank of an index.  This is true in `tf.gather_nd` when
-`indices.shape[-1]` determines the rank of the 'r' (read location) Index in the
-`params` tensor.  In `tf.scatter_nd` similarly, `indices.shape[-1]` determines the
-rank of the 'w' (write address) Index, which appears both in the `shape` parameter
-and the return tensor.
-
-So far, `ObservedValue(args)` is only ever used for a schema that calls the
-`arg_rank` API function, and the only example of that is also `tf.gather_nd`.  In
-this case, the argument `batch_dims` specifies the rank of Index 'b' (batch).
-
-For our current example of `tf.nn.convolution`, neither of these special constraints
-exist, and the graph technically has some unnecessary connections which are ignored
-by the enclosed functions.
 
 But, on with the example.  In the `tf.nn.convolution` example, we see from the graph
 that index `b` (batch) is generated from a `RankRange(b)` node, which generates the

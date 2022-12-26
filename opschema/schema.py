@@ -976,7 +976,7 @@ class OpSchema(object):
             G.set_registry(self.inf_graph)
             sigs_inode = self._inf_node(ge.SigMap)
             idx_iobj = nf.RankRange(self, idx)
-            idx_inode = G.add_node_sn(idx_iobj, self.obs_shapes, self.obs_args)
+            idx_inode = G.add_node_sn(idx_iobj)
             ranks_inode.append_parent_sn(idx_inode)
 
             if isinstance(rank_range, tuple):
@@ -1709,6 +1709,7 @@ class OpSchema(object):
             pri_idx = self.index[idx].pri_idx
             inode = self.inf_graph[pri_idx]
             inode.func.add_args_constraint(cons)
+            inode.append_parent_sn(self.obs_args)
 
     def rank_dims_constraint(self, func, rank_sig, shape_arg):
         """
@@ -1720,6 +1721,7 @@ class OpSchema(object):
             pri_idx = self.index[idx].pri_idx
             inode = self.inf_graph[pri_idx]
             inode.func.add_shapes_constraint(cons)
+            inode.append_parent_sn(self.obs_shapes)
 
     def dims_pred(self, pred_name, pfunc, pfunc_t, indices):
         """
@@ -1843,7 +1845,7 @@ class OpSchema(object):
                     color = 'black'
                 dot.edge(names[node.name], names[pa.name], _attributes={'color': color})
         dot.render(out_file, cleanup=True)
-        print(f'Wrote {out_file}')
+        print(f'Wrote {out_file}.svg')
 
     def print_graphs(self, out_dir):
         nodes = self.pred_graph.values()

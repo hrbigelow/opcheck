@@ -93,7 +93,13 @@ class RankRange(ReportNodeFunc):
         # these functions are called with obs_args, **index_ranks
         self.obs_args_cons.append(cons)
 
-    def __call__(self, obs_shapes, obs_args, **index_ranks):
+    def __call__(self, **kwargs):
+        if 'shapes' in kwargs:
+            obs_shapes = kwargs.pop('shapes')
+        if 'args' in kwargs:
+            obs_args = kwargs.pop('args')
+        index_ranks = kwargs
+        
         # Get the initial bounds consistent with the schema
         sch_lo, sch_hi = 0, 100000
         for cons in self.schema_cons:

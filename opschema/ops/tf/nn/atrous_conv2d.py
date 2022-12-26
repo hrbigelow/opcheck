@@ -17,12 +17,12 @@ def init_schema(op):
     op.arg_shape_int('rate', 'r')
     op.arg_unchecked('name')
 
-    op.gen_dims('b', 50)
-    op.gen_dims('k', 30)
-    op.gen_dims('f', 100)
+    op.gen_dims('b', 1, 50, 50, True)
+    op.gen_dims('k', 1, 30, 30, True)
+    op.gen_dims('f', 1, 100, 100, True)
     op.gen_dims_func('i', genlib.below_above, 'f', 300, False)  
-    op.gen_dims('l', 30)
-    op.gen_dims('r', 30)
+    op.gen_dims('l', 1, 30, 30, True)
+    op.gen_dims('r', 1, 30, 30, True)
 
     op.valid_dtypes('value', ('int32', 'float',))
     op.equate_dtypes('filters', 'value')
