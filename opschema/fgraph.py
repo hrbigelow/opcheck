@@ -33,8 +33,15 @@ class NodeFunc(object):
     def __init__(self, name=None):
         self.sub_name = name
 
+    def wrapped_name(self, name):
+        return f'{self.__class__.__name__}({name})'
+
     @property
     def name(self):
+        return node_name(self.__class__, self.sub_name)
+
+    @property
+    def graphviz_name(self):
         return node_name(self.__class__, self.sub_name)
 
     def __call__(self):
@@ -75,6 +82,10 @@ class FuncNode(object):
 
     def used_name(self):
         return self.sub_name if self.use_subname else self.name
+
+    @property
+    def graphviz_name(self):
+        return self.func.graphviz_name
 
     def clone_node_only(self):
         return type(self)(self.func, self.use_subname, self.num_named_pars,

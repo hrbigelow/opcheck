@@ -954,7 +954,7 @@ class OpSchema(object):
                 ranks_gnode.append_parent_sn(idx_gnode)
 
                 G.set_registry(self.inf_graph)
-                iobj = nf.RankEquiv(idx)
+                iobj = nf.RankEquiv(self, idx)
                 ipa = self.inf_graph[primary_idx]
                 idx_inode = G.add_node_sn(iobj, ipa) 
                 ranks_inode.append_parent_sn(idx_inode)
@@ -1824,15 +1824,15 @@ class OpSchema(object):
 
     def _dot_graph(self, nodes, out_file):
         import graphviz
+        nodes = list(nodes)
         dot = graphviz.Digraph(graph_attr={'rankdir': 'LR'}, format='svg')
-        names = { n.name: n.name.replace(':', '_') for n in nodes }
+        names = { n.name: n.func.graphviz_name for n in nodes }
         for node in nodes:
             is_arg = (node in self.arg_gen_nodes.values())
             color = 'red' if is_arg else 'black'
-            dot.node(names[node.name], node.name, color=color)
+            dot.node(names[node.name], names[node.name], color=color)
             vtype = node.vararg_type
-            for i, (pa,sn) in enumerate(zip(node.parents,
-                node.use_parent_subname)):
+            for i, (pa,sn) in enumerate(zip(node.parents, node.use_parent_subname)):
                 if i < node.num_named_pars:
                     color = 'black'
                 elif vtype == fgraph.VarArgs.Positional:
@@ -1841,8 +1841,7 @@ class OpSchema(object):
                     color = 'purple' if sn else 'blue'
                 else:
                     color = 'black'
-                dot.edge(names[node.name], names[pa.name],
-                        _attributes={'color': color})
+                dot.edge(names[node.name], names[pa.name], _attributes={'color': color})
         dot.render(out_file, cleanup=True)
         print(f'Wrote {out_file}')
 

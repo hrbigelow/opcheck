@@ -101,6 +101,11 @@ class GenDims(NodeFunc):
             hi = int(1e10) if hi is None else hi
             yield lo, hi
 
+    @property
+    def graphviz_name(self):
+        ind_names = [self.op.index[idx].display_name(True) for idx in self.sub_name]
+        return self.wrapped_name(', '.join(ind_names))
+
     def gen_dims(self, pgen):
         """
         len(gens) = rank(rank_idx).  each element of gens is a generator which yields
@@ -191,6 +196,11 @@ class CompDims(NodeFunc):
         self.rank_idx = rank_idx
         self.arg_names = arg_names
         self.nargs = len(arg_names)
+
+    @property
+    def graphviz_name(self):
+        ind_name = self.op.index[self.idx].display_name(True)
+        return self.wrapped_name(ind_name)
 
     def safe_func(self, *args):
         try:
@@ -289,12 +299,20 @@ class DimsInput(GenFunc):
         else:
             self.gen_node = op.arg_gen_nodes[name]
 
+    @property
+    def graphviz_name(self):
+        return self.wrapped_name(self.sub_name.replace(':', '_'))
+
     def __call__(self):
         yield self.op.dims_graph_input[self.sub_name] 
 
 class Layout(GenFunc):
     def __init__(self, op):
         super().__init__(op, base.LAYOUT)
+
+    @property
+    def graphviz_name(self):
+        return self.wrapped_name('layout')
 
     def __call__(self):
         num_layouts = self.op.data_formats.num_layouts()
@@ -334,6 +352,11 @@ class RankRange(GenFunc):
         super().__init__(op, name)
         self.schema_cons = []
 
+    @property
+    def graphviz_name(self):
+        ind_name = self.op.index[self.sub_name].display_name(True)
+        return self.wrapped_name(ind_name)
+
     def add_schema_constraint(self, cons):
         self.schema_cons.append(cons)
 
@@ -356,6 +379,11 @@ class RankEquiv(GenFunc):
     """
     def __init__(self, op, name):
         super().__init__(op, name)
+
+    @property
+    def graphviz_name(self):
+        ind_name = self.op.index[self.sub_name].display_name(True)
+        return self.wrapped_name(ind_name)
 
     def __call__(self, rank):
         yield rank

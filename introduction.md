@@ -1,11 +1,13 @@
 # Towards a robust TensorFlow frontend
 
 TensorFlow ops are highly polymorphic, accepting sometimes thousands of combinations
-of tensor shapes, dtypes, and other control settings.  In many cases, the variety of
-such allowed inputs is not fully documented.  Violating the hidden constraints leads
-to often cryptic exception messages often arising very deep into the stack, or even
-program `abort()`.  In this note, I present a proposed solution and proof-of-concept
-repo.
+of tensor shapes, dtypes, data formats, and other control settings.  In many cases,
+the precise rules to determine if inputs are valid are not documented at the top
+level.  Moreover, violating the hidden constraints often results in cryptic exception
+messages arising very deep into the stack, or even program `abort()`.  In this
+note, I present a proposed solution and proof-of-concept repo.
+
+# Tensor Op Specification Language
 
 ## Properties of a robust frontend
 
@@ -192,7 +194,7 @@ bearing dimension sizes:  *batch*, *input spatial*, *input channel*, *filter
 spatial*, *filter input channel*, *output channel*, *stride*, and *dilation*.  
 
 In generating test cases, each of these could or could not contain a zero dimension,
-giving 2**8 = 256 different combinations.  In addition, we would like to check edge
+giving 2^8 = 256 different combinations.  In addition, we would like to check edge
 cases in which the input channel is or is not divisible by filter input channel.  Yet
 another test is to choose input spatial and filter spatial dimensions that lead to
 positive or negative output spatial dimensions, to test the behavior of exceptions.
@@ -257,20 +259,38 @@ possible combinations of the individual generator nodes.  However, they aren't
 independent - each generator function takes inputs from its parents, and is invoked
 once for each possible setting of these inputs.
 
+# opschema Index objects
+
+The central construct of opschema is the `opschema.schema.Index` object.  Each Index
+object represents a semantic group of indices, such as 'batch dimensions' or 'input
+spatial dimensions'.  It is proposed as the single source for naming a group of
+dimensions, for both documentation generation and Exception text generation.  The
+Index provides a handle for defining other constraints on the rank (number of
+dimensions) and relationships among different index dimension sizes, either
+component-wise or not.
+
+Indexes are useful to give names not only for dimensions appearing in the inputs or
+outputs of an op, but intermediate values as well.  For instance, 
+
 # `opschema` predicate graphs
 
-The predicate graph actually used by the `tf.nn.convolution` schema is shown here:
+The highest-level predicate graph actually used by the `tf.nn.convolution` schema is
+shown here.
 
 ![Predicate Graph](graphs/tf.nn.convolution.pred.svg?raw=true)
 
-It is evaluated in topological order, parents first.  The 'Schema' node takes no
-arguments and returns `(True, arg_dict)`.  Each child node extracts a particular value
-based on its name.  For instance, `ShapeList(strides)` takes `arg_dict['strides']` as
-input.  Its job is to validate that it is either an integer or list of integers.  If
-so, it returns `(True, arg_dict['strides'])`.  If not, it returns `(False, ErrorReport)`,
-which is a class that produces a human-readable error message.  The node
-`DataTensor(input)` extracts `arg_dict['input']` and validates that it is a tensor,
-passing it along if so.
+Its job is something like 'enhanced typechecking' of arguments.  Each node contains a
+function that both acts as a predicate, and if successful, passes on a value to child
+nodes to be input into their enclosed functions.  If unsuccessful, evaluation of the
+graph stops.  It is evaluated in topological order, parents first. 
+
+The 'Schema' node takes no arguments and returns `(True, arg_dict)`.  Each child node
+extracts a particular value based on its name.  For instance, `ShapeList(strides)`
+takes `arg_dict['strides']` as input.  Its job is to validate that it is either an
+integer or list of integers.  If so, it returns `(True, arg_dict['strides'])`.  If
+not, it returns `(False, ErrorReport)`, which is a class that produces a
+human-readable error message.  The node `DataTensor(input)` extracts
+`arg_dict['input']` and validates that it is a tensor, passing it along if so.
 
 Nodes `TensorShape(input)` and `TensorDType(input)` always succeed - they are
 guaranteed to receive a tensor, and their only job is to extract and pass on its
@@ -312,19 +332,36 @@ this is:
       'dilations': dilations 
     }
 
-The next set of nodes are the `RankEquiv(idx)` and `RankRange(idx)` nodes.  These
-generate a set of legal ranks for `opschema.schema.Index` objects.  Such objects are
-explained in the README.md.  Briefly, an Index is a group of dimensions of one
-semantic category, such as 'batch', or 'input spatial dimensions'.   The rank of such
-an Index is just the number of dimensions.
+The next set of nodes are the `RankEquiv(idx)` and `RankRange(idx)` nodes.  Each
+`idx` here is one of the `opschema.schema.Index` objects declared in the schema.
+They generate a set of legal ranks for the Index object.  Each `RankRange` node
+receives input from `ObservedValue(shapes)` and `ObservedValue(args)`.
+`ObservedValue(shapes)` are only used in rare circumstances when the shape of one
+tensor constraints the rank of an index.  This is true in `tf.gather_nd` when
+`indices.shape[-1]` determines the rank of the 'r' (read location) Index in the
+`params` tensor.  In `tf.scatter_nd` similarly, `indices.shape[-1]` determines the
+rank of the 'w' (write address) Index, which appears both in the `shape` parameter
+and the return tensor.
 
-In the `tf.nn.convolution` example, we see from the graph that index `b` (batch) is
-generated from a `RankRange(b)` node, which generates the values [1,2,3,4,5] in this
-case.  `RankRange(i)` (input spatial) generates 1,2 and 3, corresponding to the 1D,
-2D, and 3D versions of convolution, respectively.  As another example, `RankEquiv(f)`
-( filter spatial) is constrained to generate only the rank of its parent - this
-constraint expresses the fact that the filter spatial dimensions must match those of
-the input.
+So far, `ObservedValue(args)` is only ever used for a schema that calls the
+`arg_rank` API function, and the only example of that is also `tf.gather_nd`.  In
+this case, the argument `batch_dims` specifies the rank of Index 'b' (batch).
+
+For our current example of `tf.nn.convolution`, neither of these special constraints
+exist, and the graph technically has some unnecessary connections which are ignored
+by the enclosed functions.
+
+But, on with the example.  In the `tf.nn.convolution` example, we see from the graph
+that index `b` (batch) is generated from a `RankRange(b)` node, which generates the
+values [1,2,3,4,5] in this case.  `RankRange(i)` (input spatial) generates 1,2 and 3,
+corresponding to the 1D, 2D, and 3D versions of convolution, respectively.  All of
+the `RankEquiv` nodes simply produce the rank of their index parent.  For instance,
+Indexes 'o' (output spatial), 's' (strides), 'd' (dilations), and 'f' (filter
+spatial) are all constrained to be the same rank as 'i' (input spatial).  So, the
+total number of combinations of Index ranks are determined by the `RankRange` nodes
+only.
+
+
 
 
 ```python

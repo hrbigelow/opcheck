@@ -50,6 +50,10 @@ class Layout(NodeFunc):
         super().__init__(None)
         self.op = op
 
+    @property
+    def graphviz_name(self):
+        return self.wrapped_name('layout')
+
     def __call__(self):
         num_layouts = self.op.data_formats.num_layouts()
         for i, layout in enumerate(range(num_layouts)):
@@ -65,6 +69,11 @@ class RankRange(ReportNodeFunc):
         self.schema_cons = []
         self.obs_shapes_cons = [] # constraint based on shapes
         self.obs_args_cons = []
+
+    @property
+    def graphviz_name(self):
+        ind_name = self.op.index[self.sub_name].display_name(True)
+        return self.wrapped_name(ind_name)
 
     def add_schema_constraint(self, cons):
         # these functions are called with **index_ranks
@@ -109,8 +118,14 @@ class RankEquiv(NodeFunc):
     """
     Produce a range identical to the primary index
     """
-    def __init__(self, name):
+    def __init__(self, op, name):
+        self.op = op
         super().__init__(name)
+
+    @property
+    def graphviz_name(self):
+        ind_name = self.op.index[self.sub_name].display_name(True)
+        return self.wrapped_name(ind_name)
 
     def __call__(self, rank):
         yield rank
