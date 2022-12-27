@@ -29,6 +29,12 @@ def init_schema(op):
 
     op.comp_dims_cw('g', dilate, dilate_t, 'fr')
     op.comp_dims_cw('o', conv, conv_t, 'ig', 'padding')
+
+    op.dims_pred_rng('f', 1, None)
+    op.dims_pred_rng('k', 1, None)
+    op.dims_pred_rng('r', 1, None)
+    op.dims_pred_rng('l', 1, None)
+
     op.return_tensor('bol')
 
 

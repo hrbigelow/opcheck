@@ -144,6 +144,8 @@ Conv2DSlowBackpropInput: filter and out_backprop must have the same out_depth
 [Op:Conv2DBackpropInput]
 
 input_sizes must be 4-dimensional, got: 3 [Op:Conv2DBackpropInput]
+
+integer division or modulo by zero
 ```
 
 ## Inaccurate Documentation
@@ -496,14 +498,13 @@ If it does not yield anything with a budget of zero, a budget of 1 is tried, and
 on.  These modes may produce more than one 'suggested fix', in which a fix is a
 collection of possible edits that would restore correctness to the inputs.
 
+# TODO: Extra notes under construction
+
 And suppose that it accepts even, non-negative integers.  If given an odd or negative
 integer, it raises some exception, but the exception doesn't actually inform the user
 what is wrong.  Also, suppose the function doesn't document that it only accepts
 even, non-negative integers.  Our goal is to separately define a predicate function
 that mimics the set of successful inputs of the op.  
-
-# TODO: Extra notes under construction
-
 A predicate for `func(i)` would be:
 
 ```python
