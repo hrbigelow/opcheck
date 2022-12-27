@@ -639,6 +639,54 @@ through the `DimsInput(padding)` and `DimsInput(_index_ranks)` nodes, which act 
 stubs to allow the inner graph structure to be self-contained while still
 participating in the combinatorial generation process.
 
+Once a set of Index dimensions is generated from inside the `ArgMutations` node, it
+uses these dimensions along with argument signatures to construct full argument
+shapes by concatenation.  This is the inverse process of the `IndexUsage` inference
+shown above.
+
+    { 'b': [10, 5, 2], 'k': [9], 'i': [100, 100, 100] }   # from Dimensions graph
+    { 'input': 'bki', 'filters': ... }                    # from Sig node
+
+the `ArgMutations` node will construct:
+
+    { 'input': [10, 5, 2, 9, 100, 100, 100], 'filters': ... } # yielded by `ArgMutations`
+
+by concatenating the dimensions according to the signature.  It will also apply
+Inserts and Deletes and yield these shapes separately.  In addition, it will also
+create point 'mutations' of individual dimensions.  These mutations are important to
+generate faulty test cases to test the error message generation and Exception
+behavior.
+
+Meanwhile, the dtype generation process involves `DTypeIndiv(input)`,
+`DTypeEquate(filters)` and `DTypesNotImpl`, which mirror the inference process.
+`DTypeIndiv(input)` generates valid (and a subset of invalid) dtypes for the 'input'
+tensor according to the schema.  The valid types were declared as `int32`, `float*`
+and `bfloat16`, all of which are yielded.  Then, the node will generate a budget of
+up to `--max_dtype_err` additional invalid dtypes, randomly generated from a known
+random seed.
+
+The `DTypeEquate(filters)` node simply generates the matching dtype as it receives.
+It too will generate a randomly chosen non-matching dtype as well, according to the
+quota.
+
+Finally, the `DTypesNotImpl` node applies a matching rule to the combination of
+dtypes, as well as in this case the output of `IndexRanks` and `Layout` nodes.  If
+the combination is flagged by the rule (i.e. known to be not implemented by
+TensorFlow), then a current error count is tallied.  If this count exceeds a given
+budget, it will not be yielded.
+
+In this way, the total number of errors contained in any generated input can be
+capped during the generation process.
+
+Finally, the Args node constructs symbolic `oparg.OpArg` objects.  These can be of
+different types.  The `oparg.DataTensorArg` stores the dtype and shape, and serves as
+a stub for later generating an actual tensor.  A complete map of `arg_name => OpArg`
+is yielded from the `Args` node, and the whole output is accessible as a generator
+using:
+
+    op.generate_args(rand_seed)
+
+
 # TODO: Extra notes under construction
 
 And suppose that it accepts even, non-negative integers.  If given an odd or negative
