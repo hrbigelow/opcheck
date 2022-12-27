@@ -498,6 +498,147 @@ If it does not yield anything with a budget of zero, a budget of 1 is tried, and
 on.  These modes may produce more than one 'suggested fix', in which a fix is a
 collection of possible edits that would restore correctness to the inputs.
 
+The `DataFormat(data_format)` node receives the value of the `data_format` parameter
+from `ObservedValue(args)`, as well as the `Layout` and possibly the rank of some
+`Index` from `IndexRanks`.  In the case of `tf.nn.convolution`, the interpretation is
+controlled by the schema content:
+
+    formats = {
+            'NCW': (0, 1),
+            'NCHW': (0, 2),
+            'NCDHW': (0, 3),
+            'NWC': (1, 1),
+            'NHWC': (1, 2),
+            'NDHWC': (1, 3),
+            None: (1, None),
+
+    arg_layout('data_format', formats, 'i')
+
+In my view it is unfortunate that `data_format` is defined in this way, since the
+information designating `rank(i)` is redundant, and could instead be inferred from
+the rank of the `filters` tensor.  When the two conflict, it is logically not clear
+which one is intended to be authoritative.  opschema takes this into account and
+considers both interpretations.
+
+This also applies to the situation in which the shapes of `input` and `filters` might
+be consistent with a 'channel first' data format, but the `data_format` argument is
+one of the 'channel last' variety.  In that case, the user may very well have
+intended a different data format.
+
+The power of the generation graph with budget is that it can find hypotheses that are
+the closest in edit distance to the given inputs.
+
+Finally, the `Options(padding)` node validates that 'padding' is one of the valid
+options 'VALID' or 'SAME', and incurs a cost if not.
+
+The set of edits (if any) produced by the various nodes are aggregated in the
+`Report` node and compiled into a `Fix` object, which summarizes this and provides
+functionality for constructing error messages for the user.
+
+# Generating Unit Tests
+
+The next major functionality of opschema is the ability to generate a thorough set of
+test inputs for an op, both valid and invalid.  This function relies on a generative
+graph shown below:
+
+![Generation Graph](graphs/tf.nn.convolution.gen.svg?raw=true)
+
+It is similar to the generative portion of the predicate graph except for some key
+differences.  First, the nodes do not keep track of any error budget, nor are there
+any comparisons with observed values.  For instance, in
+[the inference graph](graphs/tf.nn.convolution.inf.svg), the `Options(padding)`
+node received input from the `ObservedValue(args)` node, checked it for validity, and
+then yields the value if so, or an edit object if not.
+
+In this graph, the `Options(padding)` node yields both of the valid values, as well as a
+'DUMMY' value.  This is the case for all of the nodes - they yield the complete set
+of valid values, plus some selected set of invalid values.  These invalid values
+serve as inputs to cause TensorFlow to throw, and for opschema to issue an error
+message.
+
+In similar fashion to the inference graph, the generation graph first generates a
+combination of Index ranks, and a set of signatures from a given Layout.  Combining
+the signatures and Index ranks into ArgRanks.   At this stage, all values generated
+are valid according to the schema constraints.  `ArgIndels` yields a map of `arg_name
+=> indel` which in principle can contain multiple indels.  In this current
+implementation, it contains either zero or one.  For each argument that has a shape
+(and thus rank), `ArgIndels` yields the empty map `{}`, an `Insert` object at a
+random position, and a `Delete` object at a random position.
+
+The `ArgMutations` node yields a map of `arg_name => shape` for all shape-bearing
+arguments.  In order to generate actual shapes, it first needs to generate dimensions
+for each Index.  In the case of `tf.nn.convolution` there are 10 separate indices.
+One of these, 'g' (dilated_filter_spatial) is an intermediate index, which does not
+appear in any input or output tensor.  It is useful for more cleanly expressing the
+final computed index 'o' (output_spatial).
+
+The dimension generation process relies on a nested graph as follows:
+
+![Index Dimensions Graph](graphs/tf.nn.convolution.dims.svg?raw=true)
+
+This graph consists of two main types of nodes.  `GenDims(idx)` nodes generate dimensions
+for `idx` according to certain limits specified by the schema.  This is where the
+total number of tensor elements can be controlled.  Since many ops allow large
+ranks, controlling the total size of tensors during the generation process is
+crucial to avoid OOM error.  Here, for example, `tf.nn.convolution` uses:
+
+```python
+op.gen_dims(out_idx='b', min_val=1, max_val=100, max_prod=100, gen_zero=True)
+```
+
+This tells the opschema generation process to generate batch dimensions in [1, 100]
+such that the product is also <= 100.  So, if it were generating 5 batch dimensions,
+the total number of batch slices would be controlled.  The `gen_zero=True` flag tells
+opschema to also generate additional test cases with batch dimensions of zero.
+These are important test cases, either to confirm that TensorFlow op correctly
+processes such inputs, or that it correctly throws an Exception.  In some cases,
+these test cases cause `abort()`, depending on the combinations of indexes with zero
+dimensions.
+
+Some nodes must generate dimensions for multiple indices at a time, in order to
+control certain relationships in their values.  `GenDims(input_channel,
+filter_input_channel)` is one such example.  In this case, `tf.nn.convolution`
+accepts cases where the components of `input_channel` are evenly divisible by
+`filter_input_channel` (component-wise).  If opschema didn't generate these together,
+there would be only very rare positive test cases occurring.  This node is registered
+with a custom function specified by the schema writer to yield randomly generated
+cases that follow this, as well as certain zero-dimension combinations and other
+invalid combinations.  The complete function is shown here:
+
+```python
+def group_channels(rng, max_input_val):
+    """
+    Generate a pair of input, filter channel dims, in which input is divisible
+    by filter
+    """
+    inp = rng.choice(range(1, max_input_val+1))
+    factors = get_factors(inp)
+    inp_tup = (inp, inp)
+    filt = rng.choice(factors)
+    filt_tup = filt, filt
+
+    fake = next(filter(lambda i: inp % i != 0, range(1, inp+1)), inp)
+    
+    yield inp_tup, inp_tup
+    yield inp_tup, filt_tup
+    yield inp_tup, (0, 0)
+    yield inp_tup, (fake, fake)
+    yield (0, 0), filt_tup
+    yield (0, 0), (0, 0)
+```
+
+The `CompDims(idx)` node produces computed dimensions.  In this case both
+`dilated_filter_spatial` and `output_spatial` are computed.  As with custom-generated
+dimensions, computed dimensions require user-provided functions (which can operate
+component-wise or not).  Computed dimensions may need other non-dimension inputs,
+which are provided by (in this case) the `DimsInput(padding)` node.
+
+This inner index dimension graph yields complete sets of dimensions for each Index,
+as part of the operation of its containing graph.  The containing graph communicates
+through the `DimsInput(padding)` and `DimsInput(_index_ranks)` nodes, which act as
+stubs to allow the inner graph structure to be self-contained while still
+participating in the combinatorial generation process.
+
 # TODO: Extra notes under construction
 
 And suppose that it accepts even, non-negative integers.  If given an odd or negative
