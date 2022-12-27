@@ -377,39 +377,132 @@ interpretation that is consistent with observations, the predicate succeeds.
 There are two sections of the graph which can generate independently.  Shown at the
 top are groups of `RankEquiv` and `RankRange` nodes.  Each of these corresponds to
 one opschema Index, and is responsible for generating each of the permitted ranks for
-each Index.  For example, `RankRange(batch)` will generate 1, 2, 3, 4, 5.
-`RankRange(input_spatial)` will generate 1, 2, 3.  Because of the combinatoric nature
-of the generative graph process, this creates 15 possible combinations.  All of the
-other nodes either are constraint to rank=1 (such as `input_channel` and
-`output_channel`) or are `RankEquiv` nodes which simply yield the same rank as their
-parent.  Note that at this stage, the only constraints on the rank combinations are
-those at the schema level.  There is no checking for consistency with observed
-argument values at this point.
+each Index.  For example, `RankRange(batch)` will generate 1, 2, 3, 4, 5.  This
+expresses the fact that `tf.nn.convolution` supports at least 5 batch dimensions.
+`RankRange(input_spatial)` will generate 1, 2, 3, specifying 1D, 2D, and 3D
+convolutions.  Because of the combinatoric nature of the generative graph process,
+this creates 15 possible combinations.  All of the other nodes either are constraint
+to rank=1 (such as `input_channel` and `output_channel`) or are `RankEquiv` nodes
+which simply yield the same rank as their parent.  Note that at this stage, the only
+constraints on the rank combinations are those at the schema level.  There is no
+checking for consistency with observed argument values at this point.
 
+The `IndexRanks` node simply collects each rank into a single map of `index => rank`,
+and yields it.
 
-But, on with the example.  In the `tf.nn.convolution` example, we see from the graph
-that index `b` (batch) is generated from a `RankRange(b)` node, which generates the
-values [1,2,3,4,5] in this case.  `RankRange(i)` (input spatial) generates 1,2 and 3,
-corresponding to the 1D, 2D, and 3D versions of convolution, respectively.  All of
-the `RankEquiv` nodes simply produce the rank of their index parent.  For instance,
-Indexes 'o' (output spatial), 's' (strides), 'd' (dilations), and 'f' (filter
-spatial) are all constrained to be the same rank as 'i' (input spatial).  So, the
-total number of combinations of Index ranks are determined by the `RankRange` nodes
-only.
+The bottom right section consists of the `Layout`, `Sig`, and `SigMap` nodes.
+`Layout` is an unobserved state which in this case generates two codes: 0, and 1,
+representing the notion of a 'channel first' or 'channel last' layout.  The channel
+first layout corresponds with `data_format=NC*`.  The `Sig` nodes emit a *signature*
+for a tensor or other shape-related argument such as 'strides'.  
 
+In this case, for layout 0, `Sig(input)` yields `bki`, which is a string of the
+`Index` one-letter codes, representing the sequence of indices `batch, input_channel,
+input_spatial` In coordination with this, the `Sig(return[0])` node will emit `blo`,
+representing `batch, output_channel, output_spatial`.  Together, this means that both
+the `input` and `output` tensors will be channel-first.  Signatures are combined into
+a map of `arg_name => signature` in the `SigMap` node.  Together with the
+`IndexRanks` node, each signature can be instantiated by specific ranks.  For
+example, given `rank(b) = 3, rank(k) = 1, rank(i) = 3`, the signature `bki` can be
+instantiated as `bbbkiii`.  The instantiation provides a component-wise
+interpretation of a shape that may be observed later on.
 
+The `ObservedValue(shapes)` node yields a single item, a map of `arg_name =>
+<shape>`, for each shape-bearing argument provided by the user.  In this case, this
+will be:
 
+    {
+      'input': input.shape,
+      'filter': filter.shape,
+      'strides': strides,
+      'dilations': dilations
+    }
 
-```python
-def func(i):
-  ...
-```
+where `<shape>` is either a non-negative integer or list of non-negative integers. 
+
+The `ArgIndels` node is the first piece of logic which combines the observed values
+(shapes) with the hidden hypotheses (layout, signatures, and Index ranks).  If the
+instantiated signature, (`bbbkiii` above) has a different rank than that of the
+observed shape, `ArgIndels` creates an Insert or a Delete of the appropriate number
+of dimensions.  If the ranks match, there is no edit and no associated cost.
+
+There is a global setting for the maximum allowed cost before giving up, which is set
+at the beginning of the search.  If that quota is exceeded, the `ArgIndels` node does
+not yield for that particular input.  So, it acts as a context-dependent filter.  On
+the other hand, if the budget has not been exhausted, `ArgIndels` will yield the
+'edit' as a potential hypothesis.
+
+`IndexUsage` detects whether each `Index` has consistent dimensions in every
+signature instantiation in which it appears, by matching it up with the shape.  For
+example:
+
+    { 'b': 3, 'k': 1, 'i': 3, 'f': 3, 'l': 1 }                    # yielded by IndexRanks
+    { 'input': 'bki', 'filter': fkl' }                            # yielded by SigMap
+    { 'input': [10,5,2,9,100,100,100], 'filter': [10,10,10,9,5] } # yielded by ObservedValue(shapes)
+
+then, `IndexUsage` would use the `IndexRanks` to instantiate the signatures, and
+match them up with the shapes as follows:
+
+    'input':  [ b1, b2, b3, k,  i1,  i2,  i3]
+              [ 10,  5,  2, 9, 100, 100, 100]
+
+    'filter': [ f1, f2, f3, k, l]  # Warning: this is not actually tf.nn.convolution!
+              [ 10, 10, 10, 9, 5]
+
+The only `Index` that occurs in more than one place is 'k'.  In this case, it has the
+same dimension of 9.  But, if this dimension differed, then `IndexUsage` would again
+either yield an 'edit' object while incrementing the current cost.  Or, if there was
+no available budget, it would not yield this configuration, acting as a filter.
+
+I put a warning showing though that in fact, the signature for `filter` doesn't use
+'k', but a separate index called 'filter_input_channel'.
+
+At the top of the graph in the next stage we have `DTypes`.  It also acts as a
+filter.  If the combination of observed input tensor dtypes provided by
+`ObservedValue(dtypes)` is allowed, `DTypes` will yield a map of `arg_name => dtype`.
+If not, it will increment the errors and either yield or not depending on the budget.
+
+`DTypes` also receives input from `IndexRanks` and `Layout`.  This is because there
+are certain combinations of dtypes, ranks, and layouts which are not implemented, and
+must be specially flagged.  In the case of `tf.nn.convolution`, these are:
+
+    Excluded DType Combos
+
+    input.dtype  rank(i)  layout
+    int32        1,2      0       # int32 1D and 2D channel-first (layout 0)
+    int32        3        *       # 3D int32 any layout
+    bfloat16     1,2      *       # etc... 
+    bfloat16     3        0 
+
+This may also be device specific - these are the exclusions that seem to be in place
+for a GTX-1070 GPU.  A refinement of the rules will likely be necessary.
+
+The `IndexConstraints` node implements specially declared predicates on indices.  I
+lied earlier about 'filters' having a signature of `fkl`.  In fact, it has signature
+`fjl`, `j=filter_input_channel`.  This is necessary because `tf.nn.convolution`
+allows these channels to have different dimensions, but there is a constraint:  'k'
+must be divisible by 'j'.  This constraint is declared with the API function
+`dims_pred_cw`, which accepts user-provided predicate function.  These predicate
+functions are registered and called with the run-time dimensions of the indices as
+they are instantiated by the `IndexUsage` node.  Then, `IndexConstraints` apply the
+predicates and either increment the cost or do further filtering.
+
+opschema will repeatedly try to run the overall predicate graph starting with a cost
+budget of zero.  This will halt immediately if any error is encountered.  But, if it
+yields something, it will be a unique interpretation of the inputs and signify that
+the inputs are valid.
+
+If it does not yield anything with a budget of zero, a budget of 1 is tried, and so
+on.  These modes may produce more than one 'suggested fix', in which a fix is a
+collection of possible edits that would restore correctness to the inputs.
 
 And suppose that it accepts even, non-negative integers.  If given an odd or negative
 integer, it raises some exception, but the exception doesn't actually inform the user
 what is wrong.  Also, suppose the function doesn't document that it only accepts
 even, non-negative integers.  Our goal is to separately define a predicate function
 that mimics the set of successful inputs of the op.  
+
+# TODO: Extra notes under construction
 
 A predicate for `func(i)` would be:
 
