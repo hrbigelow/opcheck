@@ -1,13 +1,37 @@
 # Towards a robust TensorFlow frontend
 
 TensorFlow ops are highly polymorphic, accepting sometimes thousands of combinations
-of tensor shapes, dtypes, data formats, and other control settings.  In many cases,
+of tensor ranks, dtypes, data formats, and other control settings.  In many cases,
 the precise rules to determine if inputs are valid are not documented at the top
 level.  Moreover, violating the hidden constraints often results in cryptic exception
 messages arising very deep into the stack, or even program `abort()`.  In this
 note, I present a proposed solution and proof-of-concept repo.
 
 # Tensor Op Specification Language
+
+This proof-of-concept repo defines an API for building *schemas* for TensorFlow ops.
+The API has evolved a lot as I have applied it to different ops.  For instance,
+I hoped that `valid_dtypes` and `equate_dtypes` API calls would be sufficient to
+describe what combinations of tensor dtypes ops would accept.  However, some ops
+support almost all of a set of dtype combinations defined this way, but exclude a
+small number, with a 'not implemented' error.  So, I added a third `exclude_combos`
+API call to address this.
+
+Similarly, I added the `arg_rank` API call specifically for `tf.gather_nd`
+`batch_dims` argument - an argument which defines the number of a group of semantic
+dimensions.  Almost no other ops use it, but it is necessary to properly describe the
+behavior of `tf.gather_nd`.  Also the API call `rank_dims_constraint` was introduced
+for `tf.gather_nd` to declare the constraint `rank(read_location) = indices.shape[-1]`.
+
+`arg_shape_tensor` was introduced for `tf.nn.space_to_batch` `block_shape` argument,
+and `arg_shape_tensor2d` for its `paddings` argument.
+
+Ultimately, it would be ideal to have a common set of constructs, which can be used
+for any op, and which are powerful enough to completely define the set of valid
+inputs for that op.  To my knowledge, no such formal language exists, nor does any
+complete description of valid inputs exist for many ops.  Note that the proposed
+API does not attempt to describe *what* an op calculates - it only describes what
+makes a set of arguments a valid input or not.
 
 # Properties of a robust frontend
 
@@ -315,10 +339,10 @@ enclosed functions.  If unsuccessful, evaluation of the graph stops.
 
 The 'Schema' node takes no arguments and returns `(True, arg_dict)`.  Each child node
 extracts a particular value based on its name.  For instance, `ShapeList(strides)`
-takes `arg_dict['strides']` as input.  Its job is to validate that it is either an
-integer or list of integers.  If so, it returns `(True, arg_dict['strides'])`.  If
-not, it returns `(False, ErrorReport)`, which is a class that produces a
-human-readable error message.  The node `DataTensor(input)` extracts
+takes `arg_dict['strides']` as input.  Its job is to validate that it is either a 
+non-negative integer or list of non-negative integers.  If so, it returns `(True,
+arg_dict['strides'])`.  If not, it returns `(False, ErrorReport)`, which is a class
+that produces a human-readable error message.  The node `DataTensor(input)` extracts
 `arg_dict['input']` and validates that it is a tensor, passing it along if so.
 
 Nodes `TensorShape(input)` and `TensorDType(input)` always succeed - they are
