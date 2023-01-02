@@ -172,6 +172,62 @@ it seems that the op accepts `int32`, all sizes of `float`, and `bfloat16`.  But
 `int32` and `bfloat16`, there are certain exceptions in which ranks or data_formats
 are implemented.  These exclusions may also be device dependent.
 
+# Current Approach
+
+Taking `tf.nn.convolution` as an example, there are many implementations of the
+forward and backprop op, specialized for a device or number of dimensions.  For
+example:
+
+```cpp
+// conv_grad_filter_ops.cc:193 
+class Conv2DBackpropFilterOp : public OpKernel ...
+
+// conv_graph_filter_ops.cc:313 
+class Conv2DCustomBackpropFilterOp : public OpKernel ...
+
+// conv_grahp_ops_3d.cc:179 
+class Conv3DBackpropInputOp : public OpKernel ...
+
+// 4 conv_graph_ops_3d.cc:302 
+class Conv3DCustomBackpropInputOp : public OpKernel ...
+
+// 5 conv_graph_ops_3d.cc:704 
+class Conv3DBackpropFilterOp : public OpKernel ...
+```
+
+They all have sections for checking certain validity constraints such as:
+- valid data_format
+- stride == 1 for batch and input channel dimensions
+- dilation == 1 for batch and input channel dimensions
+- stride > 0
+- proper dilation rank
+- dilation > 0
+- padding argument is one of allowed option
+- filter is valid rank
+- strides is valid rank
+- input is valid rank
+- input and filter have proper combination of ranks
+
+These constraints are checked using calls to `OP_REQUIRES` or `CHECK` macros.  Many
+of these constraints are not specific to the particular class and are therefore
+redundant.  Besides duplicating code, this also raises the possibility of
+inconsistent coverage of error messages, since each `OP_REQUIRES` call requires a
+particular exception with its text.  At first glance it seems it would be much better
+to have these checks at an earlier level, before these were called.
+
+
+```python
+    op.add_index('b', 'batch', 1)
+    op.add_index('c', 'cell', 1)
+    ...
+    op.arg_tensor('cs_prev', 'bc')
+```
+
+Both TensorFlow's `OP_REQUIRES` and opschema's `arg_tensor` API calls establish an
+interpretation of the dimensions of `cs_prev` as `[batch, cell_size]`.  However,
+`OP_REQUIRES` is rigid in several ways.  First, it requires the op author to
+construct an error message by hand, forcing the choice of names that may or may not
+appear in top-level documentation.
 
 # Current Approach: Composable constraints
 
@@ -632,6 +688,54 @@ The `CompDims(idx)` node produces computed dimensions.  In this case both
 dimensions, computed dimensions require user-provided functions (which can operate
 component-wise or not).  Computed dimensions may need other non-dimension inputs,
 which are provided by (in this case) the `DimsInput(padding)` node.
+
+Declaring computed indexes and registering functions to compute them is at the core
+of the functionality and clarity of opschema.  Here, the schema API calls defining
+these computed dimensions is:
+
+```python
+# g = dilated_filter_spatial
+# f = filter_spatial
+# d = dilation
+# i = input_spatial
+# o = output_spatial
+op.comp_dims_cw('g', dilate, dilate_t, 'fd') 
+op.comp_dims_cw('o', strided_conv, strided_conv_t, 'igs', 'padding')
+
+# from opschema/complib.py
+def strided_conv(i, f, s, padding):
+    if padding == 'VALID':
+        return ceildiv(i - f + 1, s)
+    else:
+        return ceildiv(i, s)
+
+# the 'template' function for producing human-readable trace of computed dimensions
+def strided_conv_t(i, f, s, padding):
+    if padding == 'VALID':
+        return f'ceil(({i} + {f} - 1) / {s})'
+    else:
+        return f'ceil({i} / {s})' 
+```
+
+Every computed index comes with the main function and a 'template' function that
+allows generating a human-readable trace of the computation.  These template
+functions, together with intermediate Indexes, allow opschema to create a message
+showing the user exactly how dimensions were computed.  In this example, the message
+shows that the output dimensions were negative, and exactly how they were computed:
+
+```bash
+output_spatial (o) = [-8].  output_spatial must be >= 0
+
+Dimensions computed as:
+dilated_filter_spatial = filter_spatial + max(0, filter_spatial-1) * dilations
+output_spatial = ceil((input_spatial + dilated_filter_spatial - 1) / strides)   [padding = VALID]
+
+g = f + max(0, f-1) * d
+o = ceil((i + g - 1) / s)   [padding = VALID]
+
+[25] = [13] + max(0, [13]-1) * 1
+[-8] = ceil(([16] + [25] - 1) / 1)   [padding = VALID]
+```
 
 This inner index dimension graph yields complete sets of dimensions for each Index,
 as part of the operation of its containing graph.  The containing graph communicates
