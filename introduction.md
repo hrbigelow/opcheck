@@ -215,21 +215,25 @@ inconsistent coverage of error messages, since each `OP_REQUIRES` call requires 
 particular exception with its text.  At first glance it seems it would be much better
 to have these checks at an earlier level, before these were called.
 
+The approach opschema uses involves a construct `opschema.schema.Index`, a semantic
+group of dimensions declared with `add_index` and associated with the shape of
+tensors, as in:
 
 ```python
-    op.add_index('b', 'batch', 1)
-    op.add_index('c', 'cell', 1)
+    op.add_index('f', 'filter spatial', 'i')
+    op.add_index('j', 'filter input channel', 1)
+    op.add_index('l', 'output channel', 1)
+
+    op.arg_tensor('filters', 'fjl')
     ...
-    op.arg_tensor('cs_prev', 'bc')
 ```
 
-Both TensorFlow's `OP_REQUIRES` and opschema's `arg_tensor` API calls establish an
-interpretation of the dimensions of `cs_prev` as `[batch, cell_size]`.  However,
-`OP_REQUIRES` is rigid in several ways.  First, it requires the op author to
-construct an error message by hand, forcing the choice of names that may or may not
-appear in top-level documentation.
+As will be shown, the opschema approach associates constraints on `Index` dimensions
+and relationships.  It is only through the `Index` associations to the shapes of
+tensors that tensor shapes are checked.  The checking can be done in a rank-agnostic
+way.
 
-# Current Approach: Composable constraints
+# Overall Design Pitfall
 
 Since user-facing TensorFlow ops are implemented as intricate compositions of lower
 level ops, it is reasonable to hope that one can define top-level op constraints in
