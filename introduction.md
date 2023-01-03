@@ -7,9 +7,19 @@ level.  Moreover, violating the hidden constraints often results in cryptic exce
 messages arising very deep into the stack, or even program `abort()`.  In this
 note, I present a proposed solution and proof-of-concept repo.
 
-# Tensor Op Specification Language
+# Introducing a Tensor Op Specification API
 
-This proof-of-concept repo defines an API for building *schemas* for TensorFlow ops.
+This proof-of-concept repo defines an API for building *schemas* for TensorFlow ops,
+described in the [README.md#Schema](README.md#schema).  Briefly, a schema concisely
+defines what makes a valid set of inputs, in terms of tensor shapes, dtypes, and
+other control parameters.  To do this, it introduces the notion of a semantic group
+of indices (i.e. 'batch', 'input spatial') which are rank agnostic, and builds tensor
+shapes as a sequence of these groups, called `signatures`.  Finally, groups of
+signatures known as a `layout` correspond with choices of `data_format` arguments.
+These intermediate constructs provide concise handles for defining validity
+constraints and generating meaningful error messages and documentation using
+consistent language. 
+
 The API has evolved a lot as I have applied it to different ops.  For instance,
 I hoped that `valid_dtypes` and `equate_dtypes` API calls would be sufficient to
 describe what combinations of tensor dtypes ops would accept.  However, some ops
