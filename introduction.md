@@ -148,6 +148,7 @@ input_sizes must be 4-dimensional, got: 3 [Op:Conv2DBackpropInput]
 integer division or modulo by zero
 ```
 
+
 ## Inaccurate Documentation
 
 Many ops lack robust documentation.  For instance,
@@ -174,9 +175,32 @@ are implemented.  These exclusions may also be device dependent.
 
 # Current Approach
 
-Taking `tf.nn.convolution` as an example, there are many implementations of the
-forward and backprop op, specialized for a device or number of dimensions.  For
-example:
+Taking `tf.nn.convolution` as an example, it is in
+[nn_ops.py](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/ops/nn_ops.py#L1264#L1300)
+where both argument integrity checks and routing to specialized implementations
+begins:
+
+```python
+# /tensorflow/python/ops/nn_ops.py:1269
+  if num_spatial_dims not in {1, 2, 3}:
+    raise ValueError(
+        "`num_spatial_dims` must be 1, 2, or 3. "
+        f"Received: num_spatial_dims={num_spatial_dims}.")
+  ...
+  if name:
+    default_name = None
+  elif not has_tpu_context or call_from_convolution:
+    default_name = "convolution"
+  elif num_spatial_dims == 2:  # Most common case.
+    default_name = "Conv2D"
+  elif num_spatial_dims == 3:
+    default_name = "Conv3D"
+  else:
+    default_name = "conv1d"
+```
+
+Further checks are performed in the rank-specific and device specific
+implementations:
 
 ```cpp
 // conv_grad_filter_ops.cc:193 
