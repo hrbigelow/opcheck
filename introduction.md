@@ -43,7 +43,7 @@ complete description of valid inputs exist for many ops.  Note that the proposed
 API does not attempt to describe *what* an op calculates - it only describes what
 makes a set of arguments a valid input or not.
 
-# Properties of a robust frontend
+# Properties of a robust TensorFlow frontend
 
 Here I propose what properties a frontend would need to have in order to be
 considered robust.  Such a frontend would provide benefits to users and core

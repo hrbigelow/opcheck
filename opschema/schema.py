@@ -208,7 +208,6 @@ class OpSchema(object):
                 raise OpSchemaInternalError(ex)
             try:
                 # exit_code, ret_val = proc_wrap(self.framework_op, **self.arguments)
-                breakpoint()
                 ret_val = self.framework_op(**self.arguments)
                 self._check_return(ret_val)
                 return ret_val
