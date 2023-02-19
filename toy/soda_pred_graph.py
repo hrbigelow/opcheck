@@ -38,10 +38,10 @@ def predicate_graph(nodes, **test_vals):
             return None
         node, *remain = remain
         self_val = test_vals[node.name]
-        if node.test(self_val, test_vals):
+        if node.test(test_vals):
             return _itergraph(remain)
         else:
-            return node.error(node.name, test_vals)
+            return node.error(test_vals)
 
     return _itergraph(nodes) 
 
