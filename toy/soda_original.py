@@ -28,13 +28,28 @@ def get_vals(lo, hi, reps):
     """
     return list(np.random.choice(np.arange(lo, hi+1), reps, replace=False))
 
+def gen_small_price():
+    """Generate three valid small prices, and one invalid one"""
+    yield from get_vals(1, 100, 3)
+    yield 105
+
+def gen_medium_price(small_price):
+    """Generate three valid medium prices, and one invalid one"""
+    yield from get_vals(small_price+1, small_price+100, 3)
+    yield small_price - 1
+
+def gen_large_price(medium_price):
+    """Generate three valid large prices, and one invalid one"""
+    yield from get_vals(medium_price+1, medium_price+100, 3)
+    yield medium_price - 1
+
 def gen_softdrink_revenue_tests():
     """
     Generate throw/no-throw unit tests 
     """
-    for sp in get_vals(1, 100, 3) + [105]:
-        for mp in get_vals(sp+1, sp+100, 3) + [sp-1]:
-            for lp in get_vals(mp+1, mp+100, 3) + [mp-1]:
+    for sp in gen_small_price():
+        for mp in gen_medium_price(sp):
+            for lp in gen_large_price(mp):
                 yield { 'small_price': sp, 'medium_price': mp, 'large_price': lp }
 
 if __name__ == '__main__':

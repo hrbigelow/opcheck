@@ -1,0 +1,15 @@
+b = batch
+i = input spatial
+f = filter spatial
+k = input channel
+j = filter input channel
+l = filter output channel
+
+input.shape = [10, 100, 100, 15],   filter.shape = [ 14, 14, 3, 3],   data_format = 'NCHW'
+                b    i    i   k                       f   f  j  l
+alternate:      b    k    i   i                       f   f  j  l     
+
+
+
+
+

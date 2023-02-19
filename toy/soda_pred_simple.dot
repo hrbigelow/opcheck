@@ -1,0 +1,12 @@
+digraph D {
+  rankdir=RL
+
+  small_price [label="small_price\ntest, message", shape=oval]
+  medium_price [label="medium_price\ntest, message", shape=oval]
+  large_price [label="large_price\ntest, message", shape=oval]
+
+  medium_price -> small_price
+  large_price -> medium_price
+}
+
+

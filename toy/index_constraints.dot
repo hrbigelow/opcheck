@@ -1,0 +1,27 @@
+digraph D {
+  rankdir=BT
+
+  input_shape [label="input.shape", shape=oval]
+  filter_shape [label="filter.shape", shape=oval]
+  batch [shape=oval]
+  input_spatial [shape=oval]
+  input_channel [shape=oval]
+  filter_spatial [shape=oval]
+  filter_input_channel [shape=oval]
+  filter_output_channel [shape=oval]
+
+  rank_batch [label="RankRange(1,5)", shape=box]
+  rank_spatial [label="RankRange(1,3)", shape=box]
+  same_rank [label="SameRank", shape=box]
+  divis_by [label="DivisBy", shape=box]
+
+  {batch, input_spatial, input_channel} -> input_shape
+  {filter_spatial, filter_input_channel, filter_output_channel} -> filter_shape
+
+  rank_batch -> batch
+  rank_spatial -> input_spatial
+  same_rank -> {input_spatial, filter_spatial}
+  divis_by -> {input_channel, filter_input_channel}
+}
+
+

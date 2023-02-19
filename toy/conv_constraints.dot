@@ -1,0 +1,27 @@
+digraph D {
+  rankdir=BT
+
+  input [shape=oval]
+  filters [shape=oval]
+  data_format [shape=oval]
+  strides [shape=oval]
+  dilations [shape=oval]
+  padding [shape=oval]
+
+  AllowedDTypes [shape=box]
+  DTypesMatch [shape=box]
+  Options1 [label="Options('NHC', 'NCH', ...')", shape=box]
+  NotBothOver1 [shape=box]
+  Options2 [label="Options('VALID', 'SAME')", shape=box]
+  ConsistentShapes [shape=box]
+
+  AllowedDTypes -> input
+  DTypesMatch -> {input, filters}
+  ConsistentShapes -> {input, filters, data_format}
+  Options1 -> data_format
+  NotBothOver1 -> {strides, dilations}
+  Options2 -> padding
+}
+
+
+

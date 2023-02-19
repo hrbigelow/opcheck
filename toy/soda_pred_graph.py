@@ -32,23 +32,22 @@ def predicate_graph(nodes, **test_vals):
     Returns: None for success, or an error message string
     """
     nodes = topo_sort(nodes)
-    def _itergraph(i):
-        if i == len(nodes):
+
+    def _itergraph(remain):
+        if len(remain) == 0:
             return None
-        node = nodes[i]
+        node, *remain = remain
         self_val = test_vals[node.name]
-        parent_vals = tuple(test_vals[p.name] for p in node.parents)
-        if node.test(self_val, *parent_vals):
-            return _itergraph(i+1)
+        if node.test(self_val, test_vals):
+            return _itergraph(remain)
         else:
-            parent_names = tuple(nodes[j].name for j in node.parents)
-            names_vals = tuple(itertools.chain(*zip(parent_names, parent_vals)))
-            return node.error(node.name, self_val, *names_vals)
-    return _itergraph(0) 
+            return node.error(node.name, test_vals)
+
+    return _itergraph(nodes) 
 
 
 def test_range(val):
-return 1 <= val <= 100
+    return 1 <= val <= 100
 
 def error_range(arg, val):
     return f'`{arg}` must be in [1, 100].  Got {val}')

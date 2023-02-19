@@ -1,0 +1,16 @@
+digraph D {
+  rankdir=BT
+
+  small_price [shape=oval]
+  medium_price [shape=oval]
+  large_price [shape=oval]
+
+  in_range [shape=box]
+  is_greater1 [label="is_greater", shape=box]
+  is_greater2 [label="is_greater", shape=box]
+
+  in_range -> small_price
+  is_greater1 -> {small_price, medium_price}
+  is_greater2 -> {medium_price, large_price}
+}
+
